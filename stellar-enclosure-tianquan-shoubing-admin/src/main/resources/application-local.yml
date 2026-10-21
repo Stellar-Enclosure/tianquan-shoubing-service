@@ -1,0 +1,163 @@
+spring:
+  datasource:
+    url: ${TIANQUAN_SHOUBING_POSTGRES_URL:jdbc:postgresql://127.0.0.1:5432/egon_identity_local}
+    username: ${TIANQUAN_SHOUBING_POSTGRES_USER:postgres}
+    password: ${TIANQUAN_SHOUBING_POSTGRES_PASSWORD:HomeLab666}
+  data:
+    redis:
+      host: ${TIANQUAN_SHOUBING_REDIS_HOST:127.0.0.1}
+      port: ${TIANQUAN_SHOUBING_REDIS_PORT:6379}
+      password: ${TIANQUAN_SHOUBING_REDIS_PASSWORD:HomeLab666}
+      database: ${TIANQUAN_SHOUBING_REDIS_DATABASE:0}
+
+  flyway:
+    enabled: false
+
+egon.cola.platform:
+  tianquan:
+    shoubing:
+      usage-observation:
+        receiver: SHOUBING
+        enabled: true
+        fallback-issuer: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}
+        allow-local-plaintext: true
+      issuer: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}
+      jwk-set-uri: ${TIANQUAN_SHOUBING_JWK_SET_URI}
+      revocation:
+        primary-endpoint: ${TIANQUAN_SHOUBING_REVOCATION_PRIMARY_ENDPOINT:redis://127.0.0.1:6379}
+        epoch: ${EGON_TIANQUAN_SHOUBING_REVOCATION_EPOCH}
+      audit:
+        delivery:
+          receipt-ttl: PT1H
+          confirmation-timeout: PT30S
+          batch-size: 100
+        stream: egon:oauth:audit:v1
+        spool-directory: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_SPOOL_DIRECTORY}
+        spool-max-bytes: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_SPOOL_MAX_BYTES:1073741824}
+        hmac-key-file: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_HMAC_KEY_FILE}
+        consumer-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_CONSUMER_DELAY:1000}
+        replay-initial-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_REPLAY_INITIAL_DELAY:5000}
+        replay-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_REPLAY_DELAY:5000}
+    jianshen:
+      user-scope-policy:
+        enabled: true
+        permission-scopes:
+          "[tianquan-shoubing:audit:read]": ["tianquan-shoubing:audit:read"]
+          "[tianquan-shoubing:bootstrap:read]": ["tianquan-shoubing:bootstrap:read"]
+          "[tianquan-shoubing:identity-user:create]": ["tianquan-shoubing:identity-user:create"]
+          "[tianquan-shoubing:identity-user:password-reset]": ["tianquan-shoubing:identity-user:password-reset"]
+          "[tianquan-shoubing:identity-user:read]": ["tianquan-shoubing:identity-user:read"]
+          "[tianquan-shoubing:identity-user:revoke-all]": ["tianquan-shoubing:identity-user:revoke-all"]
+          "[tianquan-shoubing:identity-user:update]": ["tianquan-shoubing:identity-user:update"]
+          "[tianquan-shoubing:identity:self:read]": ["tianquan-shoubing:identity:self:read"]
+          "[tianquan-shoubing:oauth-client:create]": ["tianquan-shoubing:oauth-client:create"]
+          "[tianquan-shoubing:oauth-client:read]": ["tianquan-shoubing:oauth-client:read"]
+          "[tianquan-shoubing:oauth-client:update]": ["tianquan-shoubing:oauth-client:update"]
+          "[tianquan-shoubing:resource-server:create]": ["tianquan-shoubing:resource-server:create"]
+          "[tianquan-shoubing:resource-server:grant]": ["tianquan-shoubing:resource-server:grant"]
+          "[tianquan-shoubing:resource-server:read]": ["tianquan-shoubing:resource-server:read"]
+          "[tianquan-shoubing:resource-server:status]": ["tianquan-shoubing:resource-server:status"]
+          "[tianquan-shoubing:signing-key:activate]": ["tianquan-shoubing:signing-key:activate"]
+          "[tianquan-shoubing:signing-key:publish]": ["tianquan-shoubing:signing-key:publish"]
+          "[tianquan-shoubing:signing-key:read]": ["tianquan-shoubing:signing-key:read"]
+          "[tianquan-shoubing:signing-key:retire]": ["tianquan-shoubing:signing-key:retire"]
+          "[tianquan-shoubing:tenant:manage]": ["tianquan-shoubing:tenant:manage"]
+          "[tianquan-shoubing:tenant:read]": ["tianquan-shoubing:tenant:read"]
+      runtime:
+        redis-address: ${TIANQUAN_SHOUBING_AUTHORIZATION_REDIS_ADDRESS:redis://127.0.0.1:6379}
+        password-file: ${UNIFIED_IDENTITY_REDIS_PASSWORD_FILE:${UNIFIED_XINGYUAN_RUNTIME_DIR:target/local-unified-xingyuan}/secrets/redis.password}
+      authorization:
+        endpoint: ${TIANQUAN_JIANSHEN_AUTHORIZATION_ENDPOINT:http://127.0.0.1:18130}
+
+egon:
+  tianquan-shoubing:
+    clock-skew: ${EGON_TIANQUAN_SHOUBING_CLOCK_SKEW:30s}
+    identity-directory:
+      platform-storage-partition-id: ${EGON_TIANQUAN_SHOUBING_PLATFORM_STORAGE_PARTITION_ID}
+    development-bootstrap:
+      enabled: ${TIANQUAN_SHOUBING_DEVELOPMENT_BOOTSTRAP_ENABLED:false}
+      key-directory: ${TIANQUAN_SHOUBING_DEVELOPMENT_BOOTSTRAP_KEY_DIRECTORY:${UNIFIED_XINGYUAN_RUNTIME_DIR:target/local-unified-xingyuan}/secrets}
+      tianquan-jianshen-service-tenant-ids: ${TIANQUAN_SHOUBING_DEVELOPMENT_TIANQUAN_JIANSHEN_SERVICE_TENANT_IDS:${TIANQUAN_SHOUBING_DEVELOPMENT_TIANQUAN_JIANSHEN_SERVICE_TENANT_ID:default}}
+    oauth:
+      public-origin: ${EGON_TIANQUAN_SHOUBING_OAUTH_PUBLIC_ORIGIN}
+      platform-management-tenant-id: ${EGON_TIANQUAN_SHOUBING_PLATFORM_MANAGEMENT_TENANT_ID}
+      allowed-origins: ${TIANQUAN_SHOUBING_OAUTH_ALLOWED_ORIGINS:http://127.0.0.1:18121,http://127.0.0.1:18125,http://127.0.0.1:18131,http://127.0.0.1:18141,http://127.0.0.1:18152}
+
+      key-encryption:
+        key-id: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEK_ID}
+        key-file: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEK_FILE}
+      key-rotation:
+        period: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEY_ROTATION_PERIOD:90d}
+        prepublish: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEY_PREPUBLISH:24h}
+        schedule: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEY_ROTATION_SCHEDULE:0 0 2 * * *}
+  cola:
+    component:
+      mybatis-plus:
+        ddl:
+          enabled: true
+          lock-timeout: 30s
+          statement-timeout: 300s
+          topology-ready-timeout: 60s
+        sharding:
+          enabled: true
+          mode: SHARDING
+          config-style: NATIVE
+          native-rules-resource: classpath:oauth-sharding-native.yml
+          transaction-default-type: LOCAL
+          data-sources:
+            - name: oauth_primary
+              logical-name: oauth_primary
+              role: PRIMARY
+              driver-class-name: org.postgresql.Driver
+              jdbc-url: ${spring.datasource.url}
+              username: ${spring.datasource.username}
+              password: ${spring.datasource.password}
+          tables: {}
+        tenant-id:
+          ignored-tables:
+            - egon_cola_outbox_message
+      transactional-outbox:
+        enabled: true
+        node-id: ${TIANQUAN_SHOUBING_INSTANCE_ID:tianquan-shoubing-local-1}
+        storage:
+          data-source-bean-name: dataSource
+          transaction-manager-bean-name: transactionManager
+          mp:
+            sql-session-factory-bean-name: sqlSessionFactory
+            migration-mode: false
+            auto-initialize-ddl: true
+            migration-lock-timeout: 30s
+            manifest-resource: db/egon-outbox-mp/manifest.json
+        state-machine:
+          business:
+            enabled: false
+      rpc:
+        provider:
+          bind-address: 127.0.0.1
+        tls:
+          enabled: false
+          development-plaintext: ${TIANQUAN_SHOUBING_RPC_DEVELOPMENT_PLAINTEXT:true}
+      tianshu:
+        tenant-id: ${TIANSHU_TENANT_ID:}
+        rpc:
+          target: ${TIANSHU_RPC_TARGET:dns:///127.0.0.1:19080}
+          tls:
+            enabled: false
+            development-plaintext: ${TIANSHU_RPC_DEVELOPMENT_PLAINTEXT:true}
+        redis:
+          username: ${TIANSHU_REDIS_USERNAME:}
+          password: ${TIANSHU_REGISTRY_REDIS_PASSWORD:HomeLab666}
+      yuheng:
+        reporting:
+          enabled: ${TIANQUAN_SHOUBING_YUHENG_REPORTING_ENABLED:false}
+          env: local
+          namespace: default
+          application-code: tianquan-shoubing
+          artifact-version: local
+
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: readinessState,ping,tianquanAuditReadiness

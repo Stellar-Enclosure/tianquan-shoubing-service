@@ -1,0 +1,315 @@
+spring:
+  application:
+    name: tianquan-shoubing-admin
+  profiles:
+    default: local
+  config:
+    import:
+      - optional:file:${UNIFIED_XINGYUAN_RUNTIME_DIR:target/local-unified-xingyuan}/env/tianquan-shoubing.properties
+      - optional:tianshu:application.yml
+  autoconfigure:
+    exclude:
+      - org.redisson.spring.starter.RedissonAutoConfigurationV2
+  datasource:
+    url: ${TIANQUAN_SHOUBING_POSTGRES_URL}
+    username: ${TIANQUAN_SHOUBING_POSTGRES_USER}
+    password: ${TIANQUAN_SHOUBING_POSTGRES_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  data:
+    redis:
+      host: ${TIANQUAN_SHOUBING_REDIS_HOST}
+      port: ${TIANQUAN_SHOUBING_REDIS_PORT:6379}
+      password: ${TIANQUAN_SHOUBING_REDIS_PASSWORD:}
+      database: ${TIANQUAN_SHOUBING_REDIS_DATABASE:0}
+      timeout: ${TIANQUAN_SHOUBING_REDIS_TIMEOUT:2s}
+  flyway:
+    enabled: false
+    locations: classpath:db/migration
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+server:
+  port: ${TIANQUAN_SHOUBING_ADVERTISED_PORT:18120}
+  shutdown: graceful
+
+springdoc:
+  api-docs:
+    enabled: ${TIANQUAN_SHOUBING_HTTP_OPENAPI_ENABLED:false}
+    version: OPENAPI_3_1
+  group-configs:
+    - group: tianquan-shoubing-identity
+      paths-to-match:
+        - /api/v1/tianquan-shoubing/clients/**
+        - /api/v1/tianquan-shoubing/resource-servers/**
+        - /api/v1/tianquan-shoubing/signing-keys/**
+        - /api/v1/tianquan-shoubing/tenants/**
+        - /api/v1/tianquan-shoubing/users/**
+    - group: tianquan-shoubing-audit
+      paths-to-match:
+        - /api/v1/tianquan-shoubing/audits/**
+    - group: tianquan-shoubing-auth
+      paths-to-match:
+        - /api/v1/tianquan-shoubing/auth/**
+    - group: tianquan-shoubing-profile
+      paths-to-match:
+        - /api/v1/tianquan-shoubing/me
+        - /oauth2/userinfo
+    - group: tianquan-shoubing-oauth
+      paths-to-match:
+        - /oauth2/**
+        - /.well-known/**
+      paths-to-exclude:
+        - /oauth2/userinfo
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: readinessState,ping,tianquanAuditReadiness
+      probes:
+        enabled: true
+
+egon.cola.platform:
+  tianquan:
+    shoubing:
+      usage-observation:
+        receiver: SHOUBING
+        enabled: true
+        fallback-issuer: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}
+        allow-local-plaintext: false
+      enabled: ${UNIFIED_IDENTITY_ENABLED:true}
+      register-filter: false
+      issuer: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}
+      jwk-set-uri: ${TIANQUAN_SHOUBING_JWK_SET_URI}
+      resource-server-id: ${TIANQUAN_SHOUBING_RESOURCE_SERVER_ID}
+      resource-uri: ${TIANQUAN_SHOUBING_RESOURCE_URI}
+      revocation:
+        primary-endpoint: ${TIANQUAN_SHOUBING_REVOCATION_PRIMARY_ENDPOINT}
+        epoch: ${EGON_TIANQUAN_SHOUBING_REVOCATION_EPOCH}
+      audit:
+        delivery:
+          receipt-ttl: PT1H
+          confirmation-timeout: PT30S
+          batch-size: 100
+        stream: egon:oauth:audit:v1
+        spool-directory: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_SPOOL_DIRECTORY}
+        spool-max-bytes: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_SPOOL_MAX_BYTES:1073741824}
+        hmac-key-file: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_HMAC_KEY_FILE}
+        consumer-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_CONSUMER_DELAY:1000}
+        replay-initial-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_REPLAY_INITIAL_DELAY:5000}
+        replay-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_REPLAY_DELAY:5000}
+    jianshen:
+      user-scope-policy:
+        enabled: true
+        permission-scopes:
+          "[tianquan-shoubing:audit:read]": ["tianquan-shoubing:audit:read"]
+          "[tianquan-shoubing:bootstrap:read]": ["tianquan-shoubing:bootstrap:read"]
+          "[tianquan-shoubing:identity-user:create]": ["tianquan-shoubing:identity-user:create"]
+          "[tianquan-shoubing:identity-user:password-reset]": ["tianquan-shoubing:identity-user:password-reset"]
+          "[tianquan-shoubing:identity-user:read]": ["tianquan-shoubing:identity-user:read"]
+          "[tianquan-shoubing:identity-user:revoke-all]": ["tianquan-shoubing:identity-user:revoke-all"]
+          "[tianquan-shoubing:identity-user:update]": ["tianquan-shoubing:identity-user:update"]
+          "[tianquan-shoubing:identity:self:read]": ["tianquan-shoubing:identity:self:read"]
+          "[tianquan-shoubing:oauth-client:create]": ["tianquan-shoubing:oauth-client:create"]
+          "[tianquan-shoubing:oauth-client:read]": ["tianquan-shoubing:oauth-client:read"]
+          "[tianquan-shoubing:oauth-client:update]": ["tianquan-shoubing:oauth-client:update"]
+          "[tianquan-shoubing:resource-server:create]": ["tianquan-shoubing:resource-server:create"]
+          "[tianquan-shoubing:resource-server:grant]": ["tianquan-shoubing:resource-server:grant"]
+          "[tianquan-shoubing:resource-server:read]": ["tianquan-shoubing:resource-server:read"]
+          "[tianquan-shoubing:resource-server:status]": ["tianquan-shoubing:resource-server:status"]
+          "[tianquan-shoubing:signing-key:activate]": ["tianquan-shoubing:signing-key:activate"]
+          "[tianquan-shoubing:signing-key:publish]": ["tianquan-shoubing:signing-key:publish"]
+          "[tianquan-shoubing:signing-key:read]": ["tianquan-shoubing:signing-key:read"]
+          "[tianquan-shoubing:signing-key:retire]": ["tianquan-shoubing:signing-key:retire"]
+          "[tianquan-shoubing:tenant:manage]": ["tianquan-shoubing:tenant:manage"]
+          "[tianquan-shoubing:tenant:read]": ["tianquan-shoubing:tenant:read"]
+      enabled: ${UNIFIED_IDENTITY_ENABLED:true}
+      register-filter: false
+      system-code: tianquan-shoubing-admin
+      runtime:
+        redis-enabled: true
+        redis-address: ${TIANQUAN_SHOUBING_AUTHORIZATION_REDIS_ADDRESS}
+        database: ${TIANQUAN_SHOUBING_AUTHORIZATION_REDIS_DATABASE:0}
+      authorization:
+        endpoint: ${TIANQUAN_JIANSHEN_AUTHORIZATION_ENDPOINT}
+
+egon:
+  tianquan-shoubing:
+    clock-skew: ${EGON_TIANQUAN_SHOUBING_CLOCK_SKEW:30s}
+    identity-directory:
+      platform-storage-partition-id: ${EGON_TIANQUAN_SHOUBING_PLATFORM_STORAGE_PARTITION_ID}
+    identity-state-key-prefix: "identity:v1:user:"
+    oauth:
+      public-origin: ${EGON_TIANQUAN_SHOUBING_OAUTH_PUBLIC_ORIGIN}
+      platform-management-tenant-id: ${EGON_TIANQUAN_SHOUBING_PLATFORM_MANAGEMENT_TENANT_ID}
+      allowed-origins: ${TIANQUAN_SHOUBING_OAUTH_ALLOWED_ORIGINS:}
+      key-encryption:
+        key-id: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEK_ID}
+        key-file: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEK_FILE}
+      key-rotation:
+        period: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEY_ROTATION_PERIOD:90d}
+        prepublish: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEY_PREPUBLISH:24h}
+        schedule: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEY_ROTATION_SCHEDULE:0 0 2 * * *}
+  cola:
+    component:
+      id:
+        enabled: true
+        machine-id: ${TIANQUAN_SHOUBING_SNOWFLAKE_MACHINE_ID}
+      rpc:
+        enabled: ${TIANQUAN_SHOUBING_RPC_ENABLED:true}
+        identity:
+          env: ${DEPLOYMENT_ENV:local}
+          host: ${TIANQUAN_SHOUBING_ADVERTISED_HOST:127.0.0.1}
+          instance-id: ${TIANQUAN_SHOUBING_INSTANCE_ID:tianquan-shoubing-local-1}
+        provider:
+          enabled: ${TIANQUAN_SHOUBING_RPC_PROVIDER_ENABLED:true}
+          bind-address: ${TIANQUAN_SHOUBING_RPC_BIND_ADDRESS:0.0.0.0}
+          port: ${TIANQUAN_SHOUBING_RPC_PORT:18122}
+          advertised-host: ${TIANQUAN_SHOUBING_RPC_ADVERTISED_HOST:${TIANQUAN_SHOUBING_ADVERTISED_HOST:127.0.0.1}}
+          advertised-port: ${TIANQUAN_SHOUBING_RPC_ADVERTISED_PORT:${TIANQUAN_SHOUBING_RPC_PORT:18122}}
+          registration-mode: ${TIANQUAN_SHOUBING_RPC_PROVIDER_REGISTRATION_MODE:DISABLED}
+        consumer:
+          enabled: false
+        tls:
+          enabled: ${TIANQUAN_SHOUBING_RPC_TLS_ENABLED:true}
+          development-plaintext: ${TIANQUAN_SHOUBING_RPC_DEVELOPMENT_PLAINTEXT:false}
+          certificate-chain-path: ${TIANQUAN_SHOUBING_RPC_CERTIFICATE_CHAIN_PATH:}
+          private-key-path: ${TIANQUAN_SHOUBING_RPC_PRIVATE_KEY_PATH:}
+          trust-certificate-collection-path: ${TIANQUAN_SHOUBING_RPC_TRUST_CERTIFICATE_COLLECTION_PATH:}
+      mybatis-plus:
+        ddl:
+          enabled: true
+          lock-timeout: 30s
+          statement-timeout: 300s
+          topology-ready-timeout: 60s
+        sharding:
+          enabled: true
+          mode: SHARDING
+          config-style: NATIVE
+          native-rules-resource: classpath:oauth-sharding-native.yml
+          transaction-default-type: LOCAL
+          data-sources:
+            - name: oauth_primary
+              logical-name: oauth_primary
+              role: PRIMARY
+              driver-class-name: org.postgresql.Driver
+              jdbc-url: ${spring.datasource.url}
+              username: ${spring.datasource.username}
+              password: ${spring.datasource.password}
+          tables: {}
+        tenant-id:
+          ignored-tables:
+            - egon_cola_outbox_message
+      transactional-outbox:
+        enabled: true
+        node-id: ${TIANQUAN_SHOUBING_INSTANCE_ID:tianquan-shoubing-local-1}
+        storage:
+          data-source-bean-name: dataSource
+          transaction-manager-bean-name: transactionManager
+          mp:
+            sql-session-factory-bean-name: sqlSessionFactory
+            migration-mode: false
+            auto-initialize-ddl: true
+            migration-lock-timeout: 30s
+            manifest-resource: db/egon-outbox-mp/manifest.json
+        state-machine:
+          business:
+            enabled: false
+      tianshu:
+        tenant-id: ${TIANSHU_TENANT_ID:}
+        enabled: ${TIANQUAN_SHOUBING_TIANSHU_ENABLED:false}
+        biz-code: ${TIANQUAN_SHOUBING_RESOURCE_BIZ_CODE:permission}
+        app-code: ${TIANQUAN_SHOUBING_RESOURCE_APP_CODE:tianquan-shoubing}
+        env: ${DEPLOYMENT_ENV:local}
+        namespace: ${DEPLOYMENT_NAMESPACE:default}
+        instance:
+          id: ${TIANQUAN_SHOUBING_INSTANCE_ID:tianquan-shoubing-local-1}
+          lease-seconds: 30
+          heartbeat-interval-seconds: 10
+        consistency:
+          fail-fast: true
+          reconcile-enabled: true
+          reconcile-interval-seconds: 30
+        rpc:
+          target: ${TIANSHU_RPC_TARGET:dns:///tianshu-admin:19080}
+          load-balancing-policy: round_robin
+          tls:
+            enabled: ${TIANSHU_RPC_TLS_ENABLED:true}
+            development-plaintext: ${TIANSHU_RPC_DEVELOPMENT_PLAINTEXT:false}
+          auth:
+            runtime:
+              access-key: ${TIANSHU_RPC_RUNTIME_ACCESS_KEY:}
+              secret-key: ${TIANSHU_RPC_RUNTIME_SECRET_KEY:}
+            registry:
+              access-key: ${TIANSHU_RPC_REGISTRY_ACCESS_KEY:}
+              secret-key: ${TIANSHU_RPC_REGISTRY_SECRET_KEY:}
+            management:
+              access-key: ${TIANSHU_RPC_MANAGEMENT_ACCESS_KEY:}
+              secret-key: ${TIANSHU_RPC_MANAGEMENT_SECRET_KEY:}
+        redis:
+          username: ${TIANSHU_REDIS_USERNAME:}
+          enabled: ${TIANQUAN_SHOUBING_TIANSHU_ENABLED:false}
+          mode: SINGLE
+          host: ${TIANSHU_REGISTRY_REDIS_HOST:127.0.0.1}
+          port: ${TIANSHU_REGISTRY_REDIS_PORT:6379}
+          password: ${TIANSHU_REGISTRY_REDIS_PASSWORD:}
+          database: ${TIANSHU_REGISTRY_REDIS_DATABASE:0}
+        registry:
+          enabled: ${TIANQUAN_SHOUBING_TIANSHU_ENABLED:false}
+          http:
+            enabled: ${TIANQUAN_SHOUBING_HTTP_PROVIDER_ENABLED:false}
+            env: ${DEPLOYMENT_ENV:local}
+            namespace: ${DEPLOYMENT_NAMESPACE:default}
+            instance-id: ${TIANQUAN_SHOUBING_INSTANCE_ID:tianquan-shoubing-local-1}
+            service-name: tianquan-shoubing-admin
+            group: default
+            version: ${TIANQUAN_SHOUBING_ARTIFACT_VERSION:0.0.1}
+            protocol: http
+            advertised-host: ${TIANQUAN_SHOUBING_ADVERTISED_HOST:127.0.0.1}
+            port: ${TIANQUAN_SHOUBING_ADVERTISED_PORT:18120}
+            lease-seconds: 30
+            heartbeat-interval-seconds: 10
+            fail-fast: true
+      yuheng:
+        openapi:
+          enabled: ${TIANQUAN_SHOUBING_HTTP_OPENAPI_ENABLED:false}
+          publish-to-tianshu: true
+          published-groups:
+            - tianquan-shoubing-identity
+            - tianquan-shoubing-audit
+            - tianquan-shoubing-auth
+            - tianquan-shoubing-profile
+            - tianquan-shoubing-oauth
+          biz-code: ${TIANQUAN_SHOUBING_RESOURCE_BIZ_CODE:permission}
+          application-code: ${TIANQUAN_SHOUBING_RESOURCE_APP_CODE:tianquan-shoubing}
+          resource-uri: ${TIANQUAN_SHOUBING_RESOURCE_URI:}
+          artifact-version: ${TIANQUAN_SHOUBING_ARTIFACT_VERSION:local}
+          build-id: ${TIANQUAN_SHOUBING_BUILD_ID:local}
+        reporting:
+          enabled: ${TIANQUAN_SHOUBING_YUHENG_REPORTING_ENABLED:true}
+          admin-base-url: ${YUHENG_ADMIN_BASE_URL:}
+          biz-code: ${TIANQUAN_SHOUBING_RESOURCE_BIZ_CODE:permission}
+          application-code: ${TIANQUAN_SHOUBING_RESOURCE_APP_CODE:tianquan-shoubing}
+          application-name: Tianquan-Shoubing Identity Admin
+          env: ${DEPLOYMENT_ENV:local}
+          namespace: ${DEPLOYMENT_NAMESPACE:default}
+          artifact-version: ${TIANQUAN_SHOUBING_ARTIFACT_VERSION:local}
+          build-id: ${TIANQUAN_SHOUBING_BUILD_ID:local}
+          declared-hosts: ${TIANQUAN_SHOUBING_DECLARED_HOSTS:127.0.0.1}
+          fail-fast: true
+          access-key: ${YUHENG_REPORT_ACCESS_KEY:}
+          secret-key: ${YUHENG_REPORT_SECRET_KEY:}
+          state-file: ${YUHENG_REPORT_STATE_FILE:}

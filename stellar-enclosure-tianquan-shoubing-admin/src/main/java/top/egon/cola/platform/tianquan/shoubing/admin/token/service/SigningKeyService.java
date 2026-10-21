@@ -1,0 +1,23 @@
+package top.egon.cola.platform.tianquan.shoubing.admin.token.service;
+
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.dto.PublishSigningKeyDTO;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.vo.SigningKeyVO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+
+import java.util.List;
+
+/**
+ * 身份令牌签名密钥的管理用例入口。
+ *
+ * <p>Application entry point for identity-token signing-key administration.</p>
+ */
+public interface SigningKeyService {
+
+    List<SigningKeyVO> list(TrustedRealmBO trustedRealm);
+
+    SigningKeyVO publish(TrustedRealmBO trustedRealm, PublishSigningKeyDTO command);
+
+    SigningKeyVO activate(TrustedRealmBO trustedRealm, String kid, long expectedVersion);
+
+    SigningKeyVO retire(TrustedRealmBO trustedRealm, String kid, long expectedVersion);
+}

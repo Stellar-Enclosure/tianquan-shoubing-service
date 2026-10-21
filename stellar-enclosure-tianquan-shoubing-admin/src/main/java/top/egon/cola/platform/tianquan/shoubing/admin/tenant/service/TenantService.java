@@ -1,0 +1,50 @@
+package top.egon.cola.platform.tianquan.shoubing.admin.tenant.service;
+
+import top.egon.cola.platform.tianquan.shoubing.admin.tenant.domain.bo.IdentityTenantBO;
+
+import java.time.Instant;
+import java.util.List;
+
+/** Application service for Tianquan-Shoubing-owned tenant catalog lifecycle. */
+public interface TenantService {
+
+    List<TenantView> list();
+
+    TenantView get(String tenantId);
+
+    TenantView create(CreateTenantCommand command);
+
+    TenantView update(String tenantId, UpdateTenantCommand command);
+
+    /** Input for a new tenant catalog row. */
+    record CreateTenantCommand(
+            String tenantCode,
+            String tenantName,
+            String settings,
+            String operatorSub
+    ) {
+    }
+
+    /** Versioned tenant catalog patch. Null name/settings preserve current values. */
+    record UpdateTenantCommand(
+            long expectedVersion,
+            String tenantName,
+            String settings,
+            IdentityTenantBO.Status status,
+            String operatorSub
+    ) {
+    }
+
+    /** Transport-neutral safe tenant view. */
+    record TenantView(
+            String tenantId,
+            String tenantCode,
+            String tenantName,
+            IdentityTenantBO.Status status,
+            String settings,
+            long version,
+            Instant createdAt,
+            Instant updatedAt
+    ) {
+    }
+}

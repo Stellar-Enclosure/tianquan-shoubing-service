@@ -1,0 +1,144 @@
+package top.egon.cola.platform.tianquan.shoubing.admin.support.runtime;
+
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.boot.web.context.WebServerInitializedEvent;
+import org.springframework.context.ApplicationEvent;
+import org.springframework.context.ApplicationListener;
+import org.springframework.scheduling.annotation.Scheduled;
+import top.egon.cola.component.tianshu.http.registration.DdcHttpRegistrationProperties;
+import top.egon.cola.component.tianshu.http.registration.DdcHttpRegistrationRuntime;
+import top.egon.cola.component.tianshu.model.instance.DdcRuntimeState;
+import top.egon.cola.component.tianshu.model.lease.DdcLeaseRole;
+import top.egon.cola.component.tianshu.service.lifecycle.DdcRuntimeCoordinator;
+
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Publishes Tianquan-Shoubing HTTP operations only after identity runtimes are ready.
+ */
+public final class IdpHttpProviderPublicationGate
+        implements ApplicationListener<ApplicationEvent> {
+
+    private final DdcRuntimeCoordinator coordinator;
+    private final DdcHttpRegistrationRuntime providerRuntime;
+    private final DdcHttpRegistrationProperties providerProperties;
+    private final IdpRuntimeReadiness readiness;
+    private final AtomicBoolean applicationReady = new AtomicBoolean();
+    private final AtomicBoolean published = new AtomicBoolean();
+
+    private volatile int serverPort;
+
+    public IdpHttpProviderPublicationGate(
+            DdcRuntimeCoordinator coordinator,
+            DdcHttpRegistrationRuntime providerRuntime,
+            DdcHttpRegistrationProperties providerProperties,
+            IdpRuntimeReadiness readiness
+    ) {
+        this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
+        this.providerRuntime = Objects.requireNonNull(
+                providerRuntime,
+                "providerRuntime"
+        );
+        this.providerProperties = Objects.requireNonNull(
+                providerProperties,
+                "providerProperties"
+        );
+        this.readiness = Objects.requireNonNull(readiness, "readiness");
+    }
+
+    @Override
+    public void onApplicationEvent(ApplicationEvent event) {
+        if (event instanceof WebServerInitializedEvent initialized) {
+            String namespace = initialized.getApplicationContext()
+                    .getServerNamespace();
+            if (namespace == null || namespace.isBlank()) {
+                serverPort = initialized.getWebServer().getPort();
+                tryPublish();
+            }
+            return;
+        }
+        if (event instanceof ApplicationReadyEvent) {
+            if (providerProperties.isFailFast()) {
+                requireReady();
+            }
+            applicationReady.set(true);
+            tryPublish();
+        }
+    }
+
+    /** Retries deferred publication while every original readiness prerequisite remains mandatory. */
+    @Scheduled(fixedDelay = 1000)
+    public void retryPublication() {
+        if (!providerProperties.isFailFast()) {
+            tryPublish();
+        }
+    }
+
+    public boolean mayPublish(ReadinessStatus status) {
+        Objects.requireNonNull(status, "status");
+        return status.ddcConfigClientReady()
+                && status.oauthRuntimeReady()
+                && status.outboxRuntimeReady();
+    }
+
+    private void tryPublish() {
+        if (!applicationReady.get() || serverPort <= 0 || published.get()) {
+            return;
+        }
+        int configuredPort = providerProperties.getPort();
+        if (configuredPort > 0 && configuredPort != serverPort) {
+            throw new IllegalStateException(
+                    "Tianquan-Shoubing HTTP provider port does not match the root web server"
+            );
+        }
+        if (providerProperties.isFailFast()) {
+            requireReady();
+        } else if (coordinator.state() != DdcRuntimeState.READY
+                || coordinator.currentSession().filter(session -> session.role() == DdcLeaseRole.CONFIG_CLIENT).isEmpty()
+                || !mayPublish(Objects.requireNonNull(readiness.status(), "Tianquan-Shoubing readiness status"))) {
+            return;
+        }
+        if (published.compareAndSet(false, true)) {
+            providerRuntime.onHttpServerReady(serverPort);
+        }
+    }
+
+    private void requireReady() {
+        requireConfigClientReady();
+        ReadinessStatus status = Objects.requireNonNull(
+                readiness.status(),
+                "Tianquan-Shoubing readiness status"
+        );
+        if (!status.ddcConfigClientReady()) {
+            throw new IllegalStateException("Tianshu config client is not ready");
+        }
+        if (!status.oauthRuntimeReady()) {
+            throw new IllegalStateException("OAuth runtime is not ready");
+        }
+        if (!status.outboxRuntimeReady()) {
+            throw new IllegalStateException("Outbox runtime is not ready");
+        }
+    }
+
+    private void requireConfigClientReady() {
+        if (coordinator.state() != DdcRuntimeState.READY) {
+            throw new IllegalStateException("Tianshu config client is not ready");
+        }
+        boolean leasePresent = coordinator.currentSession()
+                .filter(session -> session.role() == DdcLeaseRole.CONFIG_CLIENT)
+                .isPresent();
+        if (!leasePresent) {
+            throw new IllegalStateException(
+                    "Tianshu config client lease is missing"
+            );
+        }
+    }
+
+    public record ReadinessStatus(
+            boolean ddcConfigClientReady,
+            boolean oauthRuntimeReady,
+            boolean outboxRuntimeReady
+    ) {
+    }
+}
