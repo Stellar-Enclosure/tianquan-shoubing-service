@@ -73,7 +73,7 @@ class MultiIssuerResourceServerTest {
         var properties = new IdpStarterProperties();
         var redisson = mock(RedissonClient.class);
         new ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(org.springframework.boot.autoconfigure.validation.ValidationAutoConfiguration.class))
+                .withConfiguration(AutoConfigurations.of(org.springframework.boot.validation.autoconfigure.ValidationAutoConfiguration.class))
                 .withPropertyValues("spring.aop.proxy-target-class=true")
                 .withBean("oauthRevocationReader", RedisOAuthRevocationReader.class,
                         () -> new RedisOAuthRevocationReader(redisson, new TrustedIssuerRegistry(properties),

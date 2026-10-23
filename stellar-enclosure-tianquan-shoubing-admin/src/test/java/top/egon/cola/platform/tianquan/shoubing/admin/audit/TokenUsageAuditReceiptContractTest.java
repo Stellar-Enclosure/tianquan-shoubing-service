@@ -28,7 +28,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
 import org.redisson.api.RStream;
-import org.redisson.api.StreamMessageId;
+import org.redisson.api.stream.StreamMessageId;
 import org.redisson.client.codec.StringCodec;
 import org.redisson.api.stream.StreamAddArgs;
 import org.redisson.api.stream.StreamAddParams;

@@ -40,7 +40,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mapstruct.factory.Mappers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.autoconfigure.validation.ValidationAutoConfiguration;
+import org.springframework.boot.validation.autoconfigure.ValidationAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
@@ -231,7 +231,7 @@ class OAuthConsentRoundTripTest {
                 fixture.mapper, realm.getIssuer());
         assertTrue(nativeLoaded.getAccessToken().isActive(), "Reloaded native AT metadata must retain Instant nbf");
         assertFalse(nativeLoaded.getAccessToken().getClaims().containsKey("_token_use"));
-        assertInstanceOf(Instant.class, nativeLoaded.getToken(org.springframework.security.oauth2.core.oidc.OidcIdToken.class)
+        assertInstanceOf(java.util.Date.class, nativeLoaded.getToken(org.springframework.security.oauth2.core.oidc.OidcIdToken.class)
                 .getToken().getClaims().get("auth_time"));
         MvcResult userinfo = mvc.perform(request(get("/tenants/1001/userinfo"))
                         .header("Authorization", "Bearer " + tokens.path("access_token").asText())).andReturn();

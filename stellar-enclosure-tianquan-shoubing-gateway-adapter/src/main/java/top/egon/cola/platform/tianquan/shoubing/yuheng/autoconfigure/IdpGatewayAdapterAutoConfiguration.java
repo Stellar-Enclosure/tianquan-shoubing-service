@@ -22,6 +22,8 @@ import top.egon.cola.platform.tianquan.shoubing.starter.security.OAuthRevocation
 import top.egon.cola.platform.tianquan.shoubing.starter.security.VerifiedPrincipalConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.LegacyIssuerCutoverPolicy;
 import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
+import org.springframework.security.oauth2.jwt.JwtTypeValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import top.egon.cola.platform.tianquan.shoubing.yuheng.runtime.IdpGatewayRedissonConfiguration;
 import top.egon.cola.platform.tianquan.shoubing.yuheng.security.GatewayResourceServerResolver;
@@ -314,8 +316,9 @@ public class IdpGatewayAdapterAutoConfiguration {
                         properties.getJwkSetUri().trim())
                 .validateType(false)
                 .build();
-        decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(
-                properties.getIssuer().trim()));
+        decoder.setJwtValidator(JwtValidators.createDefaultWithValidators(
+                new JwtIssuerValidator(properties.getIssuer().trim()),
+                new JwtTypeValidator("at+jwt")));
         return decoder;
     }
 

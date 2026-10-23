@@ -1,7 +1,6 @@
 package top.egon.cola.platform.tianquan.shoubing.starter.security.impl;
 
 import jakarta.annotation.PostConstruct;
-import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -13,7 +12,6 @@ import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -123,7 +121,7 @@ public class RedisOAuthRevocationReader implements OAuthRevocationReader {
             future = redisson.getScript(StringCodec.INSTANCE).evalAsync(
                     RScript.Mode.READ_ONLY,
                     READ_SECURITY_SNAPSHOT_SCRIPT,
-                    RScript.ReturnType.MULTI,
+                    RScript.ReturnType.LIST,
                     keys,
                     arguments.toArray());
             List<Object> values = future.get(
@@ -197,17 +195,11 @@ public class RedisOAuthRevocationReader implements OAuthRevocationReader {
         if (!config.isSingleConfig()) {
             throw new IllegalStateException("OAuth revocation requires a fenced single PRIMARY client");
         }
-        URI configured;
-        try {
-            JsonNode single = objectMapper.readTree(config.toJSON()).path("singleServerConfig");
-            String address = single.path("address").asText(null);
-            if (address == null || address.isBlank()) {
-                throw new IllegalStateException("OAuth revocation PRIMARY address is not configured");
-            }
-            configured = URI.create(address);
-        } catch (IOException malformed) {
-            throw new IllegalStateException("OAuth revocation Redisson config cannot be inspected", malformed);
+        String address = config.useSingleServer().getAddress();
+        if (address == null || address.isBlank()) {
+            throw new IllegalStateException("OAuth revocation PRIMARY address is not configured");
         }
+        URI configured = URI.create(address);
         if (!sameEndpoint(expected, configured)) {
             throw new IllegalStateException("OAuth revocation Redis client does not match primary-endpoint");
         }

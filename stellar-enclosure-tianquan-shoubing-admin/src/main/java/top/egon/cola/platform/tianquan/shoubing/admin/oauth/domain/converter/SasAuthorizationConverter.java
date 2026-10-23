@@ -355,8 +355,14 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
                             ? Set.copyOf(authorizedScopes) : Set.copyOf(token.getMetadata().getClaims().getScope()));
             case REFRESH -> new OAuth2RefreshToken(token.getTokenValue(), token.getIssuedAt(), token.getExpiresAt());
             case CONSENT_STATE -> throw new IllegalArgumentException("OAUTH_CONSENT_STATE_IS_NOT_ISSUED_TOKEN");
-            case ID -> new OidcIdToken(token.getTokenValue(), token.getIssuedAt(), token.getExpiresAt(),
-                    claimsMap(token.getMetadata().getClaims(), objectMapper));
+            case ID -> {
+                Map<String, Object> claims = new HashMap<>(claimsMap(token.getMetadata().getClaims(), objectMapper));
+                // Spring Security 7 expects Date when reusing OIDC auth_time during refresh.
+                if (claims.get("auth_time") instanceof java.time.Instant authTime) {
+                    claims.put("auth_time", java.util.Date.from(authTime));
+                }
+                yield new OidcIdToken(token.getTokenValue(), token.getIssuedAt(), token.getExpiresAt(), claims);
+            }
         };
         builder.token(sasToken, metadata -> {
             metadata.put(OAuth2Authorization.Token.INVALIDATED_METADATA_NAME,

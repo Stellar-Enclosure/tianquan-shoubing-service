@@ -24,11 +24,11 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.redisson.api.AutoClaimResult;
+import org.redisson.api.stream.AutoClaimResult;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RStream;
 import org.redisson.api.RedissonClient;
-import org.redisson.api.StreamMessageId;
+import org.redisson.api.stream.StreamMessageId;
 import org.redisson.api.stream.StreamAddArgs;
 import org.redisson.api.stream.StreamCreateGroupArgs;
 import org.redisson.api.stream.StreamReadGroupArgs;
@@ -214,7 +214,7 @@ class OAuthAuditConsumerTest {
         var ordered = org.mockito.Mockito.inOrder(audits, script, stream);
         ordered.verify(audits).save(eq(PLATFORM), any(OAuthAuditBO.class), eq(0L));
         ordered.verify(script).eval(eq(org.redisson.api.RScript.Mode.READ_WRITE), anyString(),
-                eq(org.redisson.api.RScript.ReturnType.INTEGER), eq(java.util.List.of(STREAM + ":receipt:usage-1")),
+                eq(org.redisson.api.RScript.ReturnType.LONG), eq(java.util.List.of(STREAM + ":receipt:usage-1")),
                 eq("receipt-json"), eq(3600000L), eq("usage-1"), eq("a".repeat(64)));
         ordered.verify(stream).ack("oauth-audit-persist-v1", id);
         verify(durableAudit, never()).acknowledge(anyString());

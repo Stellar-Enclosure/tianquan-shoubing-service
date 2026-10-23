@@ -8,7 +8,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.autoconfigure.web.reactive.function.client.WebClientAutoConfiguration;
+import org.springframework.boot.webclient.autoconfigure.WebClientAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -55,7 +55,7 @@ public class ServiceTokenWebClientConfiguration {
                 return Mono.error(new IdpServiceTokenRequestException(
                         "a typed SERVICE token request attribute is required"));
             }
-            if (request.headers().containsKey(HttpHeaders.AUTHORIZATION)) {
+            if (request.headers().containsHeader(HttpHeaders.AUTHORIZATION)) {
                 return Mono.error(new IdpServiceTokenRequestException(
                         "caller-supplied Authorization is not allowed"));
             }

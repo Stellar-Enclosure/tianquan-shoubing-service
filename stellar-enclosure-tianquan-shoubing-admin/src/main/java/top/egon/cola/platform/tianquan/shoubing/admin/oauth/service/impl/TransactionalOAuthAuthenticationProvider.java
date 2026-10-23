@@ -47,6 +47,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.Te
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.command.ConsumeOAuthTokenCommand;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.OAuthTokenIssueService;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.TenantIssuerService;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthTokenTypeEnum;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent;
@@ -103,24 +104,36 @@ public final class TransactionalOAuthAuthenticationProvider implements Authentic
         return delegate.supports(authentication);
     }
 
+    /** Applies the existing reauthentication policy before Security 7's authenticated endpoint gate. */
+    public static void prepareAuthorizationRequest(OAuth2AuthorizationCodeRequestAuthenticationToken request,
+            TrustedRealmBO realm, Clock clock) {
+        Authentication principal = (Authentication) request.getPrincipal();
+        boolean freshRequired = freshAuthenticationRequired(request, principal, clock);
+        String prompt = text(request.getAdditionalParameters().get("prompt"));
+        boolean promptNone = prompt != null && List.of(prompt.split(" ", -1)).contains("none");
+        boolean authenticated = principal.isAuthenticated() && !(principal instanceof AnonymousAuthenticationToken);
+        ServletRequestAttributes servlet = RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes value
+                ? value : null;
+        if (request.getScopes().contains("openid") && promptNone
+                && (!authenticated || freshRequired && !reauthenticationProven(principal, realm, clock, servlet))) {
+            throw new OAuth2AuthorizationCodeRequestAuthenticationException(
+                    new OAuth2Error("login_required", "Request rejected", null), request);
+        }
+        if (freshRequired && !reauthenticationProven(principal, realm, clock, servlet)) {
+            SecurityContextHolder.setContext(SecurityContextHolder.createEmptyContext());
+        }
+    }
+
     public static GrantTransaction authorizationRequest(Clock clock) {
         Objects.requireNonNull(clock, "clock");
         return (authentication, delegate, realm, service) -> {
             OAuth2AuthorizationCodeRequestAuthenticationToken request =
                     (OAuth2AuthorizationCodeRequestAuthenticationToken) authentication;
             Authentication principal = (Authentication) request.getPrincipal();
-            Long maxAge = maximumAuthenticationAge(request);
-            String prompt = text(request.getAdditionalParameters().get("prompt"));
-            boolean freshRequired = request.getScopes().contains("openid") && principal.isAuthenticated()
-                    && !(principal instanceof AnonymousAuthenticationToken)
-                    && (prompt != null && List.of(prompt.split(" ", -1)).contains("login")
-                        || maxAge != null && authenticationTooOld(principal, maxAge, clock.instant()));
+            boolean freshRequired = freshAuthenticationRequired(request, principal, clock);
             ServletRequestAttributes servlet = RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes value
                     ? value : null;
-            boolean provenRequest = freshRequired && servlet != null && principal.getDetails() instanceof Map<?, ?> details
-                    && details.get("reauthenticationExpiresAt") instanceof Instant expiresAt && expiresAt.isAfter(clock.instant())
-                    && TenantLoginAuthenticationFilter.authorizationRequestDigest(realm.getIssuer(), servlet.getRequest().getParameterMap())
-                            .equals(details.get("reauthenticatedRequest"));
+            boolean provenRequest = freshRequired && reauthenticationProven(principal, realm, clock, servlet);
             if (freshRequired && !provenRequest) {
                 Authentication anonymous = new AnonymousAuthenticationToken("oauthReauthentication", "anonymousUser",
                         AuthorityUtils.createAuthorityList("ROLE_ANONYMOUS"));
@@ -146,6 +159,24 @@ public final class TransactionalOAuthAuthenticationProvider implements Authentic
             }
             return result;
         };
+    }
+
+    private static boolean freshAuthenticationRequired(OAuth2AuthorizationCodeRequestAuthenticationToken request,
+            Authentication principal, Clock clock) {
+        Long maxAge = maximumAuthenticationAge(request);
+        String prompt = text(request.getAdditionalParameters().get("prompt"));
+        return request.getScopes().contains("openid") && principal.isAuthenticated()
+                && !(principal instanceof AnonymousAuthenticationToken)
+                && (prompt != null && List.of(prompt.split(" ", -1)).contains("login")
+                    || maxAge != null && authenticationTooOld(principal, maxAge, clock.instant()));
+    }
+
+    private static boolean reauthenticationProven(Authentication principal, TrustedRealmBO realm, Clock clock,
+            ServletRequestAttributes servlet) {
+        return servlet != null && principal.getDetails() instanceof Map<?, ?> details
+                && details.get("reauthenticationExpiresAt") instanceof Instant expiresAt && expiresAt.isAfter(clock.instant())
+                && TenantLoginAuthenticationFilter.authorizationRequestDigest(realm.getIssuer(), servlet.getRequest().getParameterMap())
+                        .equals(details.get("reauthenticatedRequest"));
     }
 
     private static Long maximumAuthenticationAge(OAuth2AuthorizationCodeRequestAuthenticationToken request) {

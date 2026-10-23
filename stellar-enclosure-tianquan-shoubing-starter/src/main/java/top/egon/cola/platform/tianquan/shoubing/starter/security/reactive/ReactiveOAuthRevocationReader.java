@@ -49,7 +49,7 @@ public final class ReactiveOAuthRevocationReader {
                 .<List<Object>>eval(
                         RScript.Mode.READ_ONLY,
                         RedisOAuthRevocationReader.READ_SECURITY_SNAPSHOT_SCRIPT,
-                        RScript.ReturnType.MULTI,
+                        RScript.ReturnType.LIST,
                         keys,
                         arguments.toArray())
                 .timeout(properties.getRevocation().getTimeout())

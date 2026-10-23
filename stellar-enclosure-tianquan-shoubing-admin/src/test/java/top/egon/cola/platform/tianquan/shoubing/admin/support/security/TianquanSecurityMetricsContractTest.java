@@ -37,7 +37,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.redisson.api.RStream;
 import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
-import org.redisson.api.StreamMessageId;
+import org.redisson.api.stream.StreamMessageId;
 import org.redisson.api.stream.StreamAddArgs;
 import org.redisson.client.codec.StringCodec;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -593,8 +593,8 @@ class TianquanSecurityMetricsContractTest {
             try {
                 Files.writeString(temporary.resolve("spool/dead.evt.dead"), "retained-dead-marker");
                 assertThat(ready.getAsBoolean()).isFalse();
-                assertThat(context.getBean("tianquanAuditReadiness", org.springframework.boot.actuate.health.HealthIndicator.class)
-                        .health().getStatus()).isEqualTo(org.springframework.boot.actuate.health.Status.DOWN);
+                assertThat(context.getBean("tianquanAuditReadiness", org.springframework.boot.health.contributor.HealthIndicator.class)
+                        .health().getStatus()).isEqualTo(org.springframework.boot.health.contributor.Status.DOWN);
                 Files.delete(temporary.resolve("spool/dead.evt.dead"));
                 Files.writeString(temporary.resolve("spool/pending.evt"), "unconfirmed-local-handoff");
                 assertThat(ready.getAsBoolean()).isFalse();

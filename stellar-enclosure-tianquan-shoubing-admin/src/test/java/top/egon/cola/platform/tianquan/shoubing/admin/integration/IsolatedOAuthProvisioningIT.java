@@ -32,7 +32,7 @@ import org.mockito.Mockito;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
-import org.springframework.boot.autoconfigure.validation.ValidationAutoConfiguration;
+import org.springframework.boot.validation.autoconfigure.ValidationAutoConfiguration;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -2617,7 +2617,7 @@ public class IsolatedOAuthProvisioningIT {
         var redis = org.mockito.Mockito.mock(org.redisson.api.RedissonClient.class);
         @SuppressWarnings("unchecked") org.redisson.api.RStream<String, String> stream = org.mockito.Mockito.mock(org.redisson.api.RStream.class);
         org.mockito.Mockito.doReturn(stream).when(redis).getStream(org.mockito.ArgumentMatchers.eq(audit.stream()), org.mockito.ArgumentMatchers.eq(org.redisson.client.codec.StringCodec.INSTANCE));
-        org.mockito.Mockito.when(stream.add(org.mockito.ArgumentMatchers.any(org.redisson.api.stream.StreamAddArgs.class))).thenReturn(new org.redisson.api.StreamMessageId(1, 1));
+        org.mockito.Mockito.when(stream.add(org.mockito.ArgumentMatchers.any(org.redisson.api.stream.StreamAddArgs.class))).thenReturn(new org.redisson.api.stream.StreamMessageId(1, 1));
         try (var validators = Validation.buildDefaultValidatorFactory()) {
             var readiness = new top.egon.cola.platform.tianquan.shoubing.starter.observability.IdpSecurityObservationReadinessComponent(audit, validators.getValidator());
             try (var lease = readiness.acquireSpoolLease()) {
@@ -3808,7 +3808,7 @@ public class IsolatedOAuthProvisioningIT {
                 || eventId == null || !eventId.matches("[A-Za-z0-9._~-]{1,64}")) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
         guard.run();
         var rows = redis.<String, String>getStream(stream, org.redisson.client.codec.StringCodec.INSTANCE)
-                .range(4097, org.redisson.api.StreamMessageId.MIN, org.redisson.api.StreamMessageId.MAX);
+                .range(4097, org.redisson.api.stream.StreamMessageId.MIN, org.redisson.api.stream.StreamMessageId.MAX);
         if (rows == null || rows.size() > 4096) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
         Map<String, String> selected = null;
         for (var fields : rows.values()) {
@@ -4334,15 +4334,15 @@ public class IsolatedOAuthProvisioningIT {
         assertThat(guards.get()).isZero(); Mockito.verifyNoInteractions(redis);
         Mockito.when(redis.getStream(key, org.redisson.client.codec.StringCodec.INSTANCE)).thenReturn(stream);
         var original = Map.of("eventId", "owned-event", "result", "SUCCESS");
-        var messages = new java.util.LinkedHashMap<org.redisson.api.StreamMessageId, Map<String, String>>();
-        messages.put(new org.redisson.api.StreamMessageId(1, 0), original); messages.put(new org.redisson.api.StreamMessageId(2, 0), original);
-        Mockito.when(stream.range(4097, org.redisson.api.StreamMessageId.MIN, org.redisson.api.StreamMessageId.MAX)).thenReturn(messages);
+        var messages = new java.util.LinkedHashMap<org.redisson.api.stream.StreamMessageId, Map<String, String>>();
+        messages.put(new org.redisson.api.stream.StreamMessageId(1, 0), original); messages.put(new org.redisson.api.stream.StreamMessageId(2, 0), original);
+        Mockito.when(stream.range(4097, org.redisson.api.stream.StreamMessageId.MIN, org.redisson.api.stream.StreamMessageId.MAX)).thenReturn(messages);
         assertThat(confirmedAuditStreamFields(redis, key, "owned-event", guards::incrementAndGet)).isEqualTo(original);
         assertThat(guards.get()).isEqualTo(2);
-        messages.put(new org.redisson.api.StreamMessageId(2, 0), Map.of("eventId", "owned-event", "result", "DENIED"));
+        messages.put(new org.redisson.api.stream.StreamMessageId(2, 0), Map.of("eventId", "owned-event", "result", "DENIED"));
         assertThatThrownBy(() -> confirmedAuditStreamFields(redis, key, "owned-event", guards::incrementAndGet)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
         messages.clear();
-        for (int index = 0; index < 4097; index++) { messages.put(new org.redisson.api.StreamMessageId(index + 1, 0), original); }
+        for (int index = 0; index < 4097; index++) { messages.put(new org.redisson.api.stream.StreamMessageId(index + 1, 0), original); }
         assertThatThrownBy(() -> confirmedAuditStreamFields(redis, key, "owned-event", guards::incrementAndGet)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
         messages.clear();
         assertThatThrownBy(() -> confirmedAuditStreamFields(redis, key, "owned-event", guards::incrementAndGet)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
@@ -4371,7 +4371,7 @@ public class IsolatedOAuthProvisioningIT {
             // Use the original writer's signature through the actual publish path, without Redis transport.
             var redis = Mockito.mock(org.redisson.api.RedissonClient.class); var stream = Mockito.mock(org.redisson.api.RStream.class);
             Mockito.when(redis.getStream("task:audit", org.redisson.client.codec.StringCodec.INSTANCE)).thenReturn(stream);
-            Mockito.when(stream.add(Mockito.any(org.redisson.api.stream.StreamAddArgs.class))).thenReturn(new org.redisson.api.StreamMessageId(1, 0));
+            Mockito.when(stream.add(Mockito.any(org.redisson.api.stream.StreamAddArgs.class))).thenReturn(new org.redisson.api.stream.StreamMessageId(1, 0));
             var writer = new top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent(redis, strictMapper(),
                     new top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties("task:audit", root.resolve("writer-spool"), 1048576, key),
                     new top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties(), clock, validators.getValidator());
@@ -5975,8 +5975,8 @@ public class IsolatedOAuthProvisioningIT {
         environment.getPropertySources().remove(org.springframework.core.env.StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME);
         environment.getPropertySources().addFirst(new org.springframework.core.env.MapPropertySource("generatedRuntime", new java.util.LinkedHashMap<>(values)));
         var clients = org.springframework.boot.context.properties.bind.Binder.get(environment).bind("spring.security.oauth2.client",
-                org.springframework.boot.context.properties.bind.Bindable.of(org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties.class))
-                .orElseGet(org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties::new);
+                org.springframework.boot.context.properties.bind.Bindable.of(org.springframework.boot.security.oauth2.client.autoconfigure.OAuth2ClientProperties.class))
+                .orElseGet(org.springframework.boot.security.oauth2.client.autoconfigure.OAuth2ClientProperties::new);
         if (clients.getRegistration().isEmpty()) { throw new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"); }
         for (var entry : clients.getRegistration().entrySet()) {
             var matches = registry.getClients().stream().filter(client -> entry.getKey().equals(client.getRegistrationId())).toList();
@@ -6155,7 +6155,7 @@ public class IsolatedOAuthProvisioningIT {
         Map<?, ?> resources = (Map<?, ?>) properties.getPropertyValue("resources");
         if (!resources.keySet().equals(aliases)) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
         var configured = org.springframework.boot.context.properties.bind.Binder.get(environment).bind("spring.security.oauth2.client",
-                org.springframework.boot.context.properties.bind.Bindable.of(org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties.class))
+                org.springframework.boot.context.properties.bind.Bindable.of(org.springframework.boot.security.oauth2.client.autoconfigure.OAuth2ClientProperties.class))
                 .orElseThrow(() -> new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"));
         Set<String> selected = new HashSet<>(); Set<String> clientIds = new HashSet<>();
         Set<Object> resourceIds = new HashSet<>(); Set<Object> resourceUris = new HashSet<>();
@@ -7165,7 +7165,7 @@ public class IsolatedOAuthProvisioningIT {
         environment.getPropertySources().remove(org.springframework.core.env.StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME);
         environment.getPropertySources().addFirst(new org.springframework.core.env.PropertiesPropertySource("rendered-bff-fragment", properties));
         var bound = org.springframework.boot.context.properties.bind.Binder.get(environment).bind("spring.security.oauth2.client",
-                org.springframework.boot.context.properties.bind.Bindable.of(org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties.class))
+                org.springframework.boot.context.properties.bind.Bindable.of(org.springframework.boot.security.oauth2.client.autoconfigure.OAuth2ClientProperties.class))
                 .orElseThrow(() -> new IllegalStateException("XINGYUAN_INPUT_UNAVAILABLE"));
         assertThat(bound.getRegistration()).hasSize(10); assertThat(bound.getProvider()).hasSize(2);
         assertThat(bound.getRegistration().values().stream().map(value -> value.getClientId()).collect(java.util.stream.Collectors.toSet())).isEqualTo(clients);

@@ -35,10 +35,10 @@ public class TianquanSecurityObservationConfiguration {
 
     /** Contributes to the existing Actuator readiness group without replacing other indicators. */
     @Bean(name = "tianquanAuditReadiness")
-    org.springframework.boot.actuate.health.HealthIndicator tianquanAuditReadiness(
+    org.springframework.boot.health.contributor.HealthIndicator tianquanAuditReadiness(
             @Qualifier("tianquanSecurityAuditReady") java.util.function.BooleanSupplier ready) {
-        return () -> ready.getAsBoolean() ? org.springframework.boot.actuate.health.Health.up().build()
-                : org.springframework.boot.actuate.health.Health.down().withDetail("failedCheck", "oauthAudit").build();
+        return () -> ready.getAsBoolean() ? org.springframework.boot.health.contributor.Health.up().build()
+                : org.springframework.boot.health.contributor.Health.down().withDetail("failedCheck", "oauthAudit").build();
     }
 
     private void validateTransport(org.springframework.core.env.Environment environment, OAuthUsageObservationProperties usage) {
@@ -66,8 +66,8 @@ public class TianquanSecurityObservationConfiguration {
         if (!trustedFallback) { throw new IllegalStateException("OAUTH_OBSERVATION_FALLBACK_UNTRUSTED"); }
         secureEndpoint(environment.getProperty("egon.cola.platform.tianquan.jianshen.authorization.endpoint"), "https", local);
         secureEndpoint(environment.getProperty("egon.tianquan-shoubing.oauth.public-origin"), "https", local);
-        var clients = binder.bind("spring.security.oauth2.client", org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties.class)
-                .orElseGet(org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties::new);
+        var clients = binder.bind("spring.security.oauth2.client", org.springframework.boot.security.oauth2.client.autoconfigure.OAuth2ClientProperties.class)
+                .orElseGet(org.springframework.boot.security.oauth2.client.autoconfigure.OAuth2ClientProperties::new);
         for (var provider : clients.getProvider().values()) {
             if (provider.getIssuerUri() != null) { secureEndpoint(provider.getIssuerUri(), "https", false); }
             for (String endpoint : new String[] { provider.getTokenUri(), provider.getJwkSetUri(), provider.getAuthorizationUri(), provider.getUserInfoUri() }) {

@@ -26,7 +26,7 @@ import org.mockito.ArgumentCaptor;
 import org.redisson.api.RStream;
 import org.redisson.api.RScript;
 import org.redisson.api.RedissonClient;
-import org.redisson.api.StreamMessageId;
+import org.redisson.api.stream.StreamMessageId;
 import org.redisson.api.stream.StreamAddArgs;
 import org.redisson.client.codec.StringCodec;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -348,7 +348,7 @@ class OAuthOidcProtocolContractTest {
                     "2", "true", "4", "3", "true", "4");
         }).when(script).<List<Object>>eval(
                 eq(RScript.Mode.READ_ONLY), org.mockito.ArgumentMatchers.anyString(),
-                eq(RScript.ReturnType.MULTI), org.mockito.ArgumentMatchers.anyList());
+                eq(RScript.ReturnType.LIST), org.mockito.ArgumentMatchers.anyList());
         OAuthSecurityProjectionComponent projection = new OAuthSecurityProjectionComponent(
                 redisson, states, revocations, tokenRecords, authorizations, clients, realms, realmResolver,
                 revocationProperties,
@@ -370,7 +370,7 @@ class OAuthOidcProtocolContractTest {
                 "2", "true", "4", "3", "true", "4"))
                 .when(script).<List<Object>>eval(
                         eq(RScript.Mode.READ_ONLY), org.mockito.ArgumentMatchers.anyString(),
-                        eq(RScript.ReturnType.MULTI), org.mockito.ArgumentMatchers.anyList());
+                        eq(RScript.ReturnType.LIST), org.mockito.ArgumentMatchers.anyList());
         OAuth2AuthenticationException unavailable = assertThrows(OAuth2AuthenticationException.class,
                 () -> projection.snapshotForAuthorization(trustedRealm, 501L, "USER", "subject-1"));
         assertEquals("temporarily_unavailable", unavailable.getError().getErrorCode());

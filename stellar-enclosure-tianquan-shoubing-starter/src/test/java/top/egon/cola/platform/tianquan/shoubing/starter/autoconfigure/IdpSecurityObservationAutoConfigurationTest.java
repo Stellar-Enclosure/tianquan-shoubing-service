@@ -109,7 +109,7 @@ class IdpSecurityObservationAutoConfigurationTest {
     @Test
     void configuredObserverRejectsDeadPendingAndFullSpoolsAndRecoversWithTheSameReadinessOwner() {
         var producer = mock(TokenUsageAuditComponent.class);
-        org.mockito.Mockito.when(producer.appendStrict(org.mockito.ArgumentMatchers.any())).thenReturn(new org.redisson.api.StreamMessageId(1, 1));
+        org.mockito.Mockito.when(producer.appendStrict(org.mockito.ArgumentMatchers.any())).thenReturn(new org.redisson.api.stream.StreamMessageId(1, 1));
         var issuer = java.net.URI.create("https://idp.example/tenants/1001"); var resource = java.net.URI.create("https://api.example/orders");
         var now = java.time.Instant.now();
         var jwt = org.springframework.security.oauth2.jwt.Jwt.withTokenValue("controlled-completed-verification-fixture").header("alg", "RS256")

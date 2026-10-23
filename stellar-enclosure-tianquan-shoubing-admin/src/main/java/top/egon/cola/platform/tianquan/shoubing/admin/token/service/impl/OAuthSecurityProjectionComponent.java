@@ -321,7 +321,7 @@ public class OAuthSecurityProjectionComponent {
                 keys.add(prefix + "generation:subject:" + Digests.sha256Hex(identitySub));
             }
             values = redisson.getScript(StringCodec.INSTANCE).eval(
-                    RScript.Mode.READ_ONLY, SNAPSHOT_SCRIPT, RScript.ReturnType.MULTI, keys);
+                    RScript.Mode.READ_ONLY, SNAPSHOT_SCRIPT, RScript.ReturnType.LIST, keys);
         } catch (DataAccessException | RedisException failure) {
             log.warn("OAuth security snapshot dependency is unavailable; issuerHash={}", issuerHash);
             throw unavailable("OAUTH_SECURITY_SNAPSHOT_UNAVAILABLE");
@@ -492,7 +492,7 @@ public class OAuthSecurityProjectionComponent {
         Number result = redisson.getScript(StringCodec.INSTANCE).eval(
                 RScript.Mode.READ_WRITE,
                 APPLY_PROJECTION_SCRIPT,
-                RScript.ReturnType.INTEGER,
+                RScript.ReturnType.LONG,
                 List.of(readyKey, targetKey),
                 revocationProperties.getEpoch(),
                 projectionKind,
@@ -521,7 +521,7 @@ public class OAuthSecurityProjectionComponent {
         Number result = redisson.getScript(StringCodec.INSTANCE).eval(
                 RScript.Mode.READ_WRITE,
                 RECOVERY_WRITE_SCRIPT,
-                RScript.ReturnType.INTEGER,
+                RScript.ReturnType.LONG,
                 List.of(targetKey),
                 projectionKind,
                 targetType.getCode(),
@@ -539,7 +539,7 @@ public class OAuthSecurityProjectionComponent {
         Number result = redisson.getScript(StringCodec.INSTANCE).eval(
                 RScript.Mode.READ_WRITE,
                 BEGIN_RECOVERY_SCRIPT,
-                RScript.ReturnType.INTEGER,
+                RScript.ReturnType.LONG,
                 List.of(readyKey),
                 revocationProperties.getEpoch());
         if (result == null || result.longValue() != 1L) {
@@ -551,7 +551,7 @@ public class OAuthSecurityProjectionComponent {
         Number result = redisson.getScript(StringCodec.INSTANCE).eval(
                 RScript.Mode.READ_WRITE,
                 COMPLETE_RECOVERY_SCRIPT,
-                RScript.ReturnType.INTEGER,
+                RScript.ReturnType.LONG,
                 List.of(readyKey),
                 revocationProperties.getEpoch(),
                 Long.toString(latestRevision));

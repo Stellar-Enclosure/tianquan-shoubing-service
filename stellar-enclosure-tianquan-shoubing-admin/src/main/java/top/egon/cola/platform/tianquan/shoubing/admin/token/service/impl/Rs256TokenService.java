@@ -16,6 +16,8 @@ import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
+import org.springframework.security.oauth2.jwt.JwtTypeValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import top.egon.cola.platform.tianquan.shoubing.core.port.TokenSigner;
@@ -96,7 +98,8 @@ public final class Rs256TokenService implements TokenSigner {
                         ))
                 .build();
         jwtDecoder.setJwtValidator(
-                JwtValidators.createDefaultWithIssuer(this.issuer)
+                JwtValidators.createDefaultWithValidators(
+                        new JwtIssuerValidator(this.issuer), new JwtTypeValidator("at+jwt"))
         );
         this.accessDecoder = jwtDecoder;
         NimbusJwtDecoder internalDecoder = NimbusJwtDecoder

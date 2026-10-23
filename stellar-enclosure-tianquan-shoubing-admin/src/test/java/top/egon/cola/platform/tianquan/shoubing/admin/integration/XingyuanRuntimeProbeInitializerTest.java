@@ -144,13 +144,13 @@ class XingyuanRuntimeProbeInitializerTest {
         String hash = XingyuanRuntimeProbeInitializer.hashFile(original.manifestFile());
         var inputs = new XingyuanRuntimeProbeInitializer.ProbeInputsVO(original.root(), original.manifestFile(), hash, original.runId(), "yuheng",
                 original.fixture(), original.fixtureSha256(), original.artifact(), original.artifactSha256(), original.namespace(), null, original.registryFile(), original.registrySha256());
-        var client = org.mockito.Mockito.mock(org.redisson.Redisson.class); var manager = org.mockito.Mockito.mock(org.redisson.connection.ConnectionManager.class);
+        var client = org.mockito.Mockito.mock(org.redisson.Redisson.class);
         var service = org.mockito.Mockito.mock(org.redisson.connection.ServiceManager.class); var loops = org.mockito.Mockito.mock(io.netty.channel.EventLoopGroup.class);
         var bucket = org.mockito.Mockito.mock(org.redisson.api.RBucket.class); var config = new org.redisson.config.Config();
         config.useSingleServer().setAddress("redis://127.0.0.1:6379").setDatabase(15);
         var runtime = new org.redisson.config.MasterSlaveServersConfig().setMasterAddress("redis://127.0.0.1:6379").setDatabase(15);
-        org.mockito.Mockito.when(client.getConfig()).thenReturn(config); org.mockito.Mockito.when(client.getConnectionManager()).thenReturn(manager);
-        org.mockito.Mockito.when(manager.getServiceManager()).thenReturn(service); org.mockito.Mockito.when(service.getConfig()).thenReturn(runtime);
+        org.mockito.Mockito.when(client.getConfig()).thenReturn(config); org.mockito.Mockito.when(client.getServiceManager()).thenReturn(service);
+        org.mockito.Mockito.when(service.getConfig()).thenReturn(runtime);
         org.mockito.Mockito.when(service.getGroup()).thenReturn(loops);
         org.mockito.Mockito.when(client.getBucket("xingyuan-it:owner", org.redisson.client.codec.StringCodec.INSTANCE)).thenReturn(bucket);
         org.mockito.Mockito.when(bucket.get()).thenReturn("xingyuan-it:" + inputs.runId() + ':' + hash);

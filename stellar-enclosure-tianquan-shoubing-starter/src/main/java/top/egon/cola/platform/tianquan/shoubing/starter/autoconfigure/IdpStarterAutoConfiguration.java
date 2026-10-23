@@ -5,6 +5,7 @@ import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -17,7 +18,7 @@ import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.bind.BindHandler;
 import org.springframework.boot.context.properties.bind.handler.NoUnboundElementsBindHandler;
-import org.springframework.boot.autoconfigure.security.oauth2.client.servlet.OAuth2ClientAutoConfiguration;
+import org.springframework.boot.security.oauth2.client.autoconfigure.OAuth2ClientAutoConfiguration;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
@@ -37,6 +38,8 @@ import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
+import org.springframework.security.oauth2.jwt.JwtTypeValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpClientCredentialsRequestEntityConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
@@ -97,6 +100,16 @@ import java.util.List;
         name = "enabled",
         havingValue = "true")
 public class IdpStarterAutoConfiguration {
+
+    /** Retains the SDK mapper qualifier with Boot 4's Jackson 2 compatibility module. */
+    @Bean
+    public static BeanFactoryPostProcessor idpJacksonObjectMapperAlias() {
+        return beanFactory -> {
+            if (beanFactory.containsBean("jackson2ObjectMapper") && !beanFactory.containsBean("jacksonObjectMapper")) {
+                beanFactory.registerAlias("jackson2ObjectMapper", "jacksonObjectMapper");
+            }
+        };
+    }
 
     @Configuration(proxyBeanMethods = false)
     @ComponentScan(basePackageClasses = VerifiedPrincipalConverter.class)
@@ -700,8 +713,9 @@ public class IdpStarterAutoConfiguration {
                 .validateType(false)
                 .build();
         List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
-        validators.add(JwtValidators.createDefaultWithIssuer(
-                properties.getIssuer().trim()));
+        validators.add(JwtValidators.createDefaultWithValidators(
+                new JwtIssuerValidator(properties.getIssuer().trim()),
+                new JwtTypeValidator("at+jwt")));
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(validators));
         return decoder;
     }

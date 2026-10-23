@@ -14,12 +14,12 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.redisson.api.AutoClaimResult;
+import org.redisson.api.stream.AutoClaimResult;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RScript;
 import org.redisson.api.RStream;
 import org.redisson.api.RedissonClient;
-import org.redisson.api.StreamMessageId;
+import org.redisson.api.stream.StreamMessageId;
 import org.redisson.api.stream.StreamAddArgs;
 import org.redisson.api.stream.StreamCreateGroupArgs;
 import org.redisson.api.stream.StreamReadGroupArgs;
@@ -168,7 +168,7 @@ public class OAuthAuditConsumer {
                 end
                 redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
                 return 1
-                """, RScript.ReturnType.INTEGER,
+                """, RScript.ReturnType.LONG,
                 java.util.List.of(properties.stream() + ":receipt:" + receipt.getEventId()),
                 encoded, delivery.getReceiptTtl().toMillis(), receipt.getEventId(), receipt.getEventFingerprint());
         if (!Long.valueOf(1).equals(confirmed)) {

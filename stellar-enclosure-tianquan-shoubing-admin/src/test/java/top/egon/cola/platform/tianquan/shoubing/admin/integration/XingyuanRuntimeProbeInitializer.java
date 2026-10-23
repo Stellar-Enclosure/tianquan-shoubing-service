@@ -612,7 +612,7 @@ public final class XingyuanRuntimeProbeInitializer implements ApplicationContext
         var database = manifest.path("redis").path("database"); var config = actual.getConfig();
         if (!database.isInt() || database.intValue() < 1 || database.intValue() > 15
                 || !"redis://127.0.0.1:6379".equals(manifest.path("redis").path("endpoint").asText()) || !config.isSingleConfig() || config.getEventLoopGroup() != null) { throw rejected(); }
-        var manager = actual.getConnectionManager().getServiceManager(); var configured = manager.getConfig();
+        var manager = actual.getServiceManager(); var configured = manager.getConfig();
         if (configured.getDatabase() != database.intValue() || !"redis://127.0.0.1:6379".equals(configured.getMasterAddress())) { throw rejected(); }
         String marker = client.<String>getBucket("xingyuan-it:owner", org.redisson.client.codec.StringCodec.INSTANCE).get();
         if (!("xingyuan-it:" + inputs.runId() + ':' + inputs.manifestSha256()).equals(marker)) { throw rejected(); }

@@ -138,7 +138,7 @@ class OAuthSecurityProjectionComponentTest {
         @SuppressWarnings("rawtypes")
         ArgumentCaptor<List> keysCaptor = ArgumentCaptor.forClass(List.class);
         ArgumentCaptor<Object[]> argumentsCaptor = ArgumentCaptor.forClass(Object[].class);
-        verify(script).eval(eq(RScript.Mode.READ_WRITE), anyString(), eq(RScript.ReturnType.INTEGER),
+        verify(script).eval(eq(RScript.Mode.READ_WRITE), anyString(), eq(RScript.ReturnType.LONG),
                 keysCaptor.capture(), argumentsCaptor.capture());
         String readyKey = (String) keysCaptor.getValue().get(0);
         String generationKey = (String) keysCaptor.getValue().get(1);
@@ -180,7 +180,7 @@ class OAuthSecurityProjectionComponentTest {
                 .thenReturn(Optional.of(clientState));
         org.mockito.Mockito.doReturn(List.of("recovery-epoch-7", "17", "READY",
                 "1", "1", "7", "2", "1", "16"))
-                .when(script).eval(eq(RScript.Mode.READ_ONLY), anyString(), eq(RScript.ReturnType.MULTI), anyList());
+                .when(script).eval(eq(RScript.Mode.READ_ONLY), anyString(), eq(RScript.ReturnType.LIST), anyList());
 
         var snapshot = component.snapshotForAuthorization(REALM, 501L, "SERVICE", null);
 
@@ -193,7 +193,7 @@ class OAuthSecurityProjectionComponentTest {
                 List.of("recovery-epoch-7", "17", "READY", "1", "1", "7", "2", "1", "15"),
                 List.of("recovery-epoch-7", "16", "READY", "1", "1", "7", "2", "1", "16"))) {
             org.mockito.Mockito.doReturn(stale).when(script).eval(eq(RScript.Mode.READ_ONLY),
-                    anyString(), eq(RScript.ReturnType.MULTI), anyList());
+                    anyString(), eq(RScript.ReturnType.LIST), anyList());
             assertThatThrownBy(() -> component.snapshotForAuthorization(REALM, 501L, "SERVICE", null))
                     .isInstanceOf(OAuth2AuthenticationException.class);
         }
@@ -224,12 +224,12 @@ class OAuthSecurityProjectionComponentTest {
                     subjectState.set(saved);
                     return saved;
                 });
-        when(script.eval(eq(RScript.Mode.READ_WRITE), anyString(), eq(RScript.ReturnType.INTEGER),
+        when(script.eval(eq(RScript.Mode.READ_WRITE), anyString(), eq(RScript.ReturnType.LONG),
                 anyList(), any(Object[].class))).thenReturn(2L);
         org.mockito.Mockito.doReturn(List.of("recovery-epoch-7", "7", "READY",
                 "1", "true", "7", "2", "true", "7", "0", "true", "7"))
                 .when(script).<List<Object>>eval(eq(RScript.Mode.READ_ONLY), anyString(),
-                        eq(RScript.ReturnType.MULTI), anyList());
+                        eq(RScript.ReturnType.LIST), anyList());
 
         var snapshot = component.snapshotForAuthorization(REALM, 501L, "USER", "subject-1");
 

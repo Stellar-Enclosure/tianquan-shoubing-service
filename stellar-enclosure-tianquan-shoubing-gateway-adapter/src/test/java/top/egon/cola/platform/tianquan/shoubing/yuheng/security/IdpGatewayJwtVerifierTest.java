@@ -138,7 +138,7 @@ class IdpGatewayJwtVerifierTest {
         java.util.List<Map<String, String>> events = new java.util.ArrayList<>();
         when(stream.add(any(org.redisson.api.stream.StreamAddArgs.class))).thenAnswer(call -> {
             org.redisson.api.stream.StreamAddParams<String, String> fields = call.getArgument(0);
-            events.add(Map.copyOf(fields.getEntries())); return new org.redisson.api.StreamMessageId(events.size(), 1);
+            events.add(Map.copyOf(fields.getEntries())); return new org.redisson.api.stream.StreamMessageId(events.size(), 1);
         });
         var keyFile = temporary.resolve("audit.key"); java.nio.file.Files.writeString(keyFile, "0123456789abcdef0123456789abcdef");
         java.nio.file.Files.setPosixFilePermissions(keyFile, Set.of(java.nio.file.attribute.PosixFilePermission.OWNER_READ,

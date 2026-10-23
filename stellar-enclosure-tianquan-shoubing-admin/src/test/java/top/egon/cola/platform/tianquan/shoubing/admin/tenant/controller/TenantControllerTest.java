@@ -53,7 +53,8 @@ class TenantControllerTest {
                         authorization,
                         objectMapper
                 )
-        ).setCustomArgumentResolvers(
+        ).setMessageConverters(new org.springframework.http.converter.json.MappingJackson2HttpMessageConverter())
+                .setCustomArgumentResolvers(
                 new AuthenticationPrincipalArgumentResolver()
         ).build();
     }

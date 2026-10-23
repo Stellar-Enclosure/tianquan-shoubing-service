@@ -56,6 +56,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.JwtValidationException;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.JwtTypeValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.oauth2.server.authorization.OAuth2Authorization;
@@ -74,7 +76,7 @@ import org.springframework.security.oauth2.server.authorization.authentication.O
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2TokenRevocationAuthenticationProvider;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
-import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
+import org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer;
 import org.springframework.security.oauth2.server.authorization.context.AuthorizationServerContext;
 import org.springframework.security.oauth2.server.authorization.context.AuthorizationServerContextHolder;
 import org.springframework.security.oauth2.server.authorization.oidc.authentication.OidcUserInfoAuthenticationProvider;
@@ -210,7 +212,8 @@ public class AuthorizationServerConfiguration {
             @Override public java.util.Set<JWSAlgorithm> supportedJWSAlgorithms() { return verifierFactory.supportedJWSAlgorithms(); }
             @Override public com.nimbusds.jose.jca.JCAContext getJCAContext() { return verifierFactory.getJCAContext(); }
         });
-        JwtDecoder delegate = new NimbusJwtDecoder(processor);
+        NimbusJwtDecoder delegate = new NimbusJwtDecoder(processor);
+        delegate.setJwtValidator(JwtValidators.createDefaultWithValidators(new JwtTypeValidator("at+jwt")));
         return token -> {
             Jwt jwt;
             try {
@@ -290,7 +293,22 @@ public class AuthorizationServerConfiguration {
         AuthenticationFailureHandler userInfoErrors = userInfoFailureHandler(objectMapper, producer, converter, usage,
                 receiver == null ? null : receiver.getResourceUri(), clock, validator);
         OAuth2AuthorizationServerConfigurer authorizationServer =
-                OAuth2AuthorizationServerConfigurer.authorizationServer();
+                new OAuth2AuthorizationServerConfigurer();
+        authorizationServer.addObjectPostProcessor(new ObjectPostProcessor<AuthenticationProvider>() {
+            @Override
+            @SuppressWarnings("unchecked")
+            public <O extends AuthenticationProvider> O postProcess(O provider) {
+                if (!(provider instanceof OAuth2AuthorizationCodeRequestAuthenticationProvider)) { return provider; }
+                OAuthTokenIssueService service = tokenIssueServices.getIfAvailable();
+                PlatformTransactionManager manager = transactionManagers.getIfAvailable();
+                if (service == null || manager == null) {
+                    throw new IllegalStateException("OAUTH_AUTHORIZATION_TRANSACTION_REQUIRED");
+                }
+                // The configurer discovers validators from its original provider list before using this decorator.
+                return (O) new TransactionalOAuthAuthenticationProvider(provider, new TransactionTemplate(manager),
+                        service, tenantIssuerService, TransactionalOAuthAuthenticationProvider.authorizationRequest(clock));
+            }
+        });
         RequestMatcher endpoints = authorizationServer.getEndpointsMatcher();
         RequestMatcher loginRequests = request -> request.getRequestURI().substring(
                 request.getContextPath() == null ? 0 : request.getContextPath().length())
@@ -460,22 +478,30 @@ public class AuthorizationServerConfiguration {
             TransactionalOAuthAuthenticationProvider.GrantTransaction strategy = null;
             if (provider instanceof OAuth2AuthorizationCodeRequestAuthenticationProvider codeProvider) {
                 codeProvider.setAuthenticationValidator(context -> {
-                    standardValidator.accept(context);
                     OAuth2AuthorizationCodeRequestAuthenticationToken request = context.getAuthentication();
                     try {
-                        requireS256Challenge(text(request.getAdditionalParameters().get("code_challenge_method")),
-                                text(request.getAdditionalParameters().get("code_challenge")));
-                        requireAuthorizationTransaction(request, context.getRegisteredClient(),
-                                issuers.resolveCurrentIssuer(), clientRepositories.getObject());
+                        transaction.executeWithoutResult(status -> {
+                            standardValidator.accept(context);
+                            requireS256Challenge(text(request.getAdditionalParameters().get("code_challenge_method")),
+                                    text(request.getAdditionalParameters().get("code_challenge")));
+                            TrustedRealmBO realm = issuers.resolveCurrentIssuer();
+                            requireAuthorizationTransaction(request, context.getRegisteredClient(), realm, clientRepositories.getObject());
+                            TransactionalOAuthAuthenticationProvider.prepareAuthorizationRequest(request, realm, clock);
+                        });
+                    } catch (OAuth2AuthorizationCodeRequestAuthenticationException rejected) {
+                        throw rejected;
                     } catch (OAuth2AuthenticationException rejected) {
-                        throw new OAuth2AuthorizationCodeRequestAuthenticationException(rejected.getError(), request);
+                        throw new OAuth2AuthorizationCodeRequestAuthenticationException(rejected.getError(), rejected, request);
+                    } catch (DataAccessException | RedisException unavailable) {
+                        throw new OAuth2AuthorizationCodeRequestAuthenticationException(
+                                new OAuth2Error("temporarily_unavailable", "Request temporarily unavailable", null), unavailable, request);
                     }
                 });
                 strategy = TransactionalOAuthAuthenticationProvider.authorizationRequest(clock);
             } else if (provider instanceof OAuth2AuthorizationConsentAuthenticationProvider) {
                 strategy = TransactionalOAuthAuthenticationProvider.authorizationConsent(authorizations);
             }
-            if (strategy != null) {
+            if (strategy != null && !(provider instanceof OAuth2AuthorizationCodeRequestAuthenticationProvider)) {
                 providers.set(index, new TransactionalOAuthAuthenticationProvider(provider, transaction,
                         issueService, issuers, strategy));
             }
