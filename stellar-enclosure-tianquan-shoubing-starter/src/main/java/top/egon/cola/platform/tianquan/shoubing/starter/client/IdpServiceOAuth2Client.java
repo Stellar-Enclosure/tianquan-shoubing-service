@@ -241,6 +241,11 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         }
     }
 
+    /** Returns only the validated, non-secret registration identity used to bind authority receipts. */
+    public ServiceAuthorizationKey authorizationKey(IdpServiceTokenRequest request) {
+        return key(request);
+    }
+
     private ServiceAuthorizationKey key(IdpServiceTokenRequest request) {
         if (request == null) {
             throw new IdpServiceAuthorizationException("request_invalid", null);

@@ -44,12 +44,9 @@ public interface OAuthRevocationMapper extends EgonColaMapper<OAuthRevocationPO>
             @Size(max = 128, groups = EgonColaModelValidationGroups.Query.class) String targetKey);
 
     @Validated(EgonColaModelValidationGroups.Query.class)
-    List<OAuthRevocationPO> selectByProjectionStatus(
+    List<OAuthRevocationPO> selectByRevisionAfter(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
             @Positive(groups = EgonColaModelValidationGroups.Query.class) Long tenantId,
-            @Param("projectionStatus") @NotBlank(groups = EgonColaModelValidationGroups.Query.class)
-            @Pattern(regexp = "PENDING|APPLIED", groups = EgonColaModelValidationGroups.Query.class)
-            String projectionStatus,
             @Param("afterRevision") @PositiveOrZero(groups = EgonColaModelValidationGroups.Query.class)
             Long afterRevision,
             @Param("afterId") @PositiveOrZero(groups = EgonColaModelValidationGroups.Query.class) Long afterId,

@@ -30,6 +30,8 @@ public interface OAuthClientViewConverter extends BaseForwardConverter<OAuthClie
     @Mapping(target = "purpose", expression = "java(source.getPurpose().name())")
     @Mapping(target = "status", expression = "java(source.getStatus().name())")
     @Mapping(target = "pkceRequired", expression = "java(source.getPurpose() == top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.OAuthClientPurposeEnum.USER)")
+    @Mapping(target = "browserBound", source = "browserBound")
+    @Mapping(target = "postLogoutRedirectUris", source = "postLogoutRedirectUris")
     @Mapping(target = "accessTokenTtlSeconds", source = "accessTtlSeconds")
     @Mapping(target = "refreshTokenTtlSeconds", source = "refreshTtlSeconds")
     @Mapping(target = "redirectUris", source = "redirectUris")

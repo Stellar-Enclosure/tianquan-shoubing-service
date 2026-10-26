@@ -63,7 +63,7 @@ import static org.mockito.Mockito.verify;
 class OAuthResourcePersistenceContractTest {
 
     private static final String ADMIN_PREFIX =
-            "stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+            ""
                     + "stellar-enclosure-tianquan-shoubing-admin/src/main/";
     private static final long PLATFORM_PARTITION_ID = 9_001L;
     private static final long TENANT_PARTITION_ID = 1_001L;
@@ -634,7 +634,7 @@ class OAuthResourcePersistenceContractTest {
         Path cursor = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
         while (cursor != null) {
             if (Files.isRegularFile(cursor.resolve("pom.xml"))
-                    && Files.isDirectory(cursor.resolve("stellar-enclosure-platform"))) {
+                    && Files.isDirectory(cursor.resolve("stellar-enclosure-tianquan-shoubing-admin"))) {
                 return cursor;
             }
             cursor = cursor.getParent();

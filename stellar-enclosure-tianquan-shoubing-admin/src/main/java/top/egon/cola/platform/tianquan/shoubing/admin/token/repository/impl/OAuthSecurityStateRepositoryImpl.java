@@ -53,6 +53,16 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
 
     @Override
     @Transactional(readOnly = true)
+    public List<OAuthSecurityStateBO> findSnapshot(TrustedRealmBO realm, Long clientPk, String subject) {
+        if (clientPk == null || clientPk <= 0L || subject != null && (subject.isBlank() || subject.length() > 128)) {
+            throw new IllegalArgumentException("OAUTH_SECURITY_SNAPSHOT_INPUT_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.selectSnapshot(tenant, clientPk.toString(), subject)
+                .stream().map(converter::toTarget).toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<OAuthSecurityStateBO> findByTarget(
             TrustedRealmBO trustedRealm,
             OAuthSecurityTargetEnum targetType,

@@ -30,6 +30,8 @@ public interface OAuthTokenConverter extends BaseConverter<OAuthTokenPO, OAuthTo
 
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "refreshGeneration", source = "refreshGeneration")
+    @Mapping(target = "retainUntil", source = "retainUntil")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "authorizationPk", source = "authorizationPk")
     @Mapping(target = "tokenType", source = "tokenType")
@@ -50,6 +52,8 @@ public interface OAuthTokenConverter extends BaseConverter<OAuthTokenPO, OAuthTo
 
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "refreshGeneration", source = "refreshGeneration")
+    @Mapping(target = "retainUntil", source = "retainUntil")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "authorizationPk", source = "authorizationPk")
     @Mapping(target = "tokenType", source = "tokenType")

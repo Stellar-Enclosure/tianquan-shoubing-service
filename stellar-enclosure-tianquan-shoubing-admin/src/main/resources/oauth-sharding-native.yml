@@ -17,6 +17,11 @@ rules:
       - oauth_primary.tianquan_oauth.oauth_revocation
       - oauth_primary.tianquan_oauth.oauth_audit
       - oauth_primary.tianquan_oauth.oauth_resource
+      - oauth_primary.tianquan_oauth.oauth_authentication
+      - oauth_primary.tianquan_oauth.oauth_interaction
+      - oauth_primary.tianquan_oauth.oauth_audit_inbox
+      - oauth_primary.tianquan_oauth.oauth_audit_receipt
+      - oauth_primary.tianquan_oauth.oauth_audit_dead_letter
       - oauth_primary.public.identity_user
       - oauth_primary.public.identity_user_credential
       - oauth_primary.public.identity_tenant

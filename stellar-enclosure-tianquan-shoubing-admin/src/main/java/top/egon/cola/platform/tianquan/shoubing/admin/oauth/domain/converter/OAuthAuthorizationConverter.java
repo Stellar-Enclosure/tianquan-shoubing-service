@@ -35,6 +35,13 @@ public interface OAuthAuthorizationConverter extends BaseConverter<OAuthAuthoriz
 
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "requestedScopes", source = "requestedScopes")
+    @Mapping(target = "resourceUri", source = "resourceUri")
+    @Mapping(target = "authenticationJtiDigest", source = "authenticationJtiDigest")
+    @Mapping(target = "clientBrowserBindingDigest", source = "clientBrowserBindingDigest")
+    @Mapping(target = "interactionId", source = "interactionId")
+    @Mapping(target = "refreshGeneration", source = "refreshGeneration")
+    @Mapping(target = "retainUntil", source = "retainUntil")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "clientPk", source = "clientPk")
     @Mapping(target = "principalName", source = "principalName")
@@ -58,6 +65,13 @@ public interface OAuthAuthorizationConverter extends BaseConverter<OAuthAuthoriz
 
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "requestedScopes", source = "requestedScopes")
+    @Mapping(target = "resourceUri", source = "resourceUri")
+    @Mapping(target = "authenticationJtiDigest", source = "authenticationJtiDigest")
+    @Mapping(target = "clientBrowserBindingDigest", source = "clientBrowserBindingDigest")
+    @Mapping(target = "interactionId", source = "interactionId")
+    @Mapping(target = "refreshGeneration", source = "refreshGeneration")
+    @Mapping(target = "retainUntil", source = "retainUntil")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "clientPk", source = "clientPk")
     @Mapping(target = "principalName", source = "principalName")
@@ -127,6 +141,10 @@ public interface OAuthAuthorizationConverter extends BaseConverter<OAuthAuthoriz
 
     abstract class AuthorizationStorageMixin {
         @JsonIgnore(false)
+        @JsonProperty("authenticationJti")
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        abstract String getAuthenticationJti();
+        @JsonIgnore(false)
         @JsonProperty("pendingConsent")
         @JsonInclude(JsonInclude.Include.NON_NULL)
         abstract OAuthPendingConsentBO getPendingConsent();
@@ -140,8 +158,8 @@ public interface OAuthAuthorizationConverter extends BaseConverter<OAuthAuthoriz
         @JsonProperty("consentState")
         abstract String getConsentState();
         @JsonIgnore(false)
-        @JsonProperty("sessionBindingDigest")
-        abstract String getSessionBindingDigest();
+        @JsonProperty("browserBindingDigest")
+        abstract String getBrowserBindingDigest();
     }
 
 }

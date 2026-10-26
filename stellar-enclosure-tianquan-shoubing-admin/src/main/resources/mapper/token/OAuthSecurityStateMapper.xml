@@ -31,6 +31,16 @@
           AND deleted_at IS NULL
     </select>
 
+    <select id="selectSnapshot" resultMap="OAuthSecurityStatePOResultMap">
+        SELECT <include refid="Columns"/>
+        FROM tianquan_oauth.oauth_security_state
+        WHERE tenant_id = #{tenantId} AND deleted_at IS NULL
+          AND ((target_type = 'REALM' AND target_key = 'self')
+            OR (target_type = 'CLIENT' AND target_key = #{clientKey})
+            OR (target_type = 'SUBJECT' AND target_key = #{subject}))
+        ORDER BY target_type, target_key
+    </select>
+
     <select id="selectByTargetForUpdate" resultMap="OAuthSecurityStatePOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_security_state

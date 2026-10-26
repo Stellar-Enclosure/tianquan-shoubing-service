@@ -49,7 +49,7 @@ public class OAuthPendingConsentBO {
     @EqualsAndHashCode.Exclude
     @NotBlank
     @Pattern(regexp = "[0-9a-f]{64}")
-    private String sessionBindingDigest;
+    private String browserBindingDigest;
 
     @NotNull
     private Instant issuedAt;

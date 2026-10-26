@@ -1,5 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.audit.controller;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.RequiresPermissions;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -46,6 +51,9 @@ public class IdentityAuditController {
         );
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.identityAudit.list", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.identityAudit.list")
+    @RequiresPermissions(codes = IdentityPermissionCodes.AUDIT_READ)
     @GetMapping
     @Operation(
             operationId = "tianquan-shoubing-identity-audit-list-v1",

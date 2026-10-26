@@ -29,9 +29,8 @@ public interface OAuthRevocationRepository {
             @NotNull OAuthSecurityTargetEnum targetType,
             @NotBlank @Size(max = 128) String targetKey);
 
-    List<OAuthRevocationBO> findByProjectionStatus(
+    List<OAuthRevocationBO> findByRevisionAfter(
             @NotNull @Valid TrustedRealmBO trustedRealm,
-            @NotBlank @Size(max = 16) String projectionStatus,
             @PositiveOrZero long afterRevision,
             @PositiveOrZero long afterId,
             @Min(1) @Max(500) int limit);

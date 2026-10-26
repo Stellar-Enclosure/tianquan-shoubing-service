@@ -193,6 +193,7 @@ public final class IdpBearerAuthenticationFilter extends OncePerRequestFilter {
             IdpPrincipal principal;
             boolean userToken;
             Set<String> verifiedScopes;
+            java.net.URI verifiedIssuer = null;
             top.egon.cola.platform.tianquan.shoubing.starter.security.domain.TokenAuditProofBO proof = null;
             if (requirement
                     == IdpEndpointAuthenticationPolicy.Requirement.USER_OR_SERVICE) {
@@ -204,6 +205,7 @@ public final class IdpBearerAuthenticationFilter extends OncePerRequestFilter {
                                 == top.egon.cola.platform.tianquan.shoubing.contract.PrincipalType.USER;
                         verifiedScopes = valid.scopes();
                         proof = valid.proof();
+                        verifiedIssuer = valid.verifiedIssuer();
                     } else {
                         authenticationFailure(response, verification);
                         return;
@@ -215,6 +217,7 @@ public final class IdpBearerAuthenticationFilter extends OncePerRequestFilter {
                         userToken = true;
                         verifiedScopes = valid.scopes();
                         proof = valid.proof();
+                        verifiedIssuer = valid.verifiedIssuer();
                     } else if (principalTypeMismatch(verification)) {
                         var serviceVerification = serviceAccessTokenVerifier.verify(token);
                         if (serviceVerification instanceof AccessTokenVerification.Valid<?> valid) {
@@ -222,6 +225,7 @@ public final class IdpBearerAuthenticationFilter extends OncePerRequestFilter {
                             userToken = false;
                             verifiedScopes = valid.scopes();
                             proof = valid.proof();
+                        verifiedIssuer = valid.verifiedIssuer();
                         } else {
                             authenticationFailure(response, serviceVerification);
                             return;
@@ -239,6 +243,7 @@ public final class IdpBearerAuthenticationFilter extends OncePerRequestFilter {
                     userToken = true;
                     verifiedScopes = valid.scopes();
                     proof = valid.proof();
+                        verifiedIssuer = valid.verifiedIssuer();
                 } else {
                     authenticationFailure(response, verification);
                     return;
@@ -250,6 +255,7 @@ public final class IdpBearerAuthenticationFilter extends OncePerRequestFilter {
                     userToken = false;
                     verifiedScopes = valid.scopes();
                     proof = valid.proof();
+                        verifiedIssuer = valid.verifiedIssuer();
                 } else {
                     authenticationFailure(response, verification);
                     return;
@@ -258,7 +264,7 @@ public final class IdpBearerAuthenticationFilter extends OncePerRequestFilter {
             previousContext = SecurityContextHolder.getContext();
             restorePreviousContext = previousContext.getAuthentication() != null;
             var context = SecurityContextHolder.createEmptyContext();
-            var authentication = new IdpAuthenticationToken(principal, scopeAuthorities(verifiedScopes));
+            var authentication = new IdpAuthenticationToken(principal, scopeAuthorities(verifiedScopes), verifiedIssuer);
             authentication.setDetails(proof);
             context.setAuthentication(authentication);
             SecurityContextHolder.setContext(context);

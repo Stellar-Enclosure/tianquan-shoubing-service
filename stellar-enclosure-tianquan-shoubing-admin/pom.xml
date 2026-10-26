@@ -25,6 +25,11 @@
 
     <dependencies>
         <dependency>
+            <groupId>top.egon</groupId>
+            <artifactId>stellar-enclosure-tianquan-jianshen-contract</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-security-oauth2-client</artifactId>
         </dependency>
@@ -201,4 +206,133 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>permission-producer</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>default-compile</id>
+                                <configuration>
+                                    <annotationProcessorPaths combine.children="append">
+                                        <path>
+                                            <groupId>top.egon</groupId>
+                                            <artifactId>stellar-enclosure-tianquan-jianshen-processor</artifactId>
+                                            <version>${project.version}</version>
+                                        </path>
+                                    </annotationProcessorPaths>
+                                    <compilerArgs>
+                                        <arg>-Apac.business=xingyuan</arg>
+                                        <arg>-Apac.application=tianquan-shoubing</arg>
+                                        <arg>-Apac.producer=tianquan-shoubing-java</arg>
+                                        <arg>-Apac.module=${project.artifactId}</arg>
+                                        <arg>-Apac.expectedModules=stellar-enclosure-tianquan-shoubing-admin</arg>
+                                        <arg>-Apac.ownedKeyPrefixes=tianquan-shoubing.api.,tianquan-shoubing.field.,tianquan-shoubing.protocol.</arg>
+                                        <arg>-Apac.managedPackages=top.egon.cola.platform.tianquan.shoubing.admin.identity.controller,top.egon.cola.platform.tianquan.shoubing.admin.tenant.controller,top.egon.cola.platform.tianquan.shoubing.admin.resource.controller,top.egon.cola.platform.tianquan.shoubing.admin.token.controller,top.egon.cola.platform.tianquan.shoubing.admin.audit.controller</arg>
+                                        <arg>-Apac.repository=tianquan-shoubing-service</arg>
+                                        <arg>-Apac.commit=${permission.commit}</arg>
+                                        <arg>-Apac.buildId=${permission.buildId}</arg>
+                                        <arg>-Apac.version=${project.version}</arg>
+                                        <arg>-Apac.metadataOnlyTypes=top.egon.cola.platform.tianquan.shoubing.admin.permission.NativeProtocolPermissionMetadata</arg>
+                                    </compilerArgs>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <systemPropertyVariables>
+                                <permission.producer.enabled>true</permission.producer.enabled>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <dependencies>
+                            <dependency>
+                                <groupId>top.egon</groupId>
+                                <artifactId>stellar-enclosure-tianquan-jianshen-manifest-cli</artifactId>
+                                <version>${project.version}</version>
+                            </dependency>
+                        </dependencies>
+                        <executions>
+                            <execution>
+                                <id>aggregate-permission-manifest</id>
+                                <phase>prepare-package</phase>
+                                <goals><goal>java</goal></goals>
+                                <configuration>
+                                    <mainClass>top.egon.cola.platform.tianquan.jianshen.manifestcli.PermissionManifestBuildCli</mainClass>
+                                    <includePluginDependencies>true</includePluginDependencies>
+                                    <includeProjectDependencies>false</includeProjectDependencies>
+                                    <addOutputToClasspath>false</addOutputToClasspath>
+                                    <addResourcesToClasspath>false</addResourcesToClasspath>
+                                    <executableDependency>
+                                        <groupId>top.egon</groupId>
+                                        <artifactId>stellar-enclosure-tianquan-jianshen-manifest-cli</artifactId>
+                                    </executableDependency>
+                                    <arguments>
+                                        <argument>--module</argument>
+                                        <argument>${project.build.outputDirectory}</argument>
+                                        <argument>--output</argument>
+                                        <argument>${project.build.outputDirectory}/META-INF/permissions/manifest-v1.json</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>verify-permission-artifact</id>
+                                <phase>verify</phase>
+                                <goals><goal>java</goal></goals>
+                                <configuration>
+                                    <mainClass>top.egon.cola.platform.tianquan.jianshen.manifestcli.PermissionManifestBuildCli</mainClass>
+                                    <includePluginDependencies>true</includePluginDependencies>
+                                    <includeProjectDependencies>false</includeProjectDependencies>
+                                    <addOutputToClasspath>false</addOutputToClasspath>
+                                    <addResourcesToClasspath>false</addResourcesToClasspath>
+                                    <executableDependency>
+                                        <groupId>top.egon</groupId>
+                                        <artifactId>stellar-enclosure-tianquan-jianshen-manifest-cli</artifactId>
+                                    </executableDependency>
+                                    <arguments>
+                                        <argument>--artifact</argument>
+                                        <argument>${project.build.directory}/${project.build.finalName}-exec.jar</argument>
+                                        <argument>--output</argument>
+                                        <argument>${project.build.directory}/permissions/artifact-evidence.json</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>idp-stateless-postgresql-it</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

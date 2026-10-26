@@ -16,11 +16,13 @@
         <result property="authorities" column="authorities" typeHandler="top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler"/>
         <result property="grantedAt" column="granted_at"/>
         <result property="status" column="status"/>
+        <result property="resourceUri" column="resource_uri"/>
     </resultMap>
 
     <sql id="Columns">
         id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
-        client_pk, subject, authorities, granted_at, status
+        client_pk, subject, authorities, granted_at, status,
+        resource_uri
     </sql>
 
     <select id="selectConsent" resultMap="OAuthConsentPOResultMap">

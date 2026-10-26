@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="top.egon.cola.platform.tianquan.shoubing.admin.audit.dao.OAuthAuditDeadLetterMapper">
+    <resultMap id="OAuthAuditDeadLetterPOResultMap" type="top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.po.OAuthAuditDeadLetterPO">
+        <id property="id" column="id"/>
+        <result property="tenantId" column="tenant_id"/>
+        <result property="version" column="version"/>
+        <result property="createTime" column="create_time"/>
+        <result property="createUserId" column="create_user_id"/>
+        <result property="updateTime" column="update_time"/>
+        <result property="updateUserId" column="update_user_id"/>
+        <result property="deletedAt" column="deleted_at"/>
+        <result property="inboxPk" column="inbox_pk"/>
+        <result property="eventId" column="event_id"/>
+        <result property="eventFingerprint" column="event_fingerprint"/>
+        <result property="failureCode" column="failure_code"/>
+        <result property="attemptCount" column="attempt_count"/>
+        <result property="firstReceivedAt" column="first_received_at"/>
+        <result property="terminalAt" column="terminal_at"/>
+        <result property="retainUntil" column="retain_until"/>
+    </resultMap>
+
+    <sql id="Columns">
+        id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
+        inbox_pk, event_id, event_fingerprint, failure_code, attempt_count, first_received_at, terminal_at, retain_until
+    </sql>
+
+    <select id="selectByKey" resultMap="OAuthAuditDeadLetterPOResultMap">
+        SELECT <include refid="Columns"/> FROM tianquan_oauth.oauth_audit_dead_letter
+        WHERE tenant_id = #{tenantId} AND inbox_pk = #{key} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByKeyForUpdate" resultMap="OAuthAuditDeadLetterPOResultMap">
+        SELECT <include refid="Columns"/> FROM tianquan_oauth.oauth_audit_dead_letter
+        WHERE tenant_id = #{tenantId} AND inbox_pk = #{key} AND deleted_at IS NULL
+        FOR UPDATE
+    </select>
+
+    <select id="selectRetainedBefore" resultMap="OAuthAuditDeadLetterPOResultMap">
+        SELECT <include refid="Columns"/> FROM tianquan_oauth.oauth_audit_dead_letter
+        WHERE tenant_id = #{tenantId} AND retain_until &lt;= #{now}
+          AND id &gt; #{afterId} AND deleted_at IS NULL ORDER BY id LIMIT #{limit}
+    </select>
+
+    <update id="updateExpectedVersion">
+        UPDATE tianquan_oauth.oauth_audit_dead_letter
+        SET version = #{po.version}, update_user_id = #{po.updateUserId}, update_time = #{po.updateTime}
+        WHERE tenant_id = #{tenantId} AND id = #{po.id} AND inbox_pk = #{po.inboxPk}
+          AND version = #{expectedVersion} AND deleted_at IS NULL
+    </update>
+    <update id="deleteRetained">
+        UPDATE tianquan_oauth.oauth_audit_dead_letter t
+        SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,
+            update_time = #{now}, update_user_id = #{actor}
+        WHERE tenant_id = #{tenantId} AND id = #{id} AND version = #{expectedVersion}
+          AND deleted_at IS NULL AND retain_until &lt;= #{now}
+
+    </update>
+</mapper>

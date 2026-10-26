@@ -53,7 +53,7 @@ public class OAuthAuthorizationBO {
     @Size(max = 64)
     private List<@NotBlank @Size(max = 2048) String> audiences;
     @NotBlank
-    @Pattern(regexp = "ACTIVE|REVOKED|EXPIRED")
+    @Pattern(regexp = "PENDING_CONSENT|ACTIVE|REVOKED|EXPIRED|CANCELLED")
     private String status;
     private Instant authTime;
     @Size(max = 64)
@@ -72,4 +72,28 @@ public class OAuthAuthorizationBO {
     @NotNull
     private Instant absoluteExpiresAt;
     private Instant revokedAt;
+
+    @lombok.Builder.Default
+    private List<String> requestedScopes = java.util.List.of();
+
+    private String resourceUri;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
+    @lombok.EqualsAndHashCode.Exclude
+    private String authenticationJtiDigest;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
+    @lombok.EqualsAndHashCode.Exclude
+    private String clientBrowserBindingDigest;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
+    @lombok.EqualsAndHashCode.Exclude
+    private String interactionId;
+
+    private long refreshGeneration;
+
+    private Instant retainUntil;
 }

@@ -113,7 +113,7 @@ public class IdpObservedVerificationComponent {
             return new AccessTokenVerification.Unavailable<>("OAUTH_AUDIT_DELIVERY_UNAVAILABLE");
         }
         if (result instanceof AccessTokenVerification.Valid<P> valid) {
-            return new AccessTokenVerification.Valid<>(valid.principal(), valid.scopes(), proof);
+            return new AccessTokenVerification.Valid<>(valid.principal(), valid.scopes(), proof, valid.verifiedIssuer());
         }
         return result;
     }
@@ -135,8 +135,8 @@ public class IdpObservedVerificationComponent {
         return handoff(new ValidationUtils(validator).validate(proof), "DENIED", "AUTHORIZATION_DENIED", proof.resource(), trace);
     }
 
-    // Serialize the readiness check with its handoff so an in-flight frame is not treated as undelivered backlog.
-    private synchronized boolean handoff(TokenAuditProofBO proof, String result, String reason, URI observedResource, String trace) {
+    // Each handoff completes with its own SQL receipt; no process-wide lock or local delivery state is needed.
+    private boolean handoff(TokenAuditProofBO proof, String result, String reason, URI observedResource, String trace) {
         try {
             if (!auditReady.getAsBoolean()) { return false; }
             if (trace != null && !trace.matches("[A-Za-z0-9._~-]{1,128}")) { trace = null; }

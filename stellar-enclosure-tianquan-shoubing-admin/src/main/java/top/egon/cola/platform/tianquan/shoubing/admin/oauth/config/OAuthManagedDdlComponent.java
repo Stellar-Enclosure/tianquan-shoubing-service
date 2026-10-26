@@ -42,6 +42,8 @@ public class OAuthManagedDdlComponent {
     private final EgonColaShardingProperties shardingProperties;
     @Qualifier("outboxStateMachineObjectMapper")
     private final ObjectMapper objectMapper;
+    @Qualifier("oauthStateSchemaValidator")
+    private final OAuthStateSchemaValidator stateSchemaValidator;
 
     public void initialize(Map<String, DataSource> physicalDataSources, byte[] nativeRules) {
         if (physicalDataSources == null || physicalDataSources.size() != 1
@@ -62,6 +64,7 @@ public class OAuthManagedDdlComponent {
                 primary.name(), SCHEMA, EgonColaDdlTargetBO.RoleEnum.MASTER_DATA,
                 scopedDataSource, manifest, topology.fingerprint());
         List<EgonColaDdlResult> results = ddlRunner.run(List.of(target));
+        stateSchemaValidator.validate(scopedDataSource);
         log.info("OAuth managed DDL ready: schema={} scripts={} routeFingerprint={}",
                 SCHEMA, results.size(), topology.fingerprint());
     }

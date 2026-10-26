@@ -162,4 +162,11 @@ public class OAuthClientPO extends EgonModel<OAuthClientPO> {
             EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})
     private Integer refreshTtlSeconds;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "browser_bound", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private boolean browserBound;
+
+    @lombok.Builder.Default
+    @com.baomidou.mybatisplus.annotation.TableField(value = "post_logout_redirect_uris", typeHandler = top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler.class)
+    private List<String> postLogoutRedirectUris = java.util.List.of();
 }

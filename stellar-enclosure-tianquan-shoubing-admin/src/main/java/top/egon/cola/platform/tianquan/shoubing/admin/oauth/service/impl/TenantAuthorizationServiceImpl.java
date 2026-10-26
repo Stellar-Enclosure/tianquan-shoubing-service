@@ -18,6 +18,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 import org.springframework.security.oauth2.server.authorization.OAuth2Authorization;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationCode;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
@@ -82,6 +83,8 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
     private final OAuthSecurityProjectionComponent securityProjection;
     @Qualifier("oauthTokenIssueService")
     private final OAuthTokenIssueService tokenIssueService;
+    @Qualifier("oauthBrowserInteractionComponent")
+    private final OAuthBrowserInteractionComponent interactions;
 
     @Override
     @Transactional
@@ -133,6 +136,9 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
             authorization = initialized.build();
         }
         OAuthAuthorizationBO value = authorizationConverter.toSource(authorization, current, objectMapper);
+        if ("USER".equals(principalType)) {
+            value.setStatus(value.getAttributes().getPendingConsent() == null ? "ACTIVE" : "PENDING_CONSENT");
+        }
         if (current != null && current.getAttributes().getPendingConsent() != null
                 && authorization.getAttribute("state") == null && authorization.getToken(OAuth2AuthorizationCode.class) != null) {
             if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes request)
@@ -146,6 +152,28 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
             }
             if (authorization.getAuthorizedScopes().contains("openid")) { selected.add("openid"); }
             value.setAuthorizedScopes(selected.stream().sorted().toList());
+        }
+        if (current == null) {
+            value.setRequestedScopes(authorization.getAttribute(OAuth2AuthorizationRequest.class.getName()) instanceof OAuth2AuthorizationRequest request
+                    ? request.getScopes().stream().sorted().toList() : value.getAuthorizedScopes());
+            if (value.getAudiences() == null || value.getAudiences().size() != 1) {
+                throw new IllegalArgumentException("OAUTH_AUTHORIZATION_RESOURCE_REQUIRED");
+            }
+            value.setResourceUri(value.getAudiences().getFirst());
+            value.setRetainUntil(value.getAbsoluteExpiresAt().plusSeconds(86_400));
+            if ("USER".equals(principalType)) {
+                if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes browser)
+                        || value.getAttributes().getAuthenticationJti() == null) {
+                    throw new IllegalArgumentException("OAUTH_AUTHENTICATION_PROOF_REQUIRED");
+                }
+                var interaction = interactions.require(browser.getRequest(), true);
+                value.setAuthenticationJtiDigest(Digests.sha256Hex(value.getAttributes().getAuthenticationJti()));
+                value.setInteractionId(interaction.getInteractionId());
+                value.setClientBrowserBindingDigest(interaction.getClientBrowserBindingDigest());
+                if (!Objects.equals(client.getId(), interaction.getClientPk()) || !value.getResourceUri().equals(interaction.getResourceUri())) {
+                    throw new IllegalArgumentException("OAUTH_AUTHORIZATION_INTERACTION_MISMATCH");
+                }
+            }
         }
         List<OAuthTokenBO> tokenSnapshot = value.getTokens() == null
                 ? List.of() : new ArrayList<>(value.getTokens());
@@ -184,11 +212,29 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
                 throw new IllegalArgumentException("OAUTH_TOKEN_EXCEEDS_FAMILY_LIFETIME");
             }
         }
+        var nextRefresh = tokenSnapshot.stream().filter(token -> token.getTokenType() == OAuthTokenTypeEnum.REFRESH).findFirst().orElse(null);
+        if (current != null && nextRefresh != null && tokenRepository.findByTokenDigest(trustedRealm,
+                Digests.sha256Hex(nextRefresh.getTokenValue())).isEmpty()
+                && !tokenRepository.findByAuthorization(trustedRealm, current.getId(), OAuthTokenTypeEnum.REFRESH, 0L, 1).isEmpty()) {
+            value.setRefreshGeneration(Math.addExact(current.getRefreshGeneration(), 1L));
+        }
+        for (OAuthTokenBO token : tokenSnapshot) {
+            token.setRetainUntil(value.getRetainUntil());
+            token.setRefreshGeneration(token.getTokenType() == OAuthTokenTypeEnum.REFRESH ? value.getRefreshGeneration() : null);
+        }
         requireSignedAuthorizationMatchesSnapshot(tokenSnapshot, value.getId(), currentSnapshot);
 
+        if ("USER".equals(principalType) && RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes nativeRequest
+                && nativeRequest.getRequest().getRequestURI().endsWith("/oauth2/authorize")) {
+            if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes browser)) {
+                throw new IllegalArgumentException("OAUTH_AUTHORIZATION_BROWSER_REQUIRED");
+            }
+            interactions.advanceAuthorization(browser.getRequest(), value.getPrincipalName(), value.getAuthenticationJtiDigest(),
+                    value.getAuthorizedScopes(), value.getAttributes().getPendingConsent() == null);
+        }
         OAuthAuthorizationBO saved = authorizationRepository.save(trustedRealm, value, expectedVersion);
-        saveTokenSnapshot(trustedRealm, saved.getId(), tokenSnapshot);
         invalidateTokensMissingFromSnapshot(trustedRealm, saved.getId(), tokenSnapshot);
+        saveTokenSnapshot(trustedRealm, saved.getId(), tokenSnapshot);
         if (AuthorizationGrantType.AUTHORIZATION_CODE.equals(authorization.getAuthorizationGrantType())
                 && (current == null || current.getAttributes().getPendingConsent() != null)
                 && tokenSnapshot.stream().anyMatch(token -> token.getTokenType() == OAuthTokenTypeEnum.CODE
@@ -224,6 +270,8 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
     public void remove(OAuth2Authorization source) {
         OAuth2Authorization authorization = Objects.requireNonNull(source, "authorization");
         TrustedRealmBO trustedRealm = tenantIssuerService.resolveCurrentIssuer();
+        realmRepository.findByRealmKeyForUpdate(trustedRealm)
+                .orElseThrow(() -> new IllegalStateException("OAUTH_AUTHORIZATION_REALM_NOT_FOUND"));
         Long id = parseOptionalPositiveId(authorization.getId());
         if (id == null) {
             return;
@@ -231,7 +279,14 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
         OAuthAuthorizationBO current = authorizationRepository.findByIdForUpdate(trustedRealm, id).orElse(null);
         if (current != null) {
             invalidateTokensMissingFromSnapshot(trustedRealm, id, List.of());
-            authorizationRepository.deleteVersionedById(trustedRealm, id, current.getVersion());
+            long version = current.getVersion();
+            boolean pending = current.getAttributes().getPendingConsent() != null;
+            current.setVersion(version + 1).setStatus(pending ? "CANCELLED" : "REVOKED")
+                    .setRevokedAt(pending ? null : clock.instant());
+            authorizationRepository.save(trustedRealm, current, version);
+            if (pending && RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes browser) {
+                interactions.cancelAuthorization(browser.getRequest());
+            }
         }
     }
 
@@ -266,6 +321,17 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
             return null;
         }
         TrustedRealmBO trustedRealm = tenantIssuerService.resolveCurrentIssuer();
+        if (tokenType != null && "state".equals(tokenType.getValue())) {
+            if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes browser)) { return null; }
+            var interaction = interactions.require(browser.getRequest(), false);
+            var pending = authorizationRepository.findByInteractionId(trustedRealm, interaction.getInteractionId()).orElse(null);
+            if (pending == null || !matchesPendingInteraction(pending, token)) { return null; }
+            securityProjection.requireCurrentSnapshot(trustedRealm, pending.getClientPk(), "USER", pending.getPrincipalName(),
+                    pending.getAttributes().getSecuritySnapshot());
+            pending.setTokens(loadCurrentTokens(trustedRealm, pending.getId()));
+            return authorizationConverter.toTarget(pending, clientConverter.toTarget(loadClient(trustedRealm,
+                    Long.toString(pending.getClientPk()))), objectMapper, trustedRealm.getIssuer());
+        }
         String digest = Digests.sha256Hex(token);
         OAuthTokenBO tokenRecord = tokenRepository.findByTokenDigest(trustedRealm, digest).orElse(null);
         if (!isCurrentToken(tokenRecord, token)) {
@@ -281,25 +347,6 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
                 .orElse(null);
         if (authorization == null) {
             return null;
-        }
-        if (tokenRecord.getTokenType() == OAuthTokenTypeEnum.CONSENT_STATE) {
-            if (TransactionSynchronizationManager.isActualTransactionActive()
-                    && !TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
-                realmRepository.findByRealmKeyForUpdate(trustedRealm)
-                        .orElseThrow(() -> new IllegalStateException("OAUTH_AUTHORIZATION_REALM_NOT_FOUND"));
-                OAuthClientBO client = loadClient(trustedRealm, Long.toString(authorization.getClientPk()));
-                clientRepository.findByClientIdForUpdate(trustedRealm, client.getClientId())
-                        .orElseThrow(() -> new IllegalStateException("OAUTH_AUTHORIZATION_CLIENT_NOT_FOUND"));
-                authorization = authorizationRepository.findByIdForUpdate(trustedRealm, authorization.getId())
-                        .filter(value -> "ACTIVE".equals(value.getStatus())).orElse(null);
-                tokenRecord = tokenRepository.findByTokenDigestForUpdate(trustedRealm, digest).orElse(null);
-                if (authorization == null || !isCurrentToken(tokenRecord, token)) {
-                    return null;
-                }
-            }
-            if (!matchesPendingSession(authorization, tokenRecord)) {
-                return null;
-            }
         }
         if (authorization.getAbsoluteExpiresAt() == null
                 || !authorization.getAbsoluteExpiresAt().isAfter(clock.instant())) {
@@ -433,7 +480,7 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
                     if (type == OAuthTokenTypeEnum.CODE) {
                         existing.getMetadata().setCodeConsumed(true);
                         existing.setConsumedAt(clock.instant());
-                    } else if (type == OAuthTokenTypeEnum.CONSENT_STATE) {
+                    } else if (type == OAuthTokenTypeEnum.REFRESH) {
                         existing.setConsumedAt(clock.instant());
                     } else {
                         existing.setRevokedAt(clock.instant());
@@ -456,20 +503,19 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
                 && !token.getMetadata().isCodeConsumed();
     }
 
-    private boolean matchesPendingSession(OAuthAuthorizationBO authorization, OAuthTokenBO state) {
-        OAuthPendingConsentBO pending = authorization.getAttributes() == null
-                ? null : authorization.getAttributes().getPendingConsent();
-        if (pending == null || !pending.getExpiresAt().isAfter(clock.instant())
-                || !sameToken(state.getTokenValue(), pending.getConsentState())
-                || !(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes request)
-                || request.getRequest().getSession(false) == null) {
-            return false;
-        }
+    private boolean matchesPendingInteraction(OAuthAuthorizationBO authorization, String state) {
+        OAuthPendingConsentBO pending = authorization.getAttributes() == null ? null : authorization.getAttributes().getPendingConsent();
+        if (pending == null || !pending.getExpiresAt().isAfter(clock.instant()) || !sameToken(state, pending.getConsentState())
+                || !(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes request)) { return false; }
+        var interaction = interactions.require(request.getRequest(), false);
         var principal = SecurityContextHolder.getContext().getAuthentication();
         return principal instanceof UsernamePasswordAuthenticationToken && principal.isAuthenticated()
                 && authorization.getPrincipalName().equals(principal.getName())
-                && sameToken(pending.getSessionBindingDigest(),
-                        Digests.sha256Hex(request.getRequest().getSession(false).getId()));
+                && principal.getDetails() instanceof Map<?, ?> details
+                && Objects.equals(authorization.getAuthenticationJtiDigest(), details.get(OAuthAuthenticationJwtService.AUTHENTICATION_DIGEST))
+                && sameToken(pending.getBrowserBindingDigest(), interaction.getBrowserBindingDigest())
+                && Objects.equals(authorization.getInteractionId(), interaction.getInteractionId())
+                && "CONSENT_REQUIRED".equals(interaction.getState());
     }
 
     private static OAuthTokenTypeEnum toTokenType(OAuth2TokenType tokenType) {

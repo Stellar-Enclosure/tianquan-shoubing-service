@@ -210,6 +210,28 @@ class OAuthTokenClientCredentialsTest {
     @Import({AuthorizationServerConfiguration.class, IdpSecurityConfig.class, LegacyOAuthRetirementFilter.class,
             org.springframework.boot.validation.autoconfigure.ValidationAutoConfiguration.class})
     static class SecurityConfiguration {
+        @Bean("oauthBrowserInteractionComponent")
+        top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent interactions() {
+            var value = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class);
+            when(value.loadDeferredToken(any(), any())).thenAnswer(i -> new org.springframework.security.web.csrf.DeferredCsrfToken() {
+                @Override public org.springframework.security.web.csrf.CsrfToken get() { return new org.springframework.security.web.csrf.DefaultCsrfToken("X-CSRF-TOKEN", "_csrf", "fixture-csrf"); }
+                @Override public boolean isGenerated() { return false; }
+            });
+            return value;
+        }
+        @Bean("oauthBrowserAuthenticationFilter")
+        top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthBrowserAuthenticationFilter browserFilter() throws Exception {
+            var filter = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthBrowserAuthenticationFilter.class);
+            org.mockito.Mockito.doAnswer(i -> { ((jakarta.servlet.FilterChain) i.getArgument(2)).doFilter(i.getArgument(0), i.getArgument(1)); return null; })
+                    .when(filter).doFilter(any(), any(), any()); return filter;
+        }
+        @Bean("tenantLoginAuthenticationFilter")
+        top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.TenantLoginAuthenticationFilter loginFilter() throws Exception {
+            var filter = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.TenantLoginAuthenticationFilter.class);
+            org.mockito.Mockito.doAnswer(i -> { ((jakarta.servlet.FilterChain) i.getArgument(2)).doFilter(i.getArgument(0), i.getArgument(1)); return null; })
+                    .when(filter).doFilter(any(), any(), any()); return filter;
+        }
+
 
         @Bean("idpClock")
         java.time.Clock idpClock() {

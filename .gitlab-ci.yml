@@ -8,6 +8,8 @@ workflow:
 
 stages:
   - test
+  - permission-validate
+  - permission-delivery
 
 default:
   image: eclipse-temurin:25-jdk-jammy
@@ -51,7 +53,8 @@ build-and-unit-tests:
           --workspace "$workspace" --local-repository "$MAVEN_REPO_LOCAL"
       fi
       cd "$workspace/tianquan-shoubing-service"
-      ./mvnw -B -ntp "-Dmaven.repo.local=$MAVEN_REPO_LOCAL" -DskipTests=false -DskipITs -Dinvoker.skip=true -Darchetype.test.skip=true test
+      ./mvnw -B -ntp "-Dmaven.repo.local=$MAVEN_REPO_LOCAL" -Ppermission-producer -DskipTests=false -DskipITs -Dinvoker.skip=true -Darchetype.test.skip=true \
+        -Dpermission.commit="$CI_COMMIT_SHA" -Dpermission.buildId="gitlab-${CI_PIPELINE_ID}-${CI_JOB_ID}" clean verify
   artifacts:
     when: always
     expire_in: 7 days
@@ -59,3 +62,91 @@ build-and-unit-tests:
       junit: .ci/workspace/tianquan-shoubing-service/**/target/surefire-reports/TEST-*.xml
     paths:
       - .ci/workspace/tianquan-shoubing-service/**/target/surefire-reports/
+      - .ci/workspace/tianquan-shoubing-service/*/target/permissions/
+      - .ci/workspace/tianquan-shoubing-service/*/target/*-exec.jar
+
+.permission-node:
+  image: node:24-bookworm-slim
+  timeout: 20 minutes
+  variables:
+    PERMISSION_SDK_ROOT: "$CI_PROJECT_DIR/.ci/permission-tools"
+    PERMISSION_BUILD_ROOT: "$CI_PROJECT_DIR/.ci/workspace/tianquan-shoubing-service"
+    PERMISSION_OUTPUT_ROOT: "$CI_PROJECT_DIR/.ci/permission-results"
+    PERMISSION_CONTRACT_ARTIFACT_FILE: "$CI_PROJECT_DIR/.ci/permission-contract.jar"
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends ca-certificates curl git python3 unzip
+    - |
+      set -eu
+      sdk_commit=$(python3 scripts/permission-ci.py pin)
+      mkdir -p "$PERMISSION_SDK_ROOT"
+      git init --quiet "$PERMISSION_SDK_ROOT"
+      sdk_url="${PERMISSION_SDK_REPOSITORY_URL:-$CI_SERVER_URL/$CI_PROJECT_NAMESPACE/web-sdk.git}"
+      git -C "$PERMISSION_SDK_ROOT" remote add origin "$sdk_url"
+      git -C "$PERMISSION_SDK_ROOT" -c 'credential.helper=!f() { printf "username=gitlab-ci-token\npassword=%s\n" "$CI_JOB_TOKEN"; }; f' \
+        fetch --quiet --depth 1 origin "$sdk_commit"
+      git -C "$PERMISSION_SDK_ROOT" checkout --quiet --detach FETCH_HEAD
+      (cd "$PERMISSION_SDK_ROOT" && npm ci)
+      python3 - <<'PY'
+      import os, urllib.parse
+      url = urllib.parse.urlsplit(os.environ.get('PERMISSION_CONTRACT_ARTIFACT_URL', ''))
+      if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+          raise SystemExit('A non-secret HTTPS contract artifact URL is required')
+      PY
+      curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+        --max-filesize 67108864 "$PERMISSION_CONTRACT_ARTIFACT_URL" --output "$PERMISSION_CONTRACT_ARTIFACT_FILE"
+      python3 scripts/permission-ci.py prepare
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - .ci/permission-results/
+
+permission-offline-validation:
+  extends: .permission-node
+  stage: permission-validate
+  needs:
+    - job: build-and-unit-tests
+      artifacts: true
+  script:
+    - python3 scripts/permission-ci.py validate
+
+permission-register:
+  extends: .permission-node
+  stage: permission-delivery
+  interruptible: false
+  resource_group: permission-$PERMISSION_TARGET
+  environment:
+    name: permission-register
+  needs:
+    - job: build-and-unit-tests
+      artifacts: true
+    - job: permission-offline-validation
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $PERMISSION_DELIVERY_ENABLED == "true" && $CI_PIPELINE_SOURCE != "merge_request_event"'
+      when: manual
+    - when: never
+  script:
+    # PERMISSION_CLIENT_SECRET_FILE is an owner-only protected file variable, never an argv credential.
+    - python3 scripts/permission-ci.py register
+
+permission-activate:
+  extends: .permission-node
+  stage: permission-delivery
+  interruptible: false
+  resource_group: permission-$PERMISSION_TARGET
+  environment:
+    name: permission-activate
+  needs:
+    - job: build-and-unit-tests
+      artifacts: true
+    - job: permission-offline-validation
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $PERMISSION_DELIVERY_ENABLED == "true" && $CI_PIPELINE_SOURCE != "merge_request_event"'
+      when: manual
+    - when: never
+  script:
+    # A protected deployment job supplies PERMISSION_DEPLOYMENT_EVIDENCE_FILE only after actual deployment/readiness/qualification.
+    - python3 scripts/permission-ci.py activate

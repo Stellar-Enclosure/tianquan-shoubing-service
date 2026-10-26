@@ -89,4 +89,10 @@ public class OAuthTokenPO extends EgonModel<OAuthTokenPO> {
             EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})
     private String metadataCiphertext;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "refresh_generation", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private Long refreshGeneration;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "retain_until", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private Instant retainUntil;
 }

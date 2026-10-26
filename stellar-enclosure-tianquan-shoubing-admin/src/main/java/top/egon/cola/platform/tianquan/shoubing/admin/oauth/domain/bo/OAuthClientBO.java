@@ -77,4 +77,9 @@ public class OAuthClientBO {
     private Integer refreshTtlSeconds;
     private Instant createdAt;
     private Instant updatedAt;
+
+    private boolean browserBound;
+
+    @lombok.Builder.Default
+    private List<String> postLogoutRedirectUris = java.util.List.of();
 }

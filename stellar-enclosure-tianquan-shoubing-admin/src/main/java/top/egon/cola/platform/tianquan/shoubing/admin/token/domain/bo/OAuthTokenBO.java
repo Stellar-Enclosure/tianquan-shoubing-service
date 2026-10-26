@@ -58,4 +58,8 @@ public class OAuthTokenBO {
     @NotNull
     @Valid
     private OAuthTokenMetadataBO metadata;
+
+    private Long refreshGeneration;
+
+    private Instant retainUntil;
 }

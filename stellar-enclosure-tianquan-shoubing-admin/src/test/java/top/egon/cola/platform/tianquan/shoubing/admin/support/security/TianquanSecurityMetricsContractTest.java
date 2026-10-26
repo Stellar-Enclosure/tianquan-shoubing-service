@@ -8,6 +8,12 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClient;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClientResolver;
+import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuditReceipt;
+import top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditFingerprint;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.JOSEObjectType;
@@ -23,7 +29,6 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -34,12 +39,6 @@ import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.redisson.api.RStream;
-import org.redisson.api.RBucket;
-import org.redisson.api.RedissonClient;
-import org.redisson.api.stream.StreamMessageId;
-import org.redisson.api.stream.StreamAddArgs;
-import org.redisson.client.codec.StringCodec;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpSecurityObservationAutoConfiguration;
@@ -54,8 +53,6 @@ import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import org.springframework.web.client.RestTemplate;
 import top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent;
 import top.egon.cola.platform.tianquan.shoubing.core.observability.SecurityMetricObservationBO;
-import top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties;
-import top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent;
 import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties;
@@ -67,16 +64,11 @@ class TianquanSecurityMetricsContractTest {
     @Test
     @SuppressWarnings("unchecked")
     void scopeDenyOnceAndMetricsBeforeTheActualAdministrationPdp() throws Exception {
-        var redis = mock(RedissonClient.class); RStream<String, String> stream = mock(RStream.class);
-        doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
         var events = new java.util.ArrayList<Map<String, String>>();
-        when(stream.add(any(StreamAddArgs.class))).thenAnswer(call -> {
-            org.redisson.api.stream.StreamAddParams<String, String> fields = call.getArgument(0);
-            events.add(Map.copyOf(fields.getEntries())); return new StreamMessageId(events.size(), 1);
-        });
+        var authority = recordingAuthority(events);
         var converter = (top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverter)
                 Class.forName("top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverterImpl").getConstructor().newInstance();
-        var observer = new top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent(producer(redis, metrics), converter,
+        var observer = new top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent(producer(authority, metrics), converter,
                 new OAuthUsageObservationProperties(true, ISSUER, false, IdpSecurityObservationReceiverEnum.SHOUBING), metrics, Clock.fixed(NOW, ZoneOffset.UTC), validator, RESOURCE);
         var identity = new top.egon.cola.platform.tianquan.shoubing.contract.IdentityPrincipal("10001", "1001", "901", Set.of(RESOURCE.toASCIIString()),
                 NOW, NOW.plusSeconds(300), top.egon.cola.platform.tianquan.shoubing.contract.AuthenticationContext.password());
@@ -107,7 +99,7 @@ class TianquanSecurityMetricsContractTest {
         assertThat(events).hasSize(1).allSatisfy(event -> assertThat(event).containsEntry("result", "DENIED"));
         org.mockito.Mockito.verify(fine, org.mockito.Mockito.never()).requirePermission(any());
         assertThat(registry.get("rbac.authorization").tags("receiver", RECEIVER, "result", "DENY").counter().count()).isEqualTo(1);
-        when(stream.add(any(StreamAddArgs.class))).thenThrow(new org.redisson.client.RedisException("controlled unavailable"));
+        doThrow(new IllegalStateException("controlled SQL unavailable")).when(authority).appendAudit(any());
         var failedRequest = new org.springframework.mock.web.MockHttpServletRequest("GET", "/scope-failure-fixture");
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
         try {
@@ -128,7 +120,6 @@ class TianquanSecurityMetricsContractTest {
     private static final URI ISSUER = URI.create("https://idp.example/tenants/1001");
     private static final URI RESOURCE = URI.create("https://api.example/orders");
     private static final Instant NOW = Instant.parse("2026-10-10T00:00:00Z");
-    private static final String STREAM = "egon:oauth:audit:v1";
     @TempDir Path temporary;
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     private final LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
@@ -172,24 +163,16 @@ class TianquanSecurityMetricsContractTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void realDurableHandoffAndReceiptEmitDeliveryAgeAndSpoolMeters() throws Exception {
-        var redis = mock(RedissonClient.class);
-        RStream<String, String> stream = mock(RStream.class); RBucket<String> receipt = mock(RBucket.class);
-        doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
-        doReturn(receipt).when(redis).getBucket(anyString(), eq(StringCodec.INSTANCE));
-        when(stream.add(any(StreamAddArgs.class))).thenReturn(new StreamMessageId(1, 1));
-        var producer = producer(redis, metrics);
+    void sqlConfirmedHandoffEmitsDeliveryAndReceiptAgeWithoutSpoolMeters() throws Exception {
+        var authority = recordingAuthority(new java.util.ArrayList<>());
+        var producer = producer(authority, metrics);
         var event = new TokenUsageAuditEvent("metric-event", 1, ISSUER, RESOURCE.toASCIIString(), null, null, null,
                 "SUCCESS", "TOKEN_USE_VERIFIED", NOW.minusSeconds(5), null);
-        producer.appendStrict(event);
-        assertThat(registry.find("oauth.audit.delivery").tags("receiver", RECEIVER, "result", "SENT").counter()).isNotNull();
-        assertThat(registry.get("oauth.audit.delivery").tags("receiver", RECEIVER, "result", "SENT").counter().count()).isEqualTo(1);
-        assertThat(registry.get("spool.bytes").tags("receiver", RECEIVER, "result", "CURRENT").gauge().value()).isGreaterThan(0);
-        when(receipt.get()).thenReturn(producer.encodeReceipt(producer.createReceipt(event, "STORED", NOW.minusSeconds(2))));
-        producer.acknowledge(event.eventId());
+        assertThat(producer.appendStrict(event).outcome()).isEqualTo("STORED");
+        assertThat(registry.get("oauth.audit.delivery").tags("receiver", RECEIVER, "result", "CONFIRMED").counter().count()).isEqualTo(1);
         assertThat(registry.get("receipt.age").tags("receiver", RECEIVER, "result", "CONFIRMED").timer().count()).isEqualTo(1);
-        assertThat(registry.get("spool.bytes").tags("receiver", RECEIVER, "result", "CURRENT").gauge().value()).isZero();
+        assertThat(registry.find("spool.bytes").gauge()).isNull();
+        assertThat(Files.exists(temporary.resolve("spool"))).isFalse();
     }
 
     @Test
@@ -209,12 +192,14 @@ class TianquanSecurityMetricsContractTest {
                 .run(context -> assertThat(context).hasFailed());
         var secondary = new SimpleMeterRegistry();
         var props = new OAuthUsageObservationProperties(true, ISSUER, false).setReceiver(IdpSecurityObservationReceiverEnum.SHOUBING);
-        var producer = producer(mock(RedissonClient.class), metrics);
+        var producer = producer(recordingAuthority(new java.util.ArrayList<>()), metrics);
         new ApplicationContextRunner().withConfiguration(AutoConfigurations.of(IdpSecurityObservationAutoConfiguration.class))
                 .withUserConfiguration(TianquanSecurityObservationConfiguration.class)
                 .withPropertyValues("egon.cola.platform.tianquan.shoubing.usage-observation.enabled=true")
                 .withPropertyValues(secureProperties())
-                .withBean("oauthAuditProperties", OAuthAuditProperties.class, this::auditProperties)
+                .withBean("identityAuthorityClientResolver", IdentityAuthorityClientResolver.class,
+                        () -> issuer -> recordingAuthority(new java.util.ArrayList<>()))
+                .withBean("trustedIssuerRegistry", TrustedIssuerRegistry.class, this::trustedRegistry)
                 .withBean("primary", MeterRegistry.class, () -> registry, definition -> definition.setPrimary(true))
                 .withBean("secondary", MeterRegistry.class, () -> secondary)
                 .withBean("defaultValidator", jakarta.validation.Validator.class, () -> validator)
@@ -231,7 +216,7 @@ class TianquanSecurityMetricsContractTest {
     }
 
     @Test
-    void fixedStrategyTableHandlesAllNineCanonicalSignals() {
+    void fixedStrategyTableHandlesSqlAuthoritySignals() {
         for (String signal : java.util.List.of("jwt.verify.duration", "token.acquire.duration", "receipt.age")) {
             metrics.record(SecurityMetricObservationBO.builder().signal(signal)
                     .result(signal.equals("receipt.age") ? "CONFIRMED" : "SUCCESS").duration(Duration.ofMillis(1)).build());
@@ -241,9 +226,8 @@ class TianquanSecurityMetricsContractTest {
         }
         metrics.record(SecurityMetricObservationBO.builder().signal("oauth.authentication").result("VALID").build());
         metrics.record(SecurityMetricObservationBO.builder().signal("rbac.authorization").result("ALLOW").build());
-        metrics.record(SecurityMetricObservationBO.builder().signal("oauth.audit.delivery").result("SENT").build());
-        metrics.record(SecurityMetricObservationBO.builder().signal("spool.bytes").result("CURRENT").value(123).build());
-        assertThat(registry.getMeters()).hasSize(9).allSatisfy(meter ->
+        metrics.record(SecurityMetricObservationBO.builder().signal("oauth.audit.delivery").result("CONFIRMED").build());
+        assertThat(registry.getMeters()).hasSize(8).allSatisfy(meter ->
                 assertThat(meter.getId().getTag("receiver")).isEqualTo(RECEIVER));
     }
 
@@ -257,38 +241,24 @@ class TianquanSecurityMetricsContractTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void deadReceiptRetainsCapacityAndDoesNotRepeatedlyCountTheSameConfirmation() throws Exception {
-        var redis = mock(RedissonClient.class);
-        RStream<String, String> stream = mock(RStream.class); RBucket<String> receipt = mock(RBucket.class);
-        doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
-        doReturn(receipt).when(redis).getBucket(anyString(), eq(StringCodec.INSTANCE));
-        when(stream.add(any(StreamAddArgs.class))).thenReturn(new StreamMessageId(2, 1));
-        var producer = producer(redis, metrics);
+    void deadOrMissingSqlReceiptCannotCountAsConfirmedHandoff() throws Exception {
+        var authority = recordingAuthority(new java.util.ArrayList<>());
+        doAnswer(call -> receipt(call.getArgument(0), "DEAD")).when(authority).appendAudit(any());
+        var producer = producer(authority, metrics);
         var event = new TokenUsageAuditEvent("dead-metric", 1, ISSUER, RESOURCE.toASCIIString(), null, null, null,
                 "SUCCESS", "TOKEN_USE_VERIFIED", NOW, null);
-        producer.appendStrict(event);
-        when(receipt.get()).thenReturn(producer.encodeReceipt(producer.createReceipt(event, "DEAD", NOW)));
-        producer.acknowledge(event.eventId()); producer.acknowledge(event.eventId());
-        assertThat(registry.get("oauth.audit.delivery").tags("receiver", RECEIVER, "result", "DEAD").counter().count()).isEqualTo(1);
-        assertThat(registry.get("receipt.age").tags("receiver", RECEIVER, "result", "CONFIRMED").timer().count()).isEqualTo(1);
-        assertThat(registry.get("spool.bytes").tags("receiver", RECEIVER, "result", "CURRENT").gauge().value()).isGreaterThan(0);
-        assertThat(Files.exists(temporary.resolve("spool/dead-metric.evt"))).isTrue();
+        assertThatThrownBy(() -> producer.appendStrict(event)).hasMessage("OAUTH_AUDIT_DELIVERY_UNAVAILABLE");
+        assertThat(registry.get("oauth.audit.delivery").tags("receiver", RECEIVER, "result", "FAILED").counter().count()).isEqualTo(1);
+        assertThat(registry.find("receipt.age").timer()).isNull();
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void failedMetricRecordingNeverChangesTheConfirmedStrictHandoff() throws Exception {
-        var redis = mock(RedissonClient.class);
-        RStream<String, String> stream = mock(RStream.class);
-        doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
-        when(stream.add(any(StreamAddArgs.class))).thenReturn(new StreamMessageId(3, 1));
-        var producer = producer(redis, sample -> { throw new IllegalStateException("metrics unavailable"); });
+    void failedMetricRecordingNeverChangesTheSqlConfirmedHandoff() throws Exception {
+        var producer = producer(recordingAuthority(new java.util.ArrayList<>()), sample -> { throw new IllegalStateException("metrics unavailable"); });
         var event = new TokenUsageAuditEvent("metric-failure", 1, ISSUER, RESOURCE.toASCIIString(), null, null, null,
                 "SUCCESS", "TOKEN_USE_VERIFIED", NOW, null);
-        assertThat(producer.appendStrict(event)).isEqualTo(new StreamMessageId(3, 1));
-        assertThat(Files.exists(temporary.resolve("spool/metric-failure.evt"))).isTrue();
-        assertThat(Files.exists(temporary.resolve("spool/metric-failure.evt.sent"))).isTrue();
+        assertThat(producer.appendStrict(event).outcome()).isEqualTo("STORED");
+        assertThat(Files.exists(temporary.resolve("spool"))).isFalse();
     }
 
     @Test
@@ -296,19 +266,15 @@ class TianquanSecurityMetricsContractTest {
     void nativeUserInfoCompletesStrictUsageBeforeItsProtocolResponse() throws Exception {
         var context = new org.springframework.web.context.support.AnnotationConfigWebApplicationContext();
         context.setServletContext(new org.springframework.mock.web.MockServletContext());
-        var redis = mock(RedissonClient.class);
-        RStream<String, String> stream = mock(RStream.class);
-        doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
         java.util.List<Map<String, String>> usage = new java.util.ArrayList<>();
-        when(stream.add(any(StreamAddArgs.class))).thenAnswer(call -> {
+        var authority = recordingAuthority(usage);
+        doAnswer(call -> {
             var attrs = (org.springframework.web.context.request.ServletRequestAttributes)
                     org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
             assertThat(attrs.getResponse().isCommitted()).isFalse();
-            org.redisson.api.stream.StreamAddParams<String, String> fields = call.getArgument(0);
-            usage.add(Map.copyOf(fields.getEntries()));
-            return new StreamMessageId(usage.size(), 1);
-        });
-        var producer = producer(redis, metrics);
+            TokenUsageAuditEvent event = call.getArgument(0); usage.add(eventFields(event)); return receipt(event, "STORED");
+        }).when(authority).appendAudit(any());
+        var producer = producer(authority, metrics);
         var props = new OAuthUsageObservationProperties(true, URI.create("https://idp.example.test/tenants/1001"), false).setReceiver(IdpSecurityObservationReceiverEnum.SHOUBING);
         var receiver = new IdpStarterProperties(); receiver.setResourceUri(RESOURCE);
         var converter = (top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverter)
@@ -356,15 +322,9 @@ class TianquanSecurityMetricsContractTest {
     @Test
     @SuppressWarnings("unchecked")
     void nativeUserInfoErrorsAreAnonymousAndStrictFailureNeverReturnsIdentity() throws Exception {
-        var redis = mock(RedissonClient.class);
-        RStream<String, String> stream = mock(RStream.class);
-        doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
         java.util.List<Map<String, String>> usage = new java.util.ArrayList<>();
-        when(stream.add(any(StreamAddArgs.class))).thenAnswer(call -> {
-            org.redisson.api.stream.StreamAddParams<String, String> fields = call.getArgument(0);
-            usage.add(Map.copyOf(fields.getEntries())); return new StreamMessageId(usage.size(), 1);
-        });
-        var producer = producer(redis, metrics);
+        var authority = recordingAuthority(usage);
+        var producer = producer(authority, metrics);
         var context = nativeContext(producer);
         Object fixture = context.getBean("fixture");
         try {
@@ -406,17 +366,15 @@ class TianquanSecurityMetricsContractTest {
             assertThat(usage).hasSize(8);
             invokeNative(scenario, "prepareNativeFixture");
             access = mintNativeAccess(scenario);
-            when(stream.add(any(StreamAddArgs.class))).thenThrow(new org.redisson.client.RedisException("fixture broker failure"));
+            doThrow(new IllegalStateException("fixture SQL failure")).when(authority).appendAudit(any());
             var unavailable = mvc.perform(nativeRequest(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                     .get("/tenants/1001/userinfo")).header("Authorization", "Bearer " + access)).andReturn();
             assertThat(unavailable.getResponse().getStatus()).isEqualTo(503);
             assertThat(unavailable.getResponse().getHeader("Cache-Control")).isEqualTo("no-store");
             assertThat(unavailable.getResponse().getContentAsString()).contains("temporarily_unavailable")
-                    .doesNotContain("sub", access, "fixture broker failure");
+                    .doesNotContain("sub", access, "fixture SQL failure");
             assertThat(usage).hasSize(8);
-            try (var files = Files.list(temporary.resolve("spool"))) {
-                assertThat(files.filter(path -> path.toString().endsWith(".evt")).count()).isEqualTo(9);
-            }
+            assertThat(Files.exists(temporary.resolve("spool"))).isFalse();
         } finally {
             context.close(); ((AutoCloseable) fixture).close();
             org.springframework.security.oauth2.server.authorization.context.AuthorizationServerContextHolder.resetContext();
@@ -427,11 +385,8 @@ class TianquanSecurityMetricsContractTest {
     @Test
     @SuppressWarnings("unchecked")
     void nativeMetricOutageDoesNotChangeTheSuccessfulUserInfoResponse() throws Exception {
-        var redis = mock(RedissonClient.class);
-        RStream<String, String> stream = mock(RStream.class);
-        doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
-        when(stream.add(any(StreamAddArgs.class))).thenReturn(new StreamMessageId(100, 1));
-        var context = nativeContext(producer(redis, metrics), sample -> { throw new IllegalStateException("metric outage fixture"); });
+        var authority = recordingAuthority(new java.util.ArrayList<>());
+        var context = nativeContext(producer(authority, metrics), sample -> { throw new IllegalStateException("metric outage fixture"); });
         Object fixture = context.getBean("fixture");
         try {
             Object scenario = nativeScenario(context, fixture);
@@ -511,8 +466,7 @@ class TianquanSecurityMetricsContractTest {
             var names = new java.util.HashSet<String>();
             for (var source : sources) { names.addAll(java.util.List.of(((org.springframework.core.env.EnumerablePropertySource<?>) source).getPropertyNames())); }
             assertThat(names).as(profile).contains(prefix + "usage-observation.enabled", prefix + "usage-observation.receiver", prefix + "usage-observation.fallback-issuer",
-                    prefix + "usage-observation.allow-local-plaintext", prefix + "audit.delivery.receipt-ttl",
-                    prefix + "audit.delivery.confirmation-timeout", prefix + "audit.delivery.batch-size",
+                    prefix + "usage-observation.allow-local-plaintext",
                     "egon.cola.component.rpc.tls.enabled", "egon.cola.component.rpc.tls.development-plaintext",
                     "egon.cola.component.tianshu.rpc.tls.enabled", "egon.cola.component.tianshu.rpc.tls.development-plaintext");
             var environment = new org.springframework.mock.env.MockEnvironment()
@@ -520,22 +474,19 @@ class TianquanSecurityMetricsContractTest {
             for (var source : sources) { environment.getPropertySources().addLast(source); }
             var binder = org.springframework.boot.context.properties.bind.Binder.get(environment);
             var usage = binder.bind(prefix + "usage-observation", OAuthUsageObservationProperties.class).orElseThrow(IllegalStateException::new);
-            var delivery = binder.bind(prefix + "audit.delivery", AuditDeliveryProperties.class).orElseThrow(IllegalStateException::new);
-            assertThat(validator.validate(usage)).isEmpty(); assertThat(validator.validate(delivery)).isEmpty();
+            assertThat(validator.validate(usage)).isEmpty();
+            assertThat(names).doesNotContain(prefix + "audit.spool-directory", prefix + "audit.hmac-key-file", prefix + "audit.stream");
             boolean offline = profile.contains("oauth-migration") || profile.contains("local-it");
             assertThat(usage.isEnabled()).isEqualTo(!offline);
             assertThat(usage.getReceiver()).isEqualTo(IdpSecurityObservationReceiverEnum.SHOUBING);
             assertThat(usage.isAllowLocalPlaintext()).isEqualTo(profile.endsWith("application-local.yml"));
-            assertThat(delivery.getReceiptTtl()).isEqualTo(Duration.ofHours(1));
-            assertThat(delivery.getConfirmationTimeout()).isEqualTo(Duration.ofSeconds(30));
-            assertThat(delivery.getBatchSize()).isEqualTo(100);
 
         }
     }
 
     @Test
     void enabledHostRejectsPlaintextProductionInputs() throws Exception {
-        var producer = producer(mock(RedissonClient.class), metrics);
+        var producer = producer(recordingAuthority(new java.util.ArrayList<>()), metrics);
         new ApplicationContextRunner().withConfiguration(AutoConfigurations.of(IdpSecurityObservationAutoConfiguration.class))
                 .withUserConfiguration(TianquanSecurityObservationConfiguration.class)
                 .withPropertyValues("egon.cola.platform.tianquan.shoubing.usage-observation.enabled=true",
@@ -549,8 +500,9 @@ class TianquanSecurityMetricsContractTest {
                 .withBean("primary", MeterRegistry.class, () -> registry)
                 .withBean("defaultValidator", jakarta.validation.Validator.class, () -> validator)
                 .withBean("tokenUsageAuditComponent", TokenUsageAuditComponent.class, () -> producer)
-                .withBean("oauthAuditProperties", OAuthAuditProperties.class,
-                        () -> new OAuthAuditProperties(STREAM, temporary.resolve("spool"), 1_048_576, temporary.resolve("audit.key")))
+                .withBean("identityAuthorityClientResolver", IdentityAuthorityClientResolver.class,
+                        () -> issuer -> recordingAuthority(new java.util.ArrayList<>()))
+                .withBean("trustedIssuerRegistry", TrustedIssuerRegistry.class, this::trustedRegistry)
                 .withBean("oauthUsageObservationProperties", OAuthUsageObservationProperties.class,
                         () -> new OAuthUsageObservationProperties(true, ISSUER, false).setReceiver(IdpSecurityObservationReceiverEnum.SHOUBING))
                 .run(context -> assertThat(context).hasFailed());
@@ -563,7 +515,6 @@ class TianquanSecurityMetricsContractTest {
                 "egon.cola.component.rpc.enabled=true",
                 "egon.cola.component.tianshu.enabled=true",
                 "egon.cola.platform.tianquan.shoubing.issuer=http://idp.example/tenants/1001",
-                "egon.cola.platform.tianquan.shoubing.revocation.primary-endpoint=redis://redis.example:6379",
                 "spring.security.oauth2.client.provider.unsafe.token-uri=http://remote.example/token")) {
             secureHostRunner(false).withPropertyValues(invalid).run(context -> assertThat(context).hasFailed());
         }
@@ -583,34 +534,16 @@ class TianquanSecurityMetricsContractTest {
     }
 
     @Test
-    void exclusiveVolumeLeaseAndDynamicAuditReadinessFailClosed() throws Exception {
+    void independentHostsNeedNoExclusiveLocalAuditVolume() throws Exception {
         var runner = secureHostRunner(false);
         runner.run(context -> {
             assertThat(context).hasNotFailed();
-            var ready = (java.util.function.BooleanSupplier) context.getBean("tianquanSecurityAuditReady");
-            assertThat(ready.getAsBoolean()).isTrue();
-            runner.run(second -> assertThat(second).hasFailed());
-            try {
-                Files.writeString(temporary.resolve("spool/dead.evt.dead"), "retained-dead-marker");
-                assertThat(ready.getAsBoolean()).isFalse();
-                assertThat(context.getBean("tianquanAuditReadiness", org.springframework.boot.health.contributor.HealthIndicator.class)
-                        .health().getStatus()).isEqualTo(org.springframework.boot.health.contributor.Status.DOWN);
-                Files.delete(temporary.resolve("spool/dead.evt.dead"));
-                Files.writeString(temporary.resolve("spool/pending.evt"), "unconfirmed-local-handoff");
-                assertThat(ready.getAsBoolean()).isFalse();
-                Files.delete(temporary.resolve("spool/pending.evt"));
-                Files.write(temporary.resolve("spool/capacity"), new byte[1_048_576]);
-                assertThat(ready.getAsBoolean()).isFalse();
-                Files.delete(temporary.resolve("spool/capacity"));
-                assertThat(ready.getAsBoolean()).isTrue();
-                Files.setPosixFilePermissions(temporary.resolve("audit.key"), Set.of(PosixFilePermission.OWNER_READ,
-                        PosixFilePermission.OWNER_WRITE, PosixFilePermission.GROUP_READ));
-                assertThat(ready.getAsBoolean()).isFalse();
-                Files.setPosixFilePermissions(temporary.resolve("audit.key"), Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-                assertThat(ready.getAsBoolean()).isTrue();
-            } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
+            assertThat(context.getBean("tianquanSecurityAuditReady", java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue();
+            assertThat(context.getBean("tianquanAuditReadiness", org.springframework.boot.health.contributor.HealthIndicator.class)
+                    .health().getStatus()).isEqualTo(org.springframework.boot.health.contributor.Status.UP);
+            runner.run(second -> assertThat(second).hasNotFailed().doesNotHaveBean("idpAuditSpoolLease"));
         });
-        runner.run(context -> assertThat(context).hasNotFailed());
+        assertThat(Files.exists(temporary.resolve("spool"))).isFalse();
     }
 
     private String[] secureProperties() {
@@ -625,28 +558,55 @@ class TianquanSecurityMetricsContractTest {
                 "egon.cola.component.rpc.enabled=false", "egon.cola.component.tianshu.enabled=false" };
     }
 
-    private OAuthAuditProperties auditProperties() {
-        return new OAuthAuditProperties(STREAM, temporary.resolve("spool"), 1_048_576, temporary.resolve("audit.key"));
-    }
-
     private ApplicationContextRunner secureHostRunner(boolean allowLocal) throws Exception {
-        var producer = producer(mock(RedissonClient.class), metrics);
+        var producer = producer(recordingAuthority(new java.util.ArrayList<>()), metrics);
         return new ApplicationContextRunner().withConfiguration(AutoConfigurations.of(IdpSecurityObservationAutoConfiguration.class))
                 .withUserConfiguration(TianquanSecurityObservationConfiguration.class)
                 .withPropertyValues(secureProperties())
                 .withBean("primary", MeterRegistry.class, () -> registry)
                 .withBean("defaultValidator", jakarta.validation.Validator.class, () -> validator)
                 .withBean("tokenUsageAuditComponent", TokenUsageAuditComponent.class, () -> producer)
-                .withBean("oauthAuditProperties", OAuthAuditProperties.class, this::auditProperties)
+                .withBean("identityAuthorityClientResolver", IdentityAuthorityClientResolver.class,
+                        () -> issuer -> recordingAuthority(new java.util.ArrayList<>()))
+                .withBean("trustedIssuerRegistry", TrustedIssuerRegistry.class, this::trustedRegistry)
                 .withBean("oauthUsageObservationProperties", OAuthUsageObservationProperties.class,
                         () -> new OAuthUsageObservationProperties(true, ISSUER, allowLocal).setReceiver(IdpSecurityObservationReceiverEnum.SHOUBING));
     }
 
-    private TokenUsageAuditComponent producer(RedissonClient redis, top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder recorder) throws Exception {
-        Path key = temporary.resolve("audit.key"); Files.writeString(key, "0123456789abcdef0123456789abcdef");
-        Files.setPosixFilePermissions(key, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-        return new TokenUsageAuditComponent(redis, new ObjectMapper().findAndRegisterModules(),
-                new OAuthAuditProperties(STREAM, temporary.resolve("spool"), 1_048_576, key), new AuditDeliveryProperties(),
-                Clock.fixed(NOW, ZoneOffset.UTC), validator, recorder);
+    private TokenUsageAuditComponent producer(IdentityAuthorityClient authority,
+            top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder recorder) {
+        return new TokenUsageAuditComponent(issuer -> authority, Clock.systemUTC(), validator, recorder);
+    }
+
+    private IdentityAuthorityClient recordingAuthority(java.util.List<Map<String, String>> events) {
+        var authority = mock(IdentityAuthorityClient.class);
+        doAnswer(call -> {
+            TokenUsageAuditEvent event = call.getArgument(0); events.add(eventFields(event)); return receipt(event, "STORED");
+        }).when(authority).appendAudit(any());
+        return authority;
+    }
+
+    private IdentityAuditReceipt receipt(TokenUsageAuditEvent event, String outcome) {
+        return new IdentityAuditReceipt(java.util.UUID.randomUUID().toString(), event.eventId(), TokenUsageAuditFingerprint.of(event),
+                event.issuer().toASCIIString(), "controlled-resource", event.resource(), outcome, Instant.now());
+    }
+
+    private Map<String, String> eventFields(TokenUsageAuditEvent event) {
+        Map<String, String> values = new LinkedHashMap<>(); values.put("eventId", event.eventId());
+        values.put("issuer", event.issuer().toASCIIString()); values.put("resource", event.resource());
+        values.put("result", event.result()); values.put("reasonCode", event.reasonCode());
+        if (event.subjectRef() != null) { values.put("subjectRef", event.subjectRef()); }
+        if (event.clientRef() != null) { values.put("clientRef", event.clientRef()); }
+        if (event.tokenRef() != null) { values.put("tokenRef", event.tokenRef()); }
+        if (event.traceId() != null) { values.put("traceId", event.traceId()); }
+        return Map.copyOf(values);
+    }
+
+    private TrustedIssuerRegistry trustedRegistry() {
+        var properties = new IdpStarterProperties(); var issuer = new IdpStarterProperties.TrustedIssuerSettings();
+        issuer.setIssuer(ISSUER.toASCIIString()); issuer.setJwksUri(ISSUER + "/.well-known/jwks.json");
+        issuer.setRealmKey("tenant:1001"); issuer.setRealmType("TENANT"); issuer.setTenantId("1001");
+        issuer.setStatus("ACTIVE"); issuer.setTrustVersion(1); properties.setTrustedIssuers(Map.of("tenant", issuer));
+        return new TrustedIssuerRegistry(properties);
     }
 }

@@ -14,6 +14,10 @@ public interface OAuthAuditConverter extends BaseConverter<OAuthAuditPO, OAuthAu
     @Override
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "eventFingerprint", source = "eventFingerprint")
+    @Mapping(target = "sourceClientPk", source = "sourceClientPk")
+    @Mapping(target = "sourceIssuer", source = "sourceIssuer")
+    @Mapping(target = "retainUntil", source = "retainUntil")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "eventId", source = "eventId")
     @Mapping(target = "eventType", source = "eventType")
@@ -36,6 +40,10 @@ public interface OAuthAuditConverter extends BaseConverter<OAuthAuditPO, OAuthAu
     @Override
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "eventFingerprint", source = "eventFingerprint")
+    @Mapping(target = "sourceClientPk", source = "sourceClientPk")
+    @Mapping(target = "sourceIssuer", source = "sourceIssuer")
+    @Mapping(target = "retainUntil", source = "retainUntil")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "eventId", source = "eventId")
     @Mapping(target = "eventType", source = "eventType")

@@ -22,6 +22,9 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.po.OAuthSecur
 @Validated
 public interface OAuthSecurityStateMapper extends EgonColaMapper<OAuthSecurityStatePO> {
 
+    List<OAuthSecurityStatePO> selectSnapshot(@Param("tenantId") Long tenantId,
+            @Param("clientKey") String clientKey, @Param("subject") String subject);
+
     @Validated(EgonColaModelValidationGroups.Query.class)
     OAuthSecurityStatePO selectByTarget(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)

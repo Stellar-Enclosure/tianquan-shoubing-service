@@ -63,6 +63,8 @@ springdoc:
     - group: tianquan-shoubing-auth
       paths-to-match:
         - /api/v1/tianquan-shoubing/auth/**
+        - /api/v1/authorization/effective-permissions
+        - /api/v1/authorization/field-catalog
     - group: tianquan-shoubing-profile
       paths-to-match:
         - /api/v1/tianquan-shoubing/me
@@ -95,27 +97,59 @@ egon.cola.platform:
         enabled: true
         fallback-issuer: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}
         allow-local-plaintext: false
+      trusted-issuers:
+        tenant-a:
+          issuer: ${TIANQUAN_SHOUBING_TENANT_A_ISSUER}
+          jwks-uri: ${TIANQUAN_SHOUBING_TENANT_A_JWKS_URI}
+          realm-key: ${TIANQUAN_SHOUBING_TENANT_A_REALM_KEY}
+          realm-type: TENANT
+          tenant-id: ${TIANQUAN_SHOUBING_TENANT_A_ID}
+          status: ACTIVE
+          trust-version: ${TIANQUAN_SHOUBING_TENANT_A_TRUST_VERSION}
+        tenant-b:
+          issuer: ${TIANQUAN_SHOUBING_TENANT_B_ISSUER}
+          jwks-uri: ${TIANQUAN_SHOUBING_TENANT_B_JWKS_URI}
+          realm-key: ${TIANQUAN_SHOUBING_TENANT_B_REALM_KEY}
+          realm-type: TENANT
+          tenant-id: ${TIANQUAN_SHOUBING_TENANT_B_ID}
+          status: ACTIVE
+          trust-version: ${TIANQUAN_SHOUBING_TENANT_B_TRUST_VERSION}
+        platform:
+          issuer: ${TIANQUAN_SHOUBING_PLATFORM_ISSUER}
+          jwks-uri: ${TIANQUAN_SHOUBING_PLATFORM_JWKS_URI}
+          realm-key: platform
+          realm-type: PLATFORM
+          status: ACTIVE
+          trust-version: ${TIANQUAN_SHOUBING_PLATFORM_TRUST_VERSION}
       enabled: ${UNIFIED_IDENTITY_ENABLED:true}
       register-filter: false
       issuer: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}
       jwk-set-uri: ${TIANQUAN_SHOUBING_JWK_SET_URI}
+      service-client:
+        app-id: ${TIANQUAN_SHOUBING_RBAC_APP_ID}
+        tenant-registration-ids:
+          "[${TIANQUAN_SHOUBING_CATALOG_TENANT_ID}]": ${TIANQUAN_SHOUBING_RBAC_REGISTRATION_ID}
+        credential-versions:
+          "[${TIANQUAN_SHOUBING_RBAC_REGISTRATION_ID}]": ${TIANQUAN_SHOUBING_RBAC_CREDENTIAL_VERSION}
+      rpc:
+        enabled: ${TIANQUAN_SHOUBING_RPC_ENABLED:true}
+        provider:
+          enabled: ${TIANQUAN_SHOUBING_RPC_PROVIDER_ENABLED:true}
+          methods:
+            "[egon.tianquan.shoubing.v1.IdentityDirectoryService/BatchGetIdentityProfiles]":
+              principal-kind: SERVICE
+              scope-context: TENANT
+              expected-resource-uri: ${TIANQUAN_SHOUBING_RESOURCE_URI}
+              required-scopes: [identity:read]
+            "[egon.tianquan.shoubing.v1.IdentityDirectoryService/GetTenantMembership]":
+              principal-kind: SERVICE
+              scope-context: TENANT
+              expected-resource-uri: ${TIANQUAN_SHOUBING_RESOURCE_URI}
+              required-scopes: [identity:read]
       resource-server-id: ${TIANQUAN_SHOUBING_RESOURCE_SERVER_ID}
       resource-uri: ${TIANQUAN_SHOUBING_RESOURCE_URI}
-      revocation:
-        primary-endpoint: ${TIANQUAN_SHOUBING_REVOCATION_PRIMARY_ENDPOINT}
-        epoch: ${EGON_TIANQUAN_SHOUBING_REVOCATION_EPOCH}
       audit:
-        delivery:
-          receipt-ttl: PT1H
-          confirmation-timeout: PT30S
-          batch-size: 100
-        stream: egon:oauth:audit:v1
-        spool-directory: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_SPOOL_DIRECTORY}
-        spool-max-bytes: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_SPOOL_MAX_BYTES:1073741824}
-        hmac-key-file: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_HMAC_KEY_FILE}
         consumer-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_CONSUMER_DELAY:1000}
-        replay-initial-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_REPLAY_INITIAL_DELAY:5000}
-        replay-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_REPLAY_DELAY:5000}
     jianshen:
       user-scope-policy:
         enabled: true
@@ -143,22 +177,31 @@ egon.cola.platform:
           "[tianquan-shoubing:tenant:read]": ["tianquan-shoubing:tenant:read"]
       enabled: ${UNIFIED_IDENTITY_ENABLED:true}
       register-filter: false
-      system-code: tianquan-shoubing-admin
+      system-code: tianquan-shoubing
       runtime:
-        redis-enabled: true
-        redis-address: ${TIANQUAN_SHOUBING_AUTHORIZATION_REDIS_ADDRESS}
-        database: ${TIANQUAN_SHOUBING_AUTHORIZATION_REDIS_DATABASE:0}
+        artifact-digest: ${TIANQUAN_SHOUBING_ARTIFACT_DIGEST:}
+        catalog-scopes:
+          - catalog-scope-id: ${TIANQUAN_SHOUBING_CATALOG_SCOPE_ID}
+            tenant-id: ${TIANQUAN_SHOUBING_CATALOG_TENANT_ID}
+            business-code: xingyuan
+            application-code: tianquan-shoubing
+            namespace-code: ${TIANQUAN_SHOUBING_CATALOG_NAMESPACE}
+            environment: ${DEPLOYMENT_ENV}
       authorization:
         endpoint: ${TIANQUAN_JIANSHEN_AUTHORIZATION_ENDPOINT}
+        service-token:
+          enabled: ${TIANQUAN_SHOUBING_RBAC_SERVICE_TOKEN_ENABLED:true}
+          resource-uri: ${TIANQUAN_SHOUBING_RBAC_RESOURCE_URI}
+          scopes: [service:authorization:snapshot, service:authorization:policy]
 
 egon:
   tianquan-shoubing:
     clock-skew: ${EGON_TIANQUAN_SHOUBING_CLOCK_SKEW:30s}
     identity-directory:
       platform-storage-partition-id: ${EGON_TIANQUAN_SHOUBING_PLATFORM_STORAGE_PARTITION_ID}
-    identity-state-key-prefix: "identity:v1:user:"
     oauth:
       public-origin: ${EGON_TIANQUAN_SHOUBING_OAUTH_PUBLIC_ORIGIN}
+      authentication-ttl: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUTHENTICATION_TTL:PT8H}
       platform-management-tenant-id: ${EGON_TIANQUAN_SHOUBING_PLATFORM_MANAGEMENT_TENANT_ID}
       allowed-origins: ${TIANQUAN_SHOUBING_OAUTH_ALLOWED_ORIGINS:}
       key-encryption:
@@ -170,6 +213,8 @@ egon:
         schedule: ${EGON_TIANQUAN_SHOUBING_OAUTH_KEY_ROTATION_SCHEDULE:0 0 2 * * *}
   cola:
     component:
+      cache:
+        enabled: false
       id:
         enabled: true
         machine-id: ${TIANQUAN_SHOUBING_SNOWFLAKE_MACHINE_ID}

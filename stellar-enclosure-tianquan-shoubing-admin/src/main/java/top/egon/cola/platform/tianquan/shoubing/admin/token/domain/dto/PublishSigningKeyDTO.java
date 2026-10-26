@@ -1,5 +1,12 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.token.domain.dto;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.PermissionManifest;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.FieldPermissions;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionGroup;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -20,10 +27,18 @@ import lombok.experimental.Accessors;
 @Builder
 public class PublishSigningKeyDTO {
 
+    @PermissionResource(key = "tianquan-shoubing.field.PublishSigningKeyDTO.kid", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.kid")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.STRING,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.SIGNING_KEY_PUBLISH))
     @NotBlank
     @Pattern(regexp = "[A-Za-z0-9_-]{1,128}")
     private String kid;
 
+    @PermissionResource(key = "tianquan-shoubing.field.PublishSigningKeyDTO.encryptedPrivateKey", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.encryptedPrivateKey")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.STRING,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.SIGNING_KEY_PUBLISH))
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @ToString.Exclude
     @EqualsAndHashCode.Exclude
@@ -32,6 +47,10 @@ public class PublishSigningKeyDTO {
     @Size(max = 32_768)
     private String encryptedPrivateKey;
 
+    @PermissionResource(key = "tianquan-shoubing.field.PublishSigningKeyDTO.publicJwk", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.publicJwk")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.STRING,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.SIGNING_KEY_PUBLISH))
     @NotBlank
     @Size(max = 32_768)
     private String publicJwk;

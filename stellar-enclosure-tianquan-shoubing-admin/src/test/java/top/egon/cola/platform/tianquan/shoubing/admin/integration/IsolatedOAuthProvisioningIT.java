@@ -1,5 +1,14 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.integration;
 
+import top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditInboxBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditReceiptBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditInboxRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditReceiptRepository;
+import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuditReceipt;
+import top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditFingerprint;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClient;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClientResolver;
+
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -1396,7 +1405,6 @@ public class IsolatedOAuthProvisioningIT {
         properties.put("egon.tianquan-shoubing.identity-directory.platform-storage-partition-id", inputs.getManifest().getPlatformStoragePartitionId());
         properties.put("egon.tianquan-shoubing.oauth.platform-management-tenant-id", actualTenantIds.get("default"));
         properties.put("egon.tianquan-shoubing.identity-state-key-prefix", "xingyuan-it:" + inputs.getManifest().getRunId() + ":identity:");
-        properties.put("egon.cola.platform.tianquan.shoubing.audit.stream", "xingyuan-it:" + inputs.getManifest().getRunId() + ":oauth:audit:v1");
         properties.put("egon.cola.component.id.machine-id", "711");
         properties.put("egon.cola.component.mybatis-plus.tenant-id.ignored-tables[0]", "egon_cola_outbox_message");
         properties.put("egon.cola.component.transactional-outbox.node-id", "xingyuan-it:" + inputs.getManifest().getRunId());
@@ -1509,9 +1517,10 @@ public class IsolatedOAuthProvisioningIT {
 
         @Bean("resourceServerProjectionService")
         top.egon.cola.platform.tianquan.shoubing.admin.resource.service.ResourceServerProjectionService resourceProjections(
-                @Qualifier("rbac3RuntimeRedissonClient") org.redisson.api.RedissonClient redis,
-                @Qualifier("jacksonObjectMapper") ObjectMapper mapper) {
-            return new top.egon.cola.platform.tianquan.shoubing.admin.resource.service.ResourceServerProjectionService(redis, mapper);
+                @Qualifier("oAuthResourceRepository") top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceRepository resources,
+                @Qualifier("oAuthGrantRepository") top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthGrantRepository grants,
+                @Qualifier("oauthManagementRealmResolver") top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver realms) {
+            return new top.egon.cola.platform.tianquan.shoubing.admin.resource.service.ResourceServerProjectionService(resources, grants, realms);
         }
 
         @Bean("resourceServerEventAdapter")
@@ -2414,8 +2423,8 @@ public class IsolatedOAuthProvisioningIT {
         var guard = context.getBean("isolatedOwnershipGuard", Runnable.class);
         var clock = context.getBean("idpClock", Clock.class);
         var audits = context.getBean("oAuthAuditRepository", top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository.class);
-        var redis = context.getBean("rbac3RuntimeRedissonClient", org.redisson.api.RedissonClient.class);
-        String stream = "xingyuan-it:" + inputs.getManifest().getRunId() + ":oauth:audit:v1";
+        var inboxes = context.getBean(OAuthAuditInboxRepository.class);
+        var receipts = context.getBean(OAuthAuditReceiptRepository.class);
         var properties = context.getBean(top.egon.cola.component.common.mybatis.autoconfigure.EgonColaMybatisPlusProperties.class);
         Instant deadline = clock.instant().plusSeconds(inputs.getManifest().getDeadlines().getHttpSeconds());
         if (operationDeadline.isBefore(deadline)) { deadline = operationDeadline; }
@@ -2425,7 +2434,7 @@ public class IsolatedOAuthProvisioningIT {
                     () -> findBffUsageAudit(binding.getRealm(), binding.getClient(), binding.getSubject(), marker, audits, guard));
             if (candidate.isPresent()) {
                 guard.run();
-                if (redis.<String>getBucket(stream + ":receipt:" + candidate.get().getEventId(), org.redisson.client.codec.StringCodec.INSTANCE).get() != null) {
+                if (withHeldRealmStorageContext(binding.getRealm(), properties, () -> receipts.findByEventId(binding.getRealm(), candidate.get().getEventId())).isPresent()) {
                     used = candidate.get(); break;
                 }
             }
@@ -2435,13 +2444,12 @@ public class IsolatedOAuthProvisioningIT {
             throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED");
         }
         var idp = context.getBean("oracleIdpProperties", top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties.class);
-        var resources = context.getBean("oracleResourceStates", top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityResourceServerStateReader.class);
-        var clients = context.getBean("oracleClientStates", top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityOAuthClientStateReader.class);
         var issuers = context.getBean("oracleTenantIssuerManager", top.egon.cola.platform.tianquan.shoubing.starter.security.TenantIssuerAuthenticationManagerComponent.class);
-        var revocations = context.getBean("oracleRevocationReader", top.egon.cola.platform.tianquan.shoubing.starter.security.OAuthRevocationReader.class);
         var principal = context.getBean("verifiedPrincipalConverterImpl", top.egon.cola.platform.tianquan.shoubing.starter.security.VerifiedPrincipalConverter.class);
-        var verifier = top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier.createConfigured(null, resources, clients,
-                binding.getResourceServerId(), URI.create(binding.getClient().getResourceUris().getFirst()), idp.getPlatformAudience(), clock, issuers, revocations, principal, null);
+        var resource = URI.create(binding.getClient().getResourceUris().getFirst());
+        var state = new top.egon.cola.platform.tianquan.shoubing.starter.security.impl.DatabaseOAuthRevocationReader(context.getBean(IdentityAuthorityClientResolver.class), resource);
+        var verifier = top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier.createDatabaseConfigured(resource, clock, issuers, state, principal,
+                context.getBean(top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent.class));
         var match = HeldAuthorizationMatchDTO.builder().clientPk(binding.getClient().getClientPk()).principalName(binding.getSubject())
                 .resourceUri(binding.getClient().getResourceUris().getFirst()).fromInclusive(begin.getLoginStartedAt()).toExclusive(marker.getToExclusive())
                 .eventId(used.getEventId()).correlationId(used.getTraceId()).build();
@@ -2450,7 +2458,7 @@ public class IsolatedOAuthProvisioningIT {
                 context.getBean("tenantAuthorizationService", org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService.class),
                 context.getBean("oracleAuthorizationServerSettings", org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings.class),
                 verifier, audits, context.getBean("oracleUsageReferences", top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent.class),
-                redis, stream, guard, clock, properties);
+                inboxes, receipts, guard, clock, properties);
         var token = authorization.getAccessToken().getToken();
         if (marker.getNotBefore() != null && binding.getKind().equals("RESOURCE") && token.getIssuedAt().isBefore(marker.getNotBefore())) {
             throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED");
@@ -2609,52 +2617,25 @@ public class IsolatedOAuthProvisioningIT {
     }
 
     @Test
-    void aSignedDeadSpoolReceiptMustBlockTheConfiguredStrictHandoff() throws Exception {
-        Path key = temporaryRepository.resolve("controlled-dead-audit.key");
-        Files.writeString(key, "0123456789abcdef0123456789abcdef"); Files.setPosixFilePermissions(key, PosixFilePermissions.fromString("rw-------"));
-        Path spool = temporaryRepository.resolve("controlled-dead-spool");
-        var audit = new top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties("xingyuan-it:controlled:oauth:audit:v1", spool, 1_048_576, key);
-        var redis = org.mockito.Mockito.mock(org.redisson.api.RedissonClient.class);
-        @SuppressWarnings("unchecked") org.redisson.api.RStream<String, String> stream = org.mockito.Mockito.mock(org.redisson.api.RStream.class);
-        org.mockito.Mockito.doReturn(stream).when(redis).getStream(org.mockito.ArgumentMatchers.eq(audit.stream()), org.mockito.ArgumentMatchers.eq(org.redisson.client.codec.StringCodec.INSTANCE));
-        org.mockito.Mockito.when(stream.add(org.mockito.ArgumentMatchers.any(org.redisson.api.stream.StreamAddArgs.class))).thenReturn(new org.redisson.api.stream.StreamMessageId(1, 1));
+    void aDeadSqlReceiptCannotCompleteTheConfiguredStrictHandoff() throws Exception {
+        var authority = Mockito.mock(IdentityAuthorityClient.class);
+        Mockito.doAnswer(call -> {
+            top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent event = call.getArgument(0);
+            return new IdentityAuditReceipt(UUID.randomUUID().toString(), event.eventId(), TokenUsageAuditFingerprint.of(event),
+                    event.issuer().toASCIIString(), "controlled-service", event.resource(), "DEAD", Instant.now());
+        }).when(authority).appendAudit(Mockito.any());
         try (var validators = Validation.buildDefaultValidatorFactory()) {
-            var readiness = new top.egon.cola.platform.tianquan.shoubing.starter.observability.IdpSecurityObservationReadinessComponent(audit, validators.getValidator());
-            try (var lease = readiness.acquireSpoolLease()) {
-                var ready = readiness.readiness(lease);
-                var producer = new top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent(redis, strictMapper(), audit,
-                        new top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties(), Clock.systemUTC(), validators.getValidator());
-                var properties = new top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties(true,
-                        URI.create("https://127.0.0.1:28443/tenants/1001"), false,
-                        top.egon.cola.platform.tianquan.shoubing.starter.observability.IdpSecurityObservationReceiverEnum.APPLICATION);
-                var receiver = new top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties(); receiver.setResourceUri(URI.create("https://127.0.0.1:28140"));
-                var metricEvents = new java.util.ArrayList<top.egon.cola.platform.tianquan.shoubing.core.observability.SecurityMetricObservationBO>();
-                new org.springframework.boot.test.context.runner.ApplicationContextRunner()
-                        .withUserConfiguration(top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterAutoConfiguration.UsageObservationConfiguration.class)
-                        .withPropertyValues("egon.cola.platform.tianquan.shoubing.usage-observation.enabled=true")
-                        .withBean("tokenUsageAuditComponent", top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent.class, () -> producer)
-                        .withBean("tokenUsageAuditEventConverterImpl", top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverter.class,
-                                () -> org.mapstruct.factory.Mappers.getMapper(top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverter.class))
-                        .withBean("oauthUsageObservationProperties", top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties.class, () -> properties)
-                        .withBean("idpSecurityMetricsRecorder", top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder.class,
-                                () -> metricEvents::add)
-                        .withBean("idpClock", Clock.class, Clock::systemUTC).withBean("defaultValidator", Validator.class, validators::getValidator)
-                        .withBean("idpStarterProperties", top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties.class, () -> receiver)
-                        .withBean("idpSecurityAuditReady", java.util.function.BooleanSupplier.class, () -> ready)
-                        .run(context -> {
-                            assertThat(context).hasNotFailed(); assertThat(ready.getAsBoolean()).isTrue();
-                            var event = new top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent("controlled-dead-event", 1, properties.getFallbackIssuer(),
-                                    receiver.getResourceUri().toASCIIString(), "a".repeat(64), "b".repeat(64), "c".repeat(64), "SUCCESS", "ACCESS_GRANTED", Instant.now(), "controlled-dead");
-                            producer.appendStrict(event);
-                            Path dead = spool.resolve(event.eventId() + ".evt.dead");
-                            Files.writeString(dead, producer.encodeReceipt(producer.createReceipt(event, "DEAD", Instant.now())));
-                            Files.setPosixFilePermissions(dead, PosixFilePermissions.fromString("rw-------"));
-                            assertThat(ready.getAsBoolean()).isFalse(); org.mockito.Mockito.clearInvocations(stream);
-                            var observations = context.getBean("idpObservedVerificationComponent", top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent.class);
-                            assertThat(observations.authenticationFailure()).isFalse();
-                            org.mockito.Mockito.verifyNoInteractions(stream);
-                        });
-            }
+            var producer = new top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent(
+                    issuer -> authority, Clock.systemUTC(), validators.getValidator(), sample -> { });
+            var properties = new top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties(true,
+                    URI.create("https://127.0.0.1:28443/tenants/1001"), false,
+                    top.egon.cola.platform.tianquan.shoubing.starter.observability.IdpSecurityObservationReceiverEnum.APPLICATION);
+            var converter = org.mapstruct.factory.Mappers.getMapper(top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverter.class);
+            var observer = new top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent(producer, converter,
+                    properties, sample -> { }, Clock.systemUTC(), validators.getValidator(), URI.create("https://127.0.0.1:28140"), () -> true);
+            assertThat(observer.authenticationFailure()).isFalse();
+            Mockito.verify(authority).appendAudit(Mockito.any());
+            assertThat(Files.exists(temporaryRepository.resolve("controlled-dead-spool"))).isFalse();
         }
     }
 
@@ -3127,7 +3108,7 @@ public class IsolatedOAuthProvisioningIT {
                 if (deny.check(verified).status() == top.egon.cola.platform.tianquan.shoubing.starter.security.OAuthRevocationReader.Status.REVOKED) {
                     var state = withHeldRealmStorageContext(realm, storage, () -> context.getBean("oAuthRevocationRepository", top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository.class)
                             .findByTarget(realm, top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum.JTI, jwt.getId()).orElse(null));
-                    if (state != null && "APPLIED".equals(state.getProjectionStatus())) { applied = true; break; }
+                    if (state != null && state.getRevision() > 0) { applied = true; break; }
                 }
                 Thread.sleep(100);
             }
@@ -3153,7 +3134,7 @@ public class IsolatedOAuthProvisioningIT {
             top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO audit, String jti, String eventId) {
         if (revocation == null || audit == null || revocation.getTargetType() != top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum.JTI
                 || !jti.equals(revocation.getTargetKey()) || revocation.getRevision() <= 0
-                || !"APPLIED".equals(revocation.getProjectionStatus()) || !"XINGYUAN_SERVICE_PROBE_REVOKED".equals(revocation.getReasonCode())
+                || !"XINGYUAN_SERVICE_PROBE_REVOKED".equals(revocation.getReasonCode())
                 || !eventId.equals(audit.getEventId()) || !eventId.equals(audit.getPublicId()) || !"OAUTH".equals(audit.getAuditKind())
                 || !"TOKEN_REVOKED".equals(audit.getEventType()) || !"SUCCESS".equals(audit.getResult())
                 || !revocation.getReasonCode().equals(audit.getReasonCode()) || !Objects.equals(revocation.getRevokedAt(), audit.getOccurredAt())) {
@@ -3166,14 +3147,14 @@ public class IsolatedOAuthProvisioningIT {
         var now = Instant.parse("2026-10-15T00:00:00Z");
         var revocation = top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthRevocationBO.builder()
                 .targetType(top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum.JTI).targetKey("owned-jti").revision(2L)
-                .reasonCode("XINGYUAN_SERVICE_PROBE_REVOKED").projectionStatus("APPLIED").revokedAt(now).build();
+                .reasonCode("XINGYUAN_SERVICE_PROBE_REVOKED").revokedAt(now).build();
         var audit = top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO.builder().eventId("owned-event").publicId("owned-event")
                 .auditKind("OAUTH").eventType("TOKEN_REVOKED").result("SUCCESS").reasonCode("XINGYUAN_SERVICE_PROBE_REVOKED").occurredAt(now).build();
         assertThatCode(() -> requireServiceRevocationAudit(revocation, audit, "owned-jti", "owned-event")).doesNotThrowAnyException();
         assertThatThrownBy(() -> requireServiceRevocationAudit(revocation, audit, "other-jti", "owned-event")).hasMessage("XINGYUAN_VERIFICATION_FAILED");
-        revocation.setProjectionStatus("PENDING");
+        revocation.setRevision(0L);
         assertThatThrownBy(() -> requireServiceRevocationAudit(revocation, audit, "owned-jti", "owned-event")).hasMessage("XINGYUAN_VERIFICATION_FAILED");
-        revocation.setProjectionStatus("APPLIED"); audit.setEventType("TOKEN_USE_VERIFIED");
+        revocation.setRevision(2L); audit.setEventType("TOKEN_USE_VERIFIED");
         assertThatThrownBy(() -> requireServiceRevocationAudit(revocation, audit, "owned-jti", "owned-event")).hasMessage("XINGYUAN_VERIFICATION_FAILED");
         audit.setEventType("TOKEN_REVOKED").setOccurredAt(now.plusNanos(1000));
         assertThatThrownBy(() -> requireServiceRevocationAudit(revocation, audit, "owned-jti", "owned-event")).hasMessage("XINGYUAN_VERIFICATION_FAILED");
@@ -3270,29 +3251,11 @@ public class IsolatedOAuthProvisioningIT {
                             beans.getBeanProvider(top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder.class));
         }
 
-        @Bean("oracleResourceStates")
-        top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityResourceServerStateReader resourceStates(
-                @Qualifier("rbac3RuntimeRedissonClient") org.redisson.api.RedissonClient redis,
-                @Qualifier("jacksonObjectMapper") ObjectMapper mapper,
-                @Qualifier("oracleIdpProperties") top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties properties) {
-            return new top.egon.cola.platform.tianquan.shoubing.starter.state.RedisIdentityResourceServerStateReader(redis, mapper, properties.getResourceStateKeyPrefix());
-        }
-
-        @Bean("oracleClientStates")
-        top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityOAuthClientStateReader clientStates(
-                @Qualifier("rbac3RuntimeRedissonClient") org.redisson.api.RedissonClient redis,
-                @Qualifier("jacksonObjectMapper") ObjectMapper mapper,
-                @Qualifier("oracleIdpProperties") top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties properties) {
-            return new top.egon.cola.platform.tianquan.shoubing.starter.state.RedisIdentityOAuthClientStateReader(redis, mapper, properties.getOauthClientStateKeyPrefix());
-        }
-
         @Bean("oracleRevocationReader")
         top.egon.cola.platform.tianquan.shoubing.starter.security.OAuthRevocationReader revocations(
-                @Qualifier("oracleTrustedIssuerRegistry") top.egon.cola.platform.tianquan.shoubing.starter.security.TrustedIssuerRegistry issuers,
-                @Qualifier("oracleIdpProperties") top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties properties,
-                org.springframework.beans.factory.config.ConfigurableListableBeanFactory beans) {
-            return new top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterAutoConfiguration().oauthRevocationReader(
-                    beans.getBeanProvider(org.redisson.api.RedissonClient.class), beans, issuers, beans.getBeanProvider(ObjectMapper.class), properties);
+                IdentityAuthorityClientResolver authority,
+                @Qualifier("oracleIdpProperties") top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties properties) {
+            return new top.egon.cola.platform.tianquan.shoubing.starter.security.impl.DatabaseOAuthRevocationReader(authority, properties.getResourceUri());
         }
 
         @Bean("oracleAuthorizationServerSettings")
@@ -3303,22 +3266,12 @@ public class IsolatedOAuthProvisioningIT {
 
         @Bean("oracleUsageReferences")
         top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent references(
-                @Qualifier("isolatedVerifiedDatabaseInputs") VerifiedDatabaseInputsBO inputs,
-                @Qualifier("rbac3RuntimeRedissonClient") org.redisson.api.RedissonClient redis,
-                @Qualifier("jacksonObjectMapper") ObjectMapper mapper,
-                @Qualifier("idpClock") Clock clock, @Qualifier("defaultValidator") Validator validator) throws IOException {
-            Path root = Path.of(inputs.getManifest().getRuntimeRoot());
-            String reference = inputs.getManifest().getSecretFiles().get("audit-hmac");
-            if (reference == null) { throw new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"); }
-            byte[] key = readProtectedBytes(Path.of(reference), root.resolve("secrets"), 32);
-            try { if (key.length != 32) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); } }
-            finally { Arrays.fill(key, (byte) 0); }
-            String attempt = bffEvidenceDirectory(inputs).getFileName().toString();
-            var properties = new top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties(
-                    "xingyuan-it:" + inputs.getManifest().getRunId() + ":oauth:audit:v1", root.resolve("spool/oracle/" + attempt), 1_048_576, Path.of(reference));
-            return new top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent(redis, mapper, properties,
-                    new top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties(), clock, validator);
+                IdentityAuthorityClientResolver authority, @Qualifier("idpClock") Clock clock,
+                @Qualifier("defaultValidator") Validator validator) {
+            return new top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent(
+                    authority, clock, validator, top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder.NOOP);
         }
+
     }
 
     @Data @NoArgsConstructor @AllArgsConstructor @Accessors(chain = true) @Builder
@@ -3737,10 +3690,10 @@ public class IsolatedOAuthProvisioningIT {
             top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier verifier,
             top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository audits,
             top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent references,
-            org.redisson.api.RedissonClient redis, String auditStream, Runnable guard, Clock clock,
+            OAuthAuditInboxRepository inboxes, OAuthAuditReceiptRepository receipts, Runnable guard, Clock clock,
             top.egon.cola.component.common.mybatis.autoconfigure.EgonColaMybatisPlusProperties properties) throws IOException {
         return materializeHeldAuthorization(realm, match, candidates, authorizations, settings, verifier, audits, references,
-                redis, auditStream, guard, clock, properties).getAccessToken().getToken();
+                inboxes, receipts, guard, clock, properties).getAccessToken().getToken();
     }
 
     static org.springframework.security.oauth2.server.authorization.OAuth2Authorization materializeHeldAuthorization(
@@ -3751,13 +3704,13 @@ public class IsolatedOAuthProvisioningIT {
             top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier verifier,
             top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository audits,
             top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent references,
-            org.redisson.api.RedissonClient redis, String auditStream, Runnable guard, Clock clock,
+            OAuthAuditInboxRepository inboxes, OAuthAuditReceiptRepository receipts, Runnable guard, Clock clock,
             top.egon.cola.component.common.mybatis.autoconfigure.EgonColaMybatisPlusProperties properties) throws IOException {
         try {
             return withHeldRealmStorageContext(realm, properties, () -> {
                 try {
                     return materializeHeldInStorageContext(realm, match, candidates, authorizations, settings, verifier,
-                            audits, references, redis, auditStream, guard, clock);
+                            audits, references, inboxes, receipts, guard, clock);
                 } catch (IOException unavailableReceipt) {
                     throw new java.io.UncheckedIOException(unavailableReceipt);
                 }
@@ -3768,59 +3721,38 @@ public class IsolatedOAuthProvisioningIT {
     }
 
     static top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent confirmedStoredUsageEvent(TrustedRealmBO realm,
-            top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO row, Map<String, String> fields,
-            String receiptJson, top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent references) throws IOException {
-        Set<String> required = Set.of("eventId", "schemaVersion", "issuer", "resource", "result", "reasonCode", "eventType", "auditKind", "occurredAt", "signature");
-        Set<String> allowed = Set.of("eventId", "schemaVersion", "issuer", "resource", "subjectRef", "clientRef", "tokenRef", "result", "reasonCode", "eventType", "auditKind", "occurredAt", "traceId", "signature");
-        if (fields == null || !fields.keySet().containsAll(required) || !allowed.containsAll(fields.keySet())
-                || fields.values().stream().anyMatch(value -> value == null || value.length() > 4096)
-                || !"1".equals(fields.get("schemaVersion")) || !"OAUTH".equals(fields.get("auditKind"))
-                || !Objects.equals(fields.get("reasonCode"), fields.get("eventType")) || receiptJson == null || receiptJson.length() > 16 * 1024) {
+            top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO row,
+            OAuthAuditInboxBO inbox, OAuthAuditReceiptBO receipt) throws IOException {
+        if (inbox == null || receipt == null || inbox.getEventPayload() == null || !inbox.getEventPayload().isObject()
+                || inbox.getEventPayload().toString().length() > 16 * 1024 || inbox.getSourceClientPk() == null || inbox.getSourceClientPk() <= 0
+                || !"STORED".equals(inbox.getState()) || !"STORED".equals(receipt.getOutcome())
+                || !Objects.equals(receipt.getInboxPk(), inbox.getId()) || !Objects.equals(receipt.getAuditPk(), row.getId())
+                || receipt.getConfirmedAt() == null || receipt.getReceiptId() == null
+                || !UUID.fromString(receipt.getReceiptId()).toString().equals(receipt.getReceiptId())) {
             throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED");
         }
-        Map<String, Object> projection = new java.util.LinkedHashMap<>(fields);
-        projection.remove("auditKind"); projection.remove("eventType"); projection.remove("signature"); projection.put("schemaVersion", 1);
-        var event = strictMapper().convertValue(projection, top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent.class);
+        var event = strictMapper().treeToValue(inbox.getEventPayload(), top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent.class);
         var jdbc = new org.postgresql.jdbc.TimestampUtils(false, () -> java.util.TimeZone.getTimeZone("UTC"));
         Instant pgOccurredAt;
         try { pgOccurredAt = jdbc.toOffsetDateTime(jdbc.toString(event.occurredAt().atOffset(java.time.ZoneOffset.UTC))).toInstant(); }
         catch (java.sql.SQLException invalidTimestamp) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED", invalidTimestamp); }
-        if (!realm.getIssuer().equals(event.issuer()) || !realm.getIssuer().toASCIIString().equals(fields.get("issuer"))
-                || !event.occurredAt().toString().equals(fields.get("occurredAt")) || !Objects.equals(row.getEventId(), event.eventId())
-                || !"OAUTH".equals(row.getAuditKind()) || !Objects.equals(row.getEventType(), event.reasonCode())
-                || !Objects.equals(row.getResourceRef(), event.resource()) || !Objects.equals(row.getResult(), event.result())
-                || !Objects.equals(row.getReasonCode(), event.reasonCode()) || !Objects.equals(row.getTraceId(), event.traceId())
-                || !Objects.equals(row.getSubjectRef(), event.subjectRef()) || !Objects.equals(row.getClientRef(), event.clientRef())
-                || !Objects.equals(row.getTokenRef(), event.tokenRef()) || !pgOccurredAt.equals(row.getOccurredAt())
-                || row.getPayload() == null || !row.getPayload().isObject() || !row.getPayload().isEmpty()
-                || !references.verifySignature(event.issuer().toASCIIString(), event.tokenRef(), fields.get("signature"))) {
+        String digest = TokenUsageAuditFingerprint.of(event);
+        if (!realm.getIssuer().equals(event.issuer()) || !Objects.equals(row.getEventId(), event.eventId())
+                || !event.eventId().equals(inbox.getEventId()) || !event.eventId().equals(receipt.getEventId())
+                || !digest.equals(inbox.getEventFingerprint()) || !digest.equals(receipt.getEventFingerprint()) || !digest.equals(row.getEventFingerprint())
+                || !event.issuer().toASCIIString().equals(inbox.getSourceIssuer()) || !inbox.getSourceIssuer().equals(receipt.getSourceIssuer())
+                || !inbox.getSourceIssuer().equals(row.getSourceIssuer()) || !Objects.equals(inbox.getSourceClientPk(), receipt.getSourceClientPk())
+                || !Objects.equals(inbox.getSourceClientPk(), row.getSourceClientPk()) || !event.resource().equals(inbox.getSourceResourceUri())
+                || !event.resource().equals(receipt.getSourceResourceUri()) || !"OAUTH".equals(row.getAuditKind())
+                || !"TOKEN_USE_VERIFIED".equals(row.getEventType()) || !Objects.equals(row.getResourceRef(), event.resource())
+                || !Objects.equals(row.getResult(), event.result()) || !Objects.equals(row.getReasonCode(), event.reasonCode())
+                || !Objects.equals(row.getTraceId(), event.traceId()) || !Objects.equals(row.getSubjectRef(), event.subjectRef())
+                || !Objects.equals(row.getClientRef(), event.clientRef()) || !Objects.equals(row.getTokenRef(), event.tokenRef())
+                || !pgOccurredAt.equals(row.getOccurredAt()) || !pgOccurredAt.equals(inbox.getOccurredAt())
+                || row.getPayload() == null || !row.getPayload().isObject() || !row.getPayload().isEmpty()) {
             throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED");
         }
-        var receipt = strictMapper().readValue(receiptJson, top.egon.cola.platform.tianquan.shoubing.starter.audit.domain.dto.TokenUsageAuditReceiptDTO.class);
-        if (!"STORED".equals(receipt.getOutcome()) || receipt.getConfirmedAt() == null
-                || receipt.getConfirmedAt().isBefore(event.occurredAt())
-                || !receipt.equals(references.createReceipt(event, "STORED", receipt.getConfirmedAt()))) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
         return event;
-    }
-
-    static Map<String, String> confirmedAuditStreamFields(org.redisson.api.RedissonClient redis, String stream, String eventId, Runnable guard) {
-        if (!stream.matches("xingyuan-it:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}:oauth:audit:v1")
-                || eventId == null || !eventId.matches("[A-Za-z0-9._~-]{1,64}")) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
-        guard.run();
-        var rows = redis.<String, String>getStream(stream, org.redisson.client.codec.StringCodec.INSTANCE)
-                .range(4097, org.redisson.api.stream.StreamMessageId.MIN, org.redisson.api.stream.StreamMessageId.MAX);
-        if (rows == null || rows.size() > 4096) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-        Map<String, String> selected = null;
-        for (var fields : rows.values()) {
-            if (fields == null || fields.size() > 16 || fields.values().stream().anyMatch(value -> value == null || value.length() > 4096)) {
-                throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED");
-            }
-            if (!eventId.equals(fields.get("eventId"))) { continue; }
-            if (selected != null && !selected.equals(fields)) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-            selected = fields;
-        }
-        if (selected == null) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-        guard.run(); return Map.copyOf(selected);
     }
 
     @Data @NoArgsConstructor @AllArgsConstructor @Accessors(chain = true) @Builder
@@ -3928,7 +3860,7 @@ public class IsolatedOAuthProvisioningIT {
         Instant now = Instant.now(); long seconds = inputs.getManifest().getDeadlines().getOperationSeconds();
         if (recorded.isAfter(now) || recorded.isBefore(now.minusSeconds(seconds))) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
         var bindings = bffOracleBindings(inputs, registry); var roles = Set.of("shoubing", "jianshen", "yuheng", "tianshu");
-        var scopes = new HashSet<String>(); var traces = new HashSet<String>(); var frames = new java.util.LinkedHashSet<Path>();
+        var scopes = new HashSet<String>(); var traces = new HashSet<String>(); var frames = new java.util.LinkedHashSet<String>();
         var output = strictMapper().createObjectNode().put("schemaVersion", 1).put("runId", inputs.getManifest().getRunId()).put("manifestSha256", inputs.getManifestSha256())
                 .put("scope", "FOUR_PLATFORM_HTTP_PG_STREAM_SIGNED_RECEIPTS_ONLY").put("sourceSha256", sha256Bytes(sourceBytes)); var proofs = output.putArray("proofs");
         try (var context = openOAuthContext(manifest, receipt, repository, registry.getTenantIds(), true); var validators = Validation.buildDefaultValidatorFactory()) {
@@ -3970,11 +3902,11 @@ public class IsolatedOAuthProvisioningIT {
                     proofs.add(item);
                 }
             }
-            awaitOwnedAuditFrameCleanup(inputs, frames, guard, deadline);
+            guard.run();
             guard.run();
         }
         if (scopes.size() != 8 || traces.size() != 80 || frames.size() != 96) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-        output.put("status", "PASSED").put("requestCount", traces.size()).put("storedEventCount", frames.size()).put("spoolAbsentAfterReceiptCount", frames.size()).put("recordedAt", Instant.now().toString());
+        output.put("status", "PASSED").put("requestCount", traces.size()).put("storedEventCount", frames.size()).put("sqlReceiptCount", frames.size()).put("recordedAt", Instant.now().toString());
         publishProtectedBytes(evidence.resolve("protocol-platform-http-audits.json"), evidence, strictMapper().writeValueAsBytes(output));
     }
 
@@ -3993,7 +3925,7 @@ public class IsolatedOAuthProvisioningIT {
                 || recorded.isAfter(now) || recorded.isBefore(now.minusSeconds(seconds))) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
         var output = strictMapper().createObjectNode().put("schemaVersion", 1).put("runId", inputs.getManifest().getRunId()).put("manifestSha256", inputs.getManifestSha256())
                 .put("scope", "MCP_HTTP_PG_STREAM_SIGNED_RECEIPTS_ONLY").put("sourceSha256", sha256Bytes(raw)); var proofs = output.putArray("proofs");
-        var realms = new HashSet<String>(); var traces = new HashSet<String>(); var frames = new java.util.LinkedHashSet<Path>();
+        var realms = new HashSet<String>(); var traces = new HashSet<String>(); var frames = new java.util.LinkedHashSet<String>();
         try (var context = openOAuthContext(manifestFile, database, repository, registry.getTenantIds(), true); var validators = Validation.buildDefaultValidatorFactory()) {
             var ownership = context.getBean("isolatedOwnershipGuard", Runnable.class); var validation = new ValidationUtils(validators.getValidator());
             Runnable guard = () -> {
@@ -4021,11 +3953,11 @@ public class IsolatedOAuthProvisioningIT {
                     proofs.add(observeOneHttpTrace(context, inputs, registry, request, realm, "mcp", URI.create(group.path("resourceUri").asText()), guard, deadline, frames, null));
                 }
             }
-            awaitOwnedAuditFrameCleanup(inputs, frames, guard, deadline); guard.run();
+            guard.run(); guard.run();
         }
         int events = java.util.stream.StreamSupport.stream(proofs.spliterator(), false).mapToInt(value -> value.path("events").size()).sum();
         if (realms.size() != 2 || traces.size() != 12 || events != 20 || frames.size() != 28) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-        output.put("status", "PASSED").put("requestCount", 12).put("storedEventCount", 20).put("spoolAbsentAfterReceiptCount", 20).put("checkedSpoolCandidateCount", frames.size()).put("recordedAt", Instant.now().toString());
+        output.put("status", "PASSED").put("requestCount", 12).put("storedEventCount", 20).put("sqlReceiptCount", 20).put("checkedSqlEventCount", frames.size()).put("recordedAt", Instant.now().toString());
         publishProtectedBytes(evidence.resolve("protocol-mcp-audits.json"), evidence, strictMapper().writeValueAsBytes(output));
     }
 
@@ -4059,7 +3991,7 @@ public class IsolatedOAuthProvisioningIT {
                 || !inputs.getManifest().getRunId().equals(index.path("runId").asText()) || !inputs.getManifestSha256().equals(index.path("manifestSha256").asText())) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
         Instant recorded = httpAuditTime(document, "recordedAt"), now = Instant.now(); long seconds = inputs.getManifest().getDeadlines().getOperationSeconds();
         if (recorded.isAfter(now) || recorded.isBefore(now.minusSeconds(seconds))) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
-        var bindings = bffOracleBindings(inputs, registry); var realms = new HashSet<String>(); var traces = new HashSet<String>(); var frames = new java.util.LinkedHashSet<Path>();
+        var bindings = bffOracleBindings(inputs, registry); var realms = new HashSet<String>(); var traces = new HashSet<String>(); var frames = new java.util.LinkedHashSet<String>();
         var output = strictMapper().createObjectNode().put("schemaVersion", 1).put("runId", inputs.getManifest().getRunId()).put("manifestSha256", inputs.getManifestSha256())
                 .put("scope", "NATIVE_USERINFO_PG_STREAM_SIGNED_RECEIPTS_ONLY").put("sourceSha256", sha256Bytes(sourceBytes)); var proofs = output.putArray("proofs");
         try (var context = openOAuthContext(manifest, receipt, repository, registry.getTenantIds(), true); var validators = Validation.buildDefaultValidatorFactory()) {
@@ -4092,10 +4024,10 @@ public class IsolatedOAuthProvisioningIT {
                             request.getStatus() == 200 ? references : null));
                 }
             }
-            awaitOwnedAuditFrameCleanup(inputs, frames, guard, deadline); guard.run();
+            guard.run(); guard.run();
         }
         if (realms.size() != 2 || traces.size() != 6 || frames.size() != 6) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-        output.put("status", "PASSED").put("requestCount", 6).put("storedEventCount", 6).put("spoolAbsentAfterReceiptCount", 6).put("recordedAt", Instant.now().toString());
+        output.put("status", "PASSED").put("requestCount", 6).put("storedEventCount", 6).put("sqlReceiptCount", 6).put("recordedAt", Instant.now().toString());
         publishProtectedBytes(evidence.resolve("protocol-native-userinfo-audits.json"), evidence, strictMapper().writeValueAsBytes(output));
     }
 
@@ -4157,7 +4089,7 @@ public class IsolatedOAuthProvisioningIT {
                 || recorded.isAfter(now) || recorded.isBefore(now.minusSeconds(seconds))) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
         var output = strictMapper().createObjectNode().put("schemaVersion", 1).put("runId", inputs.getManifest().getRunId()).put("manifestSha256", inputs.getManifestSha256())
                 .put("scope", "NATIVE_RPC_PG_STREAM_SIGNED_RECEIPTS_ONLY").put("sourceSha256", sha256Bytes(sourceBytes)); var proofs = output.putArray("proofs");
-        var groups = new HashSet<String>(); var traces = new HashSet<String>(); var frames = new java.util.LinkedHashSet<Path>();
+        var groups = new HashSet<String>(); var traces = new HashSet<String>(); var frames = new java.util.LinkedHashSet<String>();
         try (var context = openOAuthContext(manifest, Path.of(requiredOperationProperty("xingyuan.isolated.receipt-file")), repository, registry.getTenantIds(), true);
              var validators = Validation.buildDefaultValidatorFactory()) {
             var validation = new ValidationUtils(validators.getValidator()); var ownership = context.getBean("isolatedOwnershipGuard", Runnable.class);
@@ -4192,10 +4124,10 @@ public class IsolatedOAuthProvisioningIT {
                     item.remove("status"); item.put("rpcStatus", statuses.get(ordinal)); proofs.add(item);
                 }
             }
-            awaitOwnedAuditFrameCleanup(inputs, frames, guard, deadline); guard.run();
+            guard.run(); guard.run();
         }
         if (groups.size() != 4 || traces.size() != 16 || frames.size() != 20) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-        output.put("status", "PASSED").put("requestCount", 16).put("storedEventCount", 20).put("spoolAbsentAfterReceiptCount", 20).put("recordedAt", Instant.now().toString());
+        output.put("status", "PASSED").put("requestCount", 16).put("storedEventCount", 20).put("sqlReceiptCount", 20).put("recordedAt", Instant.now().toString());
         publishProtectedBytes(evidence.resolve("protocol-native-rpc-audits.json"), evidence, strictMapper().writeValueAsBytes(output));
     }
 
@@ -4240,10 +4172,11 @@ public class IsolatedOAuthProvisioningIT {
 
     private static com.fasterxml.jackson.databind.node.ObjectNode observeOneHttpTrace(AnnotationConfigApplicationContext context, VerifiedDatabaseInputsBO inputs,
             IsolatedRuntimeRegistryDTO registry, HttpAuditObservationDTO request, String realmCode, String role, URI resource, Runnable guard, Instant operationDeadline,
-            Set<Path> frames, ExpectedUsageReferencesVO expectedReferences) throws Exception {
+            Set<String> frames, ExpectedUsageReferencesVO expectedReferences) throws Exception {
         var clock = context.getBean("idpClock", Clock.class); var properties = context.getBean(top.egon.cola.component.common.mybatis.autoconfigure.EgonColaMybatisPlusProperties.class);
         var audits = context.getBean("oAuthAuditRepository", top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository.class);
-        var redis = context.getBean("rbac3RuntimeRedissonClient", org.redisson.api.RedissonClient.class);
+        var inboxes = context.getBean(OAuthAuditInboxRepository.class);
+        var receipts = context.getBean(OAuthAuditReceiptRepository.class);
         var references = context.getBean("oracleUsageReferences", top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent.class);
         var expectedRealm = registry.getRealms().get(request.getStatus() == 401 ? "default" : realmCode);
         Instant deadline = clock.instant().plusSeconds(inputs.getManifest().getDeadlines().getHttpSeconds()); if (operationDeadline.isBefore(deadline)) { deadline = operationDeadline; }
@@ -4267,21 +4200,19 @@ public class IsolatedOAuthProvisioningIT {
             var item = strictMapper().createObjectNode().put("role", role).put("realmCode", realmCode).put("traceId", request.getTraceId()).put("status", request.getStatus());
             var events = item.putArray("events"); boolean ready = true;
             for (var row : selected) {
-                guard.run(); String stream = "xingyuan-it:" + inputs.getManifest().getRunId() + ":oauth:audit:v1";
-                String receiptJson = redis.<String>getBucket(stream + ":receipt:" + row.getEventId(), org.redisson.client.codec.StringCodec.INSTANCE).get();
-                if (receiptJson == null) { ready = false; break; }
-                var event = confirmedStoredUsageEvent(expectedRealm, row, confirmedAuditStreamFields(redis, stream, row.getEventId(), guard), receiptJson, references);
-                Path frame = Path.of(inputs.getManifest().getRuntimeRoot()).resolve("evidence/oauth-spool-" + role).resolve(event.eventId() + ".evt");
-                if (frames.contains(frame)) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-                events.addObject().put("eventReference", sha256Bytes(event.eventId().getBytes(StandardCharsets.UTF_8))).put("fingerprint", references.fingerprint(event))
-                        .put("receiptSha256", sha256Bytes(receiptJson.getBytes(StandardCharsets.UTF_8))).put("decision", event.result() + ':' + event.reasonCode());
+                guard.run();
+                var inbox = withHeldRealmStorageContext(expectedRealm, properties, () -> inboxes.findByEventId(expectedRealm, row.getEventId()));
+                var receipt = withHeldRealmStorageContext(expectedRealm, properties, () -> receipts.findByEventId(expectedRealm, row.getEventId()));
+                if (inbox.isEmpty() || receipt.isEmpty()) { ready = false; break; }
+                var event = confirmedStoredUsageEvent(expectedRealm, row, inbox.get(), receipt.get());
+                if (frames.contains(event.eventId())) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
+                events.addObject().put("eventReference", sha256Bytes(event.eventId().getBytes(StandardCharsets.UTF_8)))
+                        .put("fingerprint", references.fingerprint(event))
+                        .put("receiptReference", sha256Bytes(receipt.get().getReceiptId().getBytes(StandardCharsets.UTF_8)))
+                        .put("decision", event.result() + ':' + event.reasonCode());
             }
             if (ready) {
-                for (var row : selected) {
-                    frames.add(Path.of(inputs.getManifest().getRuntimeRoot()).resolve("evidence/oauth-spool-" + role).resolve(row.getEventId() + ".evt"));
-                    // The signed protocol omits receiver identity; check both actual relay spools without inventing attribution.
-                    if (mcpRelay) { frames.add(Path.of(inputs.getManifest().getRuntimeRoot()).resolve("evidence/oauth-spool-yuheng").resolve(row.getEventId() + ".evt")); }
-                }
+                for (var row : selected) { frames.add(row.getEventId()); }
                 return item;
             }
             Thread.sleep(100);
@@ -4299,98 +4230,42 @@ public class IsolatedOAuthProvisioningIT {
         requireExpectedUsageReferences(rows, new ExpectedUsageReferencesVO(first.getSubjectRef(), first.getClientRef(), first.getTokenRef()));
     }
 
-    private static void awaitOwnedAuditFrameCleanup(VerifiedDatabaseInputsBO inputs, Set<Path> frames, Runnable guard, Instant operationDeadline) throws Exception {
-        Path root = Path.of(inputs.getManifest().getRuntimeRoot()); Instant deadline = Instant.now().plusSeconds(inputs.getManifest().getDeadlines().getHttpSeconds());
-        if (operationDeadline.isBefore(deadline)) { deadline = operationDeadline; }
-        while (Instant.now().isBefore(deadline)) {
-            guard.run(); boolean absent = true;
-            for (Path frame : frames) {
-                if (!frame.startsWith(root.resolve("evidence")) || !frame.getParent().getFileName().toString().matches("oauth-spool-(shoubing|jianshen|yuheng|tianshu|mcp|native-web|native-service)")) {
-                    throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
-                }
-                for (Path directory = frame.getParent(); directory.startsWith(root); directory = directory.getParent()) {
-                    if (Files.isSymbolicLink(directory) || !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)
-                            || !Files.getOwner(root).equals(Files.getOwner(directory, LinkOption.NOFOLLOW_LINKS))
-                            || !Files.getPosixFilePermissions(directory).equals(PosixFilePermissions.fromString("rwx------"))) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
-                }
-                for (String suffix : List.of("", ".sent", ".dead")) {
-                    Path candidate = frame.resolveSibling(frame.getFileName() + suffix);
-                    if (Files.isSymbolicLink(candidate) || suffix.equals(".dead") && Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) { throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"); }
-                    if (Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) { absent = false; }
-                }
-            }
-            if (absent) { return; }
-            Thread.sleep(200);
-        }
-        throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED");
-    }
-
     @Test
-    void auditStreamLookupRejectsForeignQueuesConflictingRedeliveryAndUnboundedHistory() {
-        var redis = Mockito.mock(org.redisson.api.RedissonClient.class);
-        var stream = Mockito.mock(org.redisson.api.RStream.class); String key = "xingyuan-it:" + UUID.randomUUID() + ":oauth:audit:v1";
-        var guards = new java.util.concurrent.atomic.AtomicInteger();
-        assertThatThrownBy(() -> confirmedAuditStreamFields(redis, "egon:oauth:audit:v1", "owned-event", guards::incrementAndGet)).hasMessage("XINGYUAN_TARGET_UNSAFE");
-        assertThat(guards.get()).isZero(); Mockito.verifyNoInteractions(redis);
-        Mockito.when(redis.getStream(key, org.redisson.client.codec.StringCodec.INSTANCE)).thenReturn(stream);
-        var original = Map.of("eventId", "owned-event", "result", "SUCCESS");
-        var messages = new java.util.LinkedHashMap<org.redisson.api.stream.StreamMessageId, Map<String, String>>();
-        messages.put(new org.redisson.api.stream.StreamMessageId(1, 0), original); messages.put(new org.redisson.api.stream.StreamMessageId(2, 0), original);
-        Mockito.when(stream.range(4097, org.redisson.api.stream.StreamMessageId.MIN, org.redisson.api.stream.StreamMessageId.MAX)).thenReturn(messages);
-        assertThat(confirmedAuditStreamFields(redis, key, "owned-event", guards::incrementAndGet)).isEqualTo(original);
-        assertThat(guards.get()).isEqualTo(2);
-        messages.put(new org.redisson.api.stream.StreamMessageId(2, 0), Map.of("eventId", "owned-event", "result", "DENIED"));
-        assertThatThrownBy(() -> confirmedAuditStreamFields(redis, key, "owned-event", guards::incrementAndGet)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
-        messages.clear();
-        for (int index = 0; index < 4097; index++) { messages.put(new org.redisson.api.stream.StreamMessageId(index + 1, 0), original); }
-        assertThatThrownBy(() -> confirmedAuditStreamFields(redis, key, "owned-event", guards::incrementAndGet)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
-        messages.clear();
-        assertThatThrownBy(() -> confirmedAuditStreamFields(redis, key, "owned-event", guards::incrementAndGet)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
-    }
-
-    @Test
-    void signedUsageReceiptRetainsWireNanosWhileTheActualJdbcRoundsPgMicros(@org.junit.jupiter.api.io.TempDir Path temporary) throws Exception {
-        Path root = temporary.toRealPath(); Files.setPosixFilePermissions(root, PosixFilePermissions.fromString("rwx------"));
-        Path key = root.resolve("audit-hmac"); Files.write(key, new byte[32]); Files.setPosixFilePermissions(key, PosixFilePermissions.fromString("rw-------"));
+    void sqlReceiptRetainsWireNanosWhileTheActualJdbcRoundsPgMicros() throws Exception {
         var realm = TrustedRealmBO.builder().issuer(URI.create("https://127.0.0.1:28443/tenants/1001")).realmKey("tenant:1001")
                 .realmType(RealmTypeEnum.TENANT).storagePartitionId(1001L).businessTenantId(1001L).trustVersion(0L).build();
-        var clock = Clock.fixed(Instant.parse("2026-10-15T00:00:02Z"), java.time.ZoneOffset.UTC);
         var wireAt = Instant.parse("2026-10-15T00:00:01.123456789Z");
         var jdbc = new org.postgresql.jdbc.TimestampUtils(false, () -> java.util.TimeZone.getTimeZone("UTC"));
         Instant pgAt = jdbc.toOffsetDateTime(jdbc.toString(wireAt.atOffset(java.time.ZoneOffset.UTC))).toInstant();
         assertThat(pgAt).isEqualTo(Instant.parse("2026-10-15T00:00:01.123457Z"));
-        var row = top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO.builder().id(1L).version(0L).eventId("owned-audit-event")
-                .eventType("TOKEN_USE_VERIFIED").auditKind("OAUTH").publicId("owned-audit-event").subjectRef("a".repeat(64)).clientRef("b".repeat(64))
-                .tokenRef("c".repeat(64)).resourceRef("https://127.0.0.1:28140").result("SUCCESS").reasonCode("TOKEN_USE_VERIFIED").traceId("d".repeat(32)).occurredAt(pgAt).build();
-        var event = new top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent(row.getEventId(), 1, realm.getIssuer(), row.getResourceRef(),
-                row.getSubjectRef(), row.getClientRef(), row.getTokenRef(), row.getResult(), row.getReasonCode(), wireAt, row.getTraceId());
-        try (var validators = Validation.buildDefaultValidatorFactory()) {
-            var references = new top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent(Mockito.mock(org.redisson.api.RedissonClient.class), strictMapper(),
-                    new top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties("task:audit", root.resolve("oracle-spool"), 1048576, key),
-                    new top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties(), clock, validators.getValidator());
-            // Use the original writer's signature through the actual publish path, without Redis transport.
-            var redis = Mockito.mock(org.redisson.api.RedissonClient.class); var stream = Mockito.mock(org.redisson.api.RStream.class);
-            Mockito.when(redis.getStream("task:audit", org.redisson.client.codec.StringCodec.INSTANCE)).thenReturn(stream);
-            Mockito.when(stream.add(Mockito.any(org.redisson.api.stream.StreamAddArgs.class))).thenReturn(new org.redisson.api.stream.StreamMessageId(1, 0));
-            var writer = new top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent(redis, strictMapper(),
-                    new top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties("task:audit", root.resolve("writer-spool"), 1048576, key),
-                    new top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties(), clock, validators.getValidator());
-            writer.appendStrict(event);
-            var captured = org.mockito.ArgumentCaptor.forClass(org.redisson.api.stream.StreamAddArgs.class);
-            Mockito.verify(stream).add(captured.capture());
-            var entries = ((org.redisson.api.stream.StreamAddParams<String, String>) captured.getValue()).getEntries();
-            var receipt = references.encodeReceipt(references.createReceipt(event, "STORED", clock.instant()));
-            assertThatCode(() -> confirmedStoredUsageEvent(realm, row, entries, receipt, references)).doesNotThrowAnyException();
-            assertThat(confirmedStoredUsageEvent(realm, row, entries, receipt, references).occurredAt()).isEqualTo(wireAt);
-            for (String changed : List.of("signature", "occurredAt", "result", "resource", "accessToken")) {
-                var invalid = new java.util.LinkedHashMap<>(entries);
-                invalid.put(changed, switch (changed) { case "signature" -> "0".repeat(64); case "occurredAt" -> wireAt.plusNanos(1).toString(); case "result" -> "DENIED"; case "resource" -> "https://foreign.invalid"; default -> "forbidden"; });
-                assertThatThrownBy(() -> confirmedStoredUsageEvent(realm, row, invalid, receipt, references)).isInstanceOf(IllegalStateException.class);
+        var event = new top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent("owned-audit-event", 1, realm.getIssuer(),
+                "https://127.0.0.1:28140", "a".repeat(64), "b".repeat(64), "c".repeat(64), "SUCCESS", "TOKEN_USE_VERIFIED", wireAt, "d".repeat(32));
+        String digest = TokenUsageAuditFingerprint.of(event);
+        var row = top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO.builder().id(1L).version(0L).eventId(event.eventId())
+                .eventType("TOKEN_USE_VERIFIED").auditKind("OAUTH").publicId(event.eventId()).subjectRef(event.subjectRef()).clientRef(event.clientRef())
+                .tokenRef(event.tokenRef()).resourceRef(event.resource()).result(event.result()).reasonCode(event.reasonCode()).traceId(event.traceId())
+                .occurredAt(pgAt).eventFingerprint(digest).sourceClientPk(51L).sourceIssuer(realm.getIssuer().toASCIIString())
+                .payload(strictMapper().createObjectNode()).build();
+        var inbox = OAuthAuditInboxBO.builder().id(2L).eventId(event.eventId()).eventFingerprint(digest).schemaVersion(1)
+                .sourceClientPk(51L).sourceIssuer(realm.getIssuer().toASCIIString()).sourceResourceUri(event.resource())
+                .eventPayload(strictMapper().valueToTree(event)).occurredAt(pgAt).state("STORED").build();
+        var receipt = OAuthAuditReceiptBO.builder().receiptId(UUID.randomUUID().toString()).inboxPk(2L).eventId(event.eventId())
+                .eventFingerprint(digest).sourceClientPk(51L).sourceIssuer(realm.getIssuer().toASCIIString()).sourceResourceUri(event.resource())
+                .outcome("STORED").auditPk(1L).confirmedAt(wireAt.plusSeconds(1)).build();
+        assertThat(confirmedStoredUsageEvent(realm, row, inbox, receipt).occurredAt()).isEqualTo(wireAt);
+        for (String changed : List.of("event", "source", "fingerprint", "inbox", "audit", "outcome")) {
+            var invalid = receipt.toBuilder().build();
+            switch (changed) {
+                case "event" -> invalid.setEventId("foreign"); case "source" -> invalid.setSourceClientPk(99L);
+                case "fingerprint" -> invalid.setEventFingerprint("0".repeat(64)); case "inbox" -> invalid.setInboxPk(99L);
+                case "audit" -> invalid.setAuditPk(99L); case "outcome" -> invalid.setOutcome("DEAD");
             }
-            var offsetTime = new java.util.LinkedHashMap<>(entries);
-            offsetTime.put("occurredAt", wireAt.atOffset(java.time.ZoneOffset.ofHours(1)).toString());
-            assertThatThrownBy(() -> confirmedStoredUsageEvent(realm, row, offsetTime, receipt, references)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
+            assertThatThrownBy(() -> confirmedStoredUsageEvent(realm, row, inbox, invalid)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
         }
+        var forged = inbox.toBuilder().eventPayload(strictMapper().valueToTree(new top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent(
+                event.eventId(), 1, event.issuer(), event.resource(), event.subjectRef(), event.clientRef(), event.tokenRef(), event.result(), event.reasonCode(),
+                wireAt.plusNanos(1), event.traceId()))).build();
+        assertThatThrownBy(() -> confirmedStoredUsageEvent(realm, row, forged, receipt)).hasMessage("XINGYUAN_VERIFICATION_FAILED");
     }
 
     private static org.springframework.security.oauth2.server.authorization.OAuth2Authorization materializeHeldInStorageContext(
@@ -4401,7 +4276,7 @@ public class IsolatedOAuthProvisioningIT {
             top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier verifier,
             top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository audits,
             top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent references,
-            org.redisson.api.RedissonClient redis, String auditStream, Runnable guard, Clock clock) throws IOException {
+            OAuthAuditInboxRepository inboxes, OAuthAuditReceiptRepository receipts, Runnable guard, Clock clock) throws IOException {
         if (realm.getRealmType() != RealmTypeEnum.TENANT || realm.getBusinessTenantId() == null) {
             throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
         }
@@ -4416,12 +4291,9 @@ public class IsolatedOAuthProvisioningIT {
             throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED");
         }
         guard.run();
-        String receiptJson = redis.<String>getBucket(auditStream + ":receipt:" + match.getEventId(),
-                org.redisson.client.codec.StringCodec.INSTANCE).get();
-        if (receiptJson == null || receiptJson.length() > 16 * 1024) {
-            throw new IllegalStateException("XINGYUAN_VERIFICATION_FAILED");
-        }
-        var originalEvent = confirmedStoredUsageEvent(realm, used, confirmedAuditStreamFields(redis, auditStream, match.getEventId(), guard), receiptJson, references);
+        var inbox = inboxes.findByEventId(realm, match.getEventId()).orElseThrow(() -> new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"));
+        var receipt = receipts.findByEventId(realm, match.getEventId()).orElseThrow(() -> new IllegalStateException("XINGYUAN_VERIFICATION_FAILED"));
+        var originalEvent = confirmedStoredUsageEvent(realm, used, inbox, receipt);
         var proof = new top.egon.cola.platform.tianquan.shoubing.starter.security.domain.TokenAuditProofBO(realm.getIssuer(),
                 URI.create(originalEvent.resource()), originalEvent.subjectRef(), originalEvent.clientRef(), originalEvent.tokenRef());
         var auditConverter = new top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverterImpl();
@@ -4713,15 +4585,16 @@ public class IsolatedOAuthProvisioningIT {
         var audits = Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository.class);
         var verifier = Mockito.mock(top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier.class);
         var references = Mockito.mock(top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent.class);
-        var redis = Mockito.mock(org.redisson.api.RedissonClient.class);
+        var inboxes = Mockito.mock(OAuthAuditInboxRepository.class);
+        var receipts = Mockito.mock(OAuthAuditReceiptRepository.class);
         var properties = new top.egon.cola.component.common.mybatis.autoconfigure.EgonColaMybatisPlusProperties();
         Map<String, String> previous = org.slf4j.MDC.getCopyOfContextMap();
         assertThatThrownBy(() -> materializeHeldAccessToken(realm, match, mapper, authorizations,
                 org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings.builder().multipleIssuersAllowed(true).build(),
-                verifier, audits, references, redis, "xingyuan-it:run:oauth:audit:v1", () -> { }, Clock.fixed(now, java.time.ZoneOffset.UTC), properties))
+                verifier, audits, references, inboxes, receipts, () -> { }, Clock.fixed(now, java.time.ZoneOffset.UTC), properties))
                 .hasMessage("XINGYUAN_VERIFICATION_FAILED");
         assertThat(org.slf4j.MDC.getCopyOfContextMap()).isEqualTo(previous);
-        Mockito.verifyNoInteractions(authorizations, verifier, references, redis);
+        Mockito.verifyNoInteractions(authorizations, verifier, references, inboxes, receipts);
     }
 
     @Test
@@ -6733,104 +6606,65 @@ public class IsolatedOAuthProvisioningIT {
         };
         String prefix = "egon.cola.platform.tianquan.shoubing.";
         Map<String, String> values = new java.util.TreeMap<>();
-        values.put(prefix + "audit.stream", "xingyuan-it:${xingyuan.it.run-id}:oauth:audit:v1");
-        values.put(prefix + "audit.spool-directory", "${xingyuan.it.runtime-root}/evidence/oauth-spool-" + role);
-        values.put(prefix + "audit.spool-max-bytes", "104857600"); values.put(prefix + "audit.hmac-key-file", "${xingyuan.it.secret.audit-hmac.file}");
-        values.put(prefix + "audit.delivery.receipt-ttl", "1h"); values.put(prefix + "audit.delivery.confirmation-timeout", "30s");
-        values.put(prefix + "audit.delivery.batch-size", "100");
         values.put(prefix + "usage-observation.enabled", "true"); values.put(prefix + "usage-observation.receiver", receiver);
-        values.put(prefix + "usage-observation.fallback-issuer", "${xingyuan.it.realm.default.issuer}"); values.put(prefix + "usage-observation.allow-local-plaintext", "true");
-        values.put(prefix + "revocation.mode", "STRICT_SHARED"); values.put(prefix + "revocation.timeout", "500ms");
-        values.put(prefix + "revocation.primary-endpoint", "${xingyuan.it.redis.endpoint}"); values.put(prefix + "revocation.epoch", "${xingyuan.it.run-id}");
+        values.put(prefix + "usage-observation.fallback-issuer", "${xingyuan.it.realm.default.issuer}");
+        values.put(prefix + "usage-observation.allow-local-plaintext", "true");
         return java.util.Collections.unmodifiableMap(values);
     }
 
+    /** Only validates observation leaves; the runtime must separately supply its bound SQL authority SERVICE credentials. */
     private static void validateRuntimeAudit(String role, VerifiedDatabaseInputsBO inputs, IsolatedRuntimeRegistryDTO registry,
             Map<String, String> values) throws IOException {
-        var binder = new org.springframework.boot.context.properties.bind.Binder(
-                new org.springframework.boot.context.properties.source.MapConfigurationPropertySource(values));
         String prefix = "egon.cola.platform.tianquan.shoubing.";
-        var audit = binder.bind(prefix + "audit", top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties.class)
-                .orElseThrow(() -> new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"));
-        var usage = binder.bind(prefix + "usage-observation", top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties.class)
-                .orElseThrow(() -> new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"));
-        var delivery = binder.bind(prefix + "audit.delivery", top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties.class)
-                .orElseThrow(() -> new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"));
-        var revocation = binder.bind(prefix + "revocation", top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthRevocationProperties.class)
-                .orElseThrow(() -> new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"));
-        try (var validators = Validation.buildDefaultValidatorFactory()) {
-            var validation = new top.egon.cola.component.common.core.validation.ValidationUtils(validators.getValidator());
-            validation.validate(audit); validation.validate(usage); validation.validate(delivery); validation.validate(revocation);
-        }
-        revocation.validateValues();
-        var manifest = inputs.getManifest(); var facts = runtimeRegistryFacts(inputs, registry);
-        Path root = Path.of(manifest.getRuntimeRoot()); Path spool = root.resolve("evidence/oauth-spool-" + role);
-        String keyReference = manifest.getSecretFiles().get("audit-hmac");
-        if (keyReference == null) { throw new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"); }
-        if (!audit.stream().equals("xingyuan-it:" + manifest.getRunId() + ":oauth:audit:v1") || !spool.equals(audit.spoolDirectory())
-                || audit.spoolMaxBytes() > 104857600L || !Path.of(keyReference).equals(audit.hmacKeyFile())
-                || !usage.isEnabled() || !usage.isAllowLocalPlaintext() || usage.getReceiver() == null
-                || !usage.getReceiver().name().equals(runtimeAuditTemplate(role).get(prefix + "usage-observation.receiver"))
-                || !facts.get("xingyuan.it.realm.default.issuer").equals(usage.getFallbackIssuer().toASCIIString())
-                || !manifest.getRedis().getEndpoint().equals(revocation.getPrimaryEndpoint().toASCIIString())
-                || !manifest.getRunId().equals(revocation.getEpoch()) || values.containsKey(prefix + "audit.stream-key")) {
+        if (values.keySet().stream().anyMatch(key -> key.startsWith(prefix + "audit.") || key.startsWith(prefix + "revocation."))) {
             throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
         }
-        if (Files.exists(spool, LinkOption.NOFOLLOW_LINKS)) { validatePrivateSecretDestination(spool.resolve(".profile-spool-check"), root); }
-        else { validatePrivateSecretDestination(spool, root); }
-        byte[] key = readProtectedBytes(audit.hmacKeyFile(), root.resolve("secrets"), 32);
-        try { if (key.length != 32) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); } }
-        finally { java.util.Arrays.fill(key, (byte) 0); }
+        var binder = new org.springframework.boot.context.properties.bind.Binder(
+                new org.springframework.boot.context.properties.source.MapConfigurationPropertySource(values));
+        var usage = binder.bind(prefix + "usage-observation", top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties.class)
+                .orElseThrow(() -> new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"));
+        try (var validators = Validation.buildDefaultValidatorFactory()) {
+            new top.egon.cola.component.common.core.validation.ValidationUtils(validators.getValidator()).validate(usage);
+        }
+        var facts = runtimeRegistryFacts(inputs, registry);
+        if (!usage.isEnabled() || !usage.isAllowLocalPlaintext() || usage.getReceiver() == null
+                || !usage.getReceiver().name().equals(runtimeAuditTemplate(role).get(prefix + "usage-observation.receiver"))
+                || !facts.get("xingyuan.it.realm.default.issuer").equals(usage.getFallbackIssuer().toASCIIString())) {
+            throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
+        }
     }
 
     @Test
-    void runtimeAuditFragmentsRejectCrossTaskAndCrossRoleDestinations() throws Exception {
+    void runtimeAuditFragmentsRejectRetiredStateWithoutTouchingExistingSpools() throws Exception {
         var manifest = intent(); Path root = Path.of(manifest.getRuntimeRoot());
-        for (String directory : List.of("", "secrets", "evidence")) {
-            Files.createDirectories(root.resolve(directory)); Files.setPosixFilePermissions(root.resolve(directory), PosixFilePermissions.fromString("rwx------"));
-        }
-        Path key = root.resolve("secrets/audit-hmac.bin"); Files.write(key, new byte[32]); Files.setPosixFilePermissions(key, PosixFilePermissions.fromString("rw-------"));
-        manifest.setSecretFiles(Map.of("audit-hmac", key.toString()));
+        Files.createDirectories(root.resolve("evidence"));
         var inputs = VerifiedDatabaseInputsBO.builder().manifest(manifest).manifestSha256("a".repeat(64)).build();
         var registry = runtimeRegistryFixture(manifest, inputs.getManifestSha256());
         Map<String, String> facts = new java.util.TreeMap<>(runtimeRegistryFacts(inputs, registry));
-        facts.put("xingyuan.it.secret.audit-hmac.file", key.toString()); facts.put("xingyuan.it.redis.endpoint", manifest.getRedis().getEndpoint());
         for (String role : RUNTIME_PROFILES.keySet()) {
             var rendered = renderRuntimeProperties(Map.of(), runtimeAuditTemplate(role), facts);
             org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> validateRuntimeAudit(role, inputs, registry, rendered));
-            assertThat(Files.exists(root.resolve("evidence/oauth-spool-" + role))).isFalse();
+            assertThat(rendered.keySet()).noneMatch(key -> key.contains("spool") || key.contains("hmac") || key.contains("revocation"));
         }
         var values = renderRuntimeProperties(Map.of(), runtimeAuditTemplate("edge"), facts);
         String prefix = "egon.cola.platform.tianquan.shoubing.";
         for (var change : Map.ofEntries(
-                Map.entry(prefix + "audit.spool-directory", root.resolve("evidence/oauth-spool-jianshen").toString()),
-                Map.entry(prefix + "audit.stream", "egon:oauth:audit:v1"), Map.entry(prefix + "audit.stream-key", "egon:oauth:audit:v1"),
-                Map.entry(prefix + "audit.hmac-key-file", root.resolve("secrets/foreign-key.bin").toString()),
-                Map.entry(prefix + "audit.spool-max-bytes", "1073741824"), Map.entry(prefix + "usage-observation.enabled", "false"),
-                Map.entry(prefix + "usage-observation.receiver", "JIANSHEN"), Map.entry(prefix + "usage-observation.allow-local-plaintext", "false"),
+                Map.entry(prefix + "audit.spool-directory", root.resolve("evidence/foreign").toString()),
+                Map.entry(prefix + "audit.stream", "egon:oauth:audit:v1"), Map.entry(prefix + "audit.hmac-key-file", "/untrusted/key"),
+                Map.entry(prefix + "usage-observation.enabled", "false"), Map.entry(prefix + "usage-observation.receiver", "JIANSHEN"),
+                Map.entry(prefix + "usage-observation.allow-local-plaintext", "false"),
                 Map.entry(prefix + "usage-observation.fallback-issuer", facts.get("xingyuan.it.realm.tenant-b.issuer")),
-                Map.entry(prefix + "revocation.epoch", "old-epoch"), Map.entry(prefix + "revocation.primary-endpoint", "redis://127.0.0.1:6380")).entrySet()) {
-            var foreign = new java.util.TreeMap<>(values); foreign.put(change.getKey(), change.getValue());
-            assertThatThrownBy(() -> validateRuntimeAudit("edge", inputs, registry, foreign)).hasMessage("XINGYUAN_TARGET_UNSAFE");
+                Map.entry(prefix + "revocation.epoch", "old-epoch")).entrySet()) {
+            var invalid = new java.util.TreeMap<>(values); invalid.put(change.getKey(), change.getValue());
+            assertThatThrownBy(() -> validateRuntimeAudit("edge", inputs, registry, invalid)).hasMessage("XINGYUAN_TARGET_UNSAFE");
         }
-        var invalidDelivery = new java.util.TreeMap<>(values); invalidDelivery.put(prefix + "audit.delivery.confirmation-timeout", "1s");
-        assertThatThrownBy(() -> validateRuntimeAudit("edge", inputs, registry, invalidDelivery)).isInstanceOf(jakarta.validation.ConstraintViolationException.class);
-        assertThatThrownBy(() -> runtimeAuditTemplate("foreign")).hasMessage("XINGYUAN_TARGET_UNSAFE");
-        Path spool = root.resolve("evidence/oauth-spool-edge"); Files.createDirectory(spool, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+        Path spool = root.resolve("evidence/oauth-spool-edge"); Files.createDirectories(spool);
         Path retained = spool.resolve("retained.evt"); Files.writeString(retained, "original-audit-payload");
-        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> validateRuntimeAudit("edge", inputs, registry, values));
+        validateRuntimeAudit("edge", inputs, registry, values);
         assertThat(Files.readString(retained)).isEqualTo("original-audit-payload");
-        Files.setPosixFilePermissions(key, PosixFilePermissions.fromString("rw-r-----"));
-        try { assertThatThrownBy(() -> validateRuntimeAudit("edge", inputs, registry, values)).hasMessage("XINGYUAN_TARGET_UNSAFE"); }
-        finally { Files.setPosixFilePermissions(key, PosixFilePermissions.fromString("rw-------")); }
-        Files.write(key, new byte[31]);
-        try { assertThatThrownBy(() -> validateRuntimeAudit("edge", inputs, registry, values)).hasMessage("XINGYUAN_TARGET_UNSAFE"); }
-        finally { Files.write(key, new byte[32]); }
-        Path moved = root.resolve("evidence/preserved-edge-spool"); Files.move(spool, moved); Files.createSymbolicLink(spool, moved);
-        try { assertThatThrownBy(() -> validateRuntimeAudit("edge", inputs, registry, values)).hasMessage("XINGYUAN_TARGET_UNSAFE"); }
-        finally { Files.delete(spool); Files.move(moved, spool); }
-        var missing = new java.util.TreeMap<>(facts); missing.remove("xingyuan.it.secret.audit-hmac.file");
-        assertThatThrownBy(() -> renderRuntimeProperties(Map.of(), runtimeAuditTemplate("edge"), missing)).hasMessage("XINGYUAN_INPUT_UNAVAILABLE");
+        assertThatThrownBy(() -> runtimeAuditTemplate("foreign")).hasMessage("XINGYUAN_TARGET_UNSAFE");
+        facts.remove("xingyuan.it.realm.default.issuer");
+        assertThatThrownBy(() -> renderRuntimeProperties(Map.of(), runtimeAuditTemplate("edge"), facts)).hasMessage("XINGYUAN_INPUT_UNAVAILABLE");
     }
 
     static Map<String, String> runtimeTrustTemplate() {

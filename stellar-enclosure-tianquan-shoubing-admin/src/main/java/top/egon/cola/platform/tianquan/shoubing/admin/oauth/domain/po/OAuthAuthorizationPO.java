@@ -66,8 +66,7 @@ public class OAuthAuthorizationPO extends EgonModel<OAuthAuthorizationPO> {
             EgonColaModelValidationGroups.Persisted.class})
     private String grantType;
 
-    @TableField(value = "authorized_scopes", typeHandler = OAuthStringListJsonbTypeHandler.class,
-            updateStrategy = FieldStrategy.NEVER)
+    @TableField(value = "authorized_scopes", typeHandler = OAuthStringListJsonbTypeHandler.class)
     @NotNull(groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})
     @Size(max = 64, groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
@@ -94,7 +93,7 @@ public class OAuthAuthorizationPO extends EgonModel<OAuthAuthorizationPO> {
     @NotBlank(groups = {EgonColaModelValidationGroups.Insert.class,
             EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})
-    @Pattern(regexp = "ACTIVE|REVOKED|EXPIRED", groups = {
+    @Pattern(regexp = "PENDING_CONSENT|ACTIVE|REVOKED|EXPIRED|CANCELLED", groups = {
             EgonColaModelValidationGroups.Insert.class,
             EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})
@@ -111,7 +110,7 @@ public class OAuthAuthorizationPO extends EgonModel<OAuthAuthorizationPO> {
     @JsonIgnore
     @ToString.Exclude
     @EqualsAndHashCode.Exclude
-    @TableField(value = "attributes_ciphertext", updateStrategy = FieldStrategy.NEVER)
+    @TableField("attributes_ciphertext")
     @NotBlank(groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})
     private String attributesCiphertext;
@@ -123,4 +122,35 @@ public class OAuthAuthorizationPO extends EgonModel<OAuthAuthorizationPO> {
 
     @TableField("revoked_at")
     private Instant revokedAt;
+
+    @lombok.Builder.Default
+    @com.baomidou.mybatisplus.annotation.TableField(value = "requested_scopes", typeHandler = top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler.class, updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private List<String> requestedScopes = java.util.List.of();
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "resource_uri", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private String resourceUri;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
+    @lombok.EqualsAndHashCode.Exclude
+    @com.baomidou.mybatisplus.annotation.TableField(value = "authentication_jti_digest", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private String authenticationJtiDigest;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
+    @lombok.EqualsAndHashCode.Exclude
+    @com.baomidou.mybatisplus.annotation.TableField(value = "client_browser_binding_digest", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private String clientBrowserBindingDigest;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
+    @lombok.EqualsAndHashCode.Exclude
+    @com.baomidou.mybatisplus.annotation.TableField(value = "interaction_id", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private String interactionId;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "refresh_generation")
+    private long refreshGeneration;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "retain_until")
+    private Instant retainUntil;
 }

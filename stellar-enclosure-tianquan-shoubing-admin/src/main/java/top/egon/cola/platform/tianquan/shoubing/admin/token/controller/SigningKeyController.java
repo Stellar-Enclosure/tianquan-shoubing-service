@@ -1,5 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.token.controller;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.RequiresPermissions;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -58,6 +63,9 @@ public class SigningKeyController {
     @Qualifier("oauthManagementRealmResolver")
     private final OAuthManagementRealmResolver realms;
 
+    @PermissionResource(key = "tianquan-shoubing.api.signingKey.list", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.signingKey.list")
+    @RequiresPermissions(codes = IdentityPermissionCodes.SIGNING_KEY_READ)
     @GetMapping
     @Operation(
             operationId = "tianquan-shoubing-signing-key-list-v1",
@@ -75,6 +83,9 @@ public class SigningKeyController {
         return keys.list(realms.resolve(principal, realm));
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.signingKey.publish", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.signingKey.publish")
+    @RequiresPermissions(codes = IdentityPermissionCodes.SIGNING_KEY_PUBLISH)
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
@@ -97,6 +108,9 @@ public class SigningKeyController {
         return keys.publish(trustedRealm, request);
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.signingKey.activate", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.signingKey.activate")
+    @RequiresPermissions(codes = IdentityPermissionCodes.SIGNING_KEY_ACTIVATE)
     @PostMapping("/{kid}/activate")
     @Operation(
             operationId = "tianquan-shoubing-signing-key-activate-v1",
@@ -117,6 +131,9 @@ public class SigningKeyController {
         return keys.activate(realms.resolve(principal, realm), kid, expectedVersion);
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.signingKey.retire", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.signingKey.retire")
+    @RequiresPermissions(codes = IdentityPermissionCodes.SIGNING_KEY_RETIRE)
     @PostMapping("/{kid}/retire")
     @Operation(
             operationId = "tianquan-shoubing-signing-key-retire-v1",

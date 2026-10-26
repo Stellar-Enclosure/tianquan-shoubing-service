@@ -6,6 +6,7 @@ import top.egon.cola.platform.tianquan.shoubing.contract.IdpPrincipal;
 import java.util.List;
 import java.util.Objects;
 import java.util.Collection;
+import java.net.URI;
 import org.springframework.security.core.GrantedAuthority;
 
 /**
@@ -25,6 +26,7 @@ public final class IdpAuthenticationToken
      * <p>Validated unified identity principal.</p>
      */
     private final IdpPrincipal principal;
+    private final URI verifiedIssuer;
 
     /**
      * 创建已经完成身份验证的认证对象。
@@ -42,9 +44,26 @@ public final class IdpAuthenticationToken
             IdpPrincipal principal,
             Collection<? extends GrantedAuthority> authorities
     ) {
+        this(principal, authorities, null);
+    }
+
+    /** Carries issuer binding established by the verifier, independently of audit metadata. */
+    public IdpAuthenticationToken(IdpPrincipal principal,
+            Collection<? extends GrantedAuthority> authorities, URI verifiedIssuer) {
         super(List.copyOf(Objects.requireNonNull(authorities, "authorities")));
         this.principal = Objects.requireNonNull(principal, "principal");
+        if (verifiedIssuer != null && (!"https".equalsIgnoreCase(verifiedIssuer.getScheme())
+                || verifiedIssuer.getHost() == null || verifiedIssuer.getUserInfo() != null
+                || verifiedIssuer.getQuery() != null || verifiedIssuer.getFragment() != null)) {
+            throw new IllegalArgumentException("VERIFIED_ISSUER_INVALID");
+        }
+        this.verifiedIssuer = verifiedIssuer;
         setAuthenticated(true);
+    }
+
+    public URI verifiedIssuer() {
+        if (verifiedIssuer == null) { throw new IllegalStateException("VERIFIED_ISSUER_UNAVAILABLE"); }
+        return verifiedIssuer;
     }
 
     /**

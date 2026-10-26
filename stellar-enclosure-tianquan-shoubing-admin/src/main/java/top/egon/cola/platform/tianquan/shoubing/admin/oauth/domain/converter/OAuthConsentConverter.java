@@ -14,6 +14,7 @@ public interface OAuthConsentConverter extends BaseConverter<OAuthConsentPO, OAu
     @Override
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "resourceUri", source = "resourceUri")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "clientPk", source = "clientPk")
     @Mapping(target = "subject", source = "subject")
@@ -25,6 +26,7 @@ public interface OAuthConsentConverter extends BaseConverter<OAuthConsentPO, OAu
     @Override
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "resourceUri", source = "resourceUri")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "clientPk", source = "clientPk")
     @Mapping(target = "subject", source = "subject")

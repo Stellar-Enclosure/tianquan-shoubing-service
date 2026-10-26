@@ -18,7 +18,8 @@ public sealed interface AccessTokenVerification<T extends IdpPrincipal>
 
     record Valid<T extends IdpPrincipal>(T principal, Set<String> scopes,
             @com.fasterxml.jackson.annotation.JsonIgnore @jakarta.validation.Valid
-            top.egon.cola.platform.tianquan.shoubing.starter.security.domain.TokenAuditProofBO proof)
+            top.egon.cola.platform.tianquan.shoubing.starter.security.domain.TokenAuditProofBO proof,
+            @com.fasterxml.jackson.annotation.JsonIgnore java.net.URI verifiedIssuer)
             implements AccessTokenVerification<T> {
 
         public Valid {
@@ -34,12 +35,22 @@ public sealed interface AccessTokenVerification<T extends IdpPrincipal>
                 throw new IllegalArgumentException("scopes exceed the allowed count");
             }
             scopes = Collections.unmodifiableSet(normalized);
+            if (verifiedIssuer != null && (!"https".equalsIgnoreCase(verifiedIssuer.getScheme())
+                    || verifiedIssuer.getHost() == null || verifiedIssuer.getUserInfo() != null
+                    || verifiedIssuer.getQuery() != null || verifiedIssuer.getFragment() != null)) {
+                throw new IllegalArgumentException("verifiedIssuer is invalid");
+            }
         }
 
-        public Valid(T principal, Set<String> scopes) { this(principal, scopes, null); }
+        public Valid(T principal, Set<String> scopes,
+                top.egon.cola.platform.tianquan.shoubing.starter.security.domain.TokenAuditProofBO proof) {
+            this(principal, scopes, proof, null);
+        }
+
+        public Valid(T principal, Set<String> scopes) { this(principal, scopes, null, null); }
 
         public Valid(T principal) {
-            this(principal, Set.of(), null);
+            this(principal, Set.of(), null, null);
         }
     }
 

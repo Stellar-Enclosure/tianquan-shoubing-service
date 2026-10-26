@@ -67,7 +67,7 @@ class OAuthManagedSchemaContractTest {
             "oauth_security_state",
             "oauth_revocation",
             "oauth_audit",
-            "oauth_resource"
+            "oauth_resource", "oauth_authentication", "oauth_interaction", "oauth_audit_inbox", "oauth_audit_receipt", "oauth_audit_dead_letter"
     );
     private static final List<String> LEGACY_PUBLIC_TABLES = List.of(
             "identity_user", "identity_user_credential", "identity_tenant",
@@ -95,12 +95,12 @@ class OAuthManagedSchemaContractTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
-    void oneManagedVersionAndRoutesAllTables() throws Exception {
+    void managedManifestPreservesPriorVersionsAndRoutesAllTables() throws Exception {
         byte[] sqlBytes = requiredResource(SQL_RESOURCE);
         JsonNode manifest = objectMapper.readTree(requiredResource(MANIFEST_RESOURCE));
 
         assertEquals("tianquan-oauth", manifest.path("family").asText());
-        assertEquals(2, manifest.path("scripts").size());
+        assertEquals(3, manifest.path("scripts").size());
         JsonNode script = manifest.path("scripts").get(0);
         assertEquals("20261008_001", script.path("version").asText());
         assertEquals(SQL_RESOURCE, script.path("path").asText());
@@ -110,7 +110,12 @@ class OAuthManagedSchemaContractTest {
         assertEquals("db/egon-mp/V20261009_001__support_oauth_consent_state.sql", correction.path("path").asText());
         assertEquals(sha256(requiredResource(correction.path("path").asText())), correction.path("sha256").asText());
 
-        String sql = new String(sqlBytes, StandardCharsets.UTF_8);
+        JsonNode stateless = manifest.path("scripts").get(2);
+        assertEquals("20261023_001", stateless.path("version").asText());
+        assertEquals("db/egon-mp/V20261023_001__stateless_oauth_state.sql", stateless.path("path").asText());
+        byte[] statelessBytes = requiredResource(stateless.path("path").asText());
+        assertEquals(sha256(statelessBytes), stateless.path("sha256").asText());
+        String sql = new String(sqlBytes, StandardCharsets.UTF_8) + new String(statelessBytes, StandardCharsets.UTF_8);
         Matcher tableMatcher = Pattern.compile(
                 "(?im)^\\s*CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([a-z0-9_]+)\\b"
         ).matcher(sql);
@@ -156,7 +161,7 @@ class OAuthManagedSchemaContractTest {
         assertFalse(nativeYaml.contains("identity_client_audience"));
         assertEquals(12, countMatches(nativeYaml,
                 Pattern.compile("oauth_primary\\.public\\.[a-z0-9_]+")));
-        assertEquals(15, countMatches(
+        assertEquals(BUSINESS_TABLES.size(), countMatches(
                 nativeYaml,
                 Pattern.compile("oauth_primary\\.tianquan_oauth\\.[a-z0-9_]+")
         ));
@@ -212,7 +217,7 @@ class OAuthManagedSchemaContractTest {
             throws IOException {
         Path root = repositoryRoot();
         Path configuration = root.resolve(
-                "stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+                ""
                         + "stellar-enclosure-tianquan-shoubing-admin/src/main/java/top/egon/cola/"
                         + "platform/tianquan/shoubing/admin/oauth/config/"
                         + "OAuthPersistenceConfiguration.java"
@@ -321,7 +326,7 @@ class OAuthManagedSchemaContractTest {
                 "git", "diff", "--exit-code", "HEAD", "--"
         ));
         for (String script : LEGACY_FLYWAY_SCRIPTS) {
-            command.add("stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+            command.add(""
                     + "stellar-enclosure-tianquan-shoubing-admin/src/main/resources/db/"
                     + "migration/" + script);
         }
@@ -339,7 +344,7 @@ class OAuthManagedSchemaContractTest {
                 .normalize();
         while (cursor != null) {
             if (Files.isRegularFile(cursor.resolve("pom.xml"))
-                    && Files.isDirectory(cursor.resolve("stellar-enclosure-platform"))) {
+                    && Files.isDirectory(cursor.resolve("stellar-enclosure-tianquan-shoubing-admin"))) {
                 return cursor;
             }
             cursor = cursor.getParent();

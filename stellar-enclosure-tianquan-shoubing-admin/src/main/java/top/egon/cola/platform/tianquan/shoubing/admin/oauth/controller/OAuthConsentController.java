@@ -62,12 +62,12 @@ public class OAuthConsentController {
 
     @GetMapping(value = "/tenants/{tenantId}/consent", produces = MediaType.TEXT_HTML_VALUE)
     @Operation(operationId = "oauthSasConsentPage", summary = "Render the current native tenant consent transaction")
-    @SecurityRequirement(name = "oauthAuthorizationSession")
+    @SecurityRequirement(name = "oauthAuthenticationCookie")
     @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Escaped consent form with session CSRF",
+            @ApiResponse(responseCode = "200", description = "Escaped consent form with interaction-bound CSRF",
                     content = @Content(mediaType = "text/html", schema = @Schema(type = "string"))),
             @ApiResponse(responseCode = "400", description = "Invalid bounded query"),
-            @ApiResponse(responseCode = "401", description = "SAS session required"),
+            @ApiResponse(responseCode = "401", description = "Authentication JWT required"),
             @ApiResponse(responseCode = "404", description = "No matching current consent transaction"),
             @ApiResponse(responseCode = "503", description = "Authorization store unavailable")
     })

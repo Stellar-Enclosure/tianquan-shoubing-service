@@ -1,5 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.identity.controller;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.RequiresPermissions;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -28,7 +33,7 @@ import java.util.Objects;
         interfaceGroupCode = "tianquan-shoubing-auth"
 )
 
-public final class IdentityAuthBootstrapController {
+public class IdentityAuthBootstrapController {
 
     private final Rbac3AboutService bootstrap;
     private final IdpAdminAuthorizationPort authorization;
@@ -40,6 +45,9 @@ public final class IdentityAuthBootstrapController {
         this.authorization = Objects.requireNonNull(authorization, "authorization");
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.identityAuthBootstrap.bootstrap", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.identityAuthBootstrap.bootstrap")
+    @RequiresPermissions(codes = IdentityPermissionCodes.BOOTSTRAP_READ)
     @Operation(
             operationId = "tianquan-shoubing-identity-auth-bootstrap-v1",
             summary = "查询统一身份管理台当前授权上下文",

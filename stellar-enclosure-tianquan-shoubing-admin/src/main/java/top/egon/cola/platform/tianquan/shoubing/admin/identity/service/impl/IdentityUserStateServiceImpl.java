@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Restores the Redis identity projection from PostgreSQL before readiness.
+ * Checks database identity facts before readiness.
  */
 @Service
 public class IdentityUserStateServiceImpl implements IdentityUserStateService {

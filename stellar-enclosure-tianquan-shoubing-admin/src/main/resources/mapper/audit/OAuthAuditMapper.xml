@@ -28,12 +28,17 @@
         <result property="actorSub" column="actor_sub"/>
         <result property="targetSub" column="target_sub"/>
         <result property="identityTenantId" column="identity_tenant_id"/>
+        <result property="eventFingerprint" column="event_fingerprint"/>
+        <result property="sourceClientPk" column="source_client_pk"/>
+        <result property="sourceIssuer" column="source_issuer"/>
+        <result property="retainUntil" column="retain_until"/>
     </resultMap>
 
     <sql id="Columns">
         id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
         event_id, event_type, subject_ref, client_ref, token_ref, resource_ref, result, reason_code,
-        trace_id, occurred_at, payload, audit_kind, public_id, actor_sub, target_sub, identity_tenant_id
+        trace_id, occurred_at, payload, audit_kind, public_id, actor_sub, target_sub, identity_tenant_id,
+        event_fingerprint, source_client_pk, source_issuer, retain_until
     </sql>
 
     <select id="selectByEventId" resultMap="OAuthAuditPOResultMap">
@@ -65,7 +70,7 @@
     <select id="selectExpired" resultMap="OAuthAuditPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_audit
-        WHERE tenant_id = #{tenantId} AND occurred_at &lt;= #{cutoff}
+        WHERE tenant_id = #{tenantId} AND retain_until &lt;= #{cutoff}
           AND id &gt; #{afterId} AND deleted_at IS NULL
         ORDER BY id ASC
         LIMIT #{limit}

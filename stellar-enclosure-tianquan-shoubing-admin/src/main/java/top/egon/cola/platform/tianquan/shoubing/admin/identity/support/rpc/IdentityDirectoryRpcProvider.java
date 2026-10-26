@@ -35,19 +35,31 @@ public final class IdentityDirectoryRpcProvider
 
     private final IdentityUserDirectory directory;
     private final TenantMembershipService memberships;
+    private final java.time.Clock clock;
+    private final top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent observations;
 
     public IdentityDirectoryRpcProvider(
             IdentityUserDirectory directory,
             TenantMembershipService memberships
     ) {
+        this(directory, memberships, java.time.Clock.systemUTC(), null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public IdentityDirectoryRpcProvider(IdentityUserDirectory directory, TenantMembershipService memberships,
+            @org.springframework.beans.factory.annotation.Qualifier("idpClock") java.time.Clock clock,
+            top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent observations) {
         this.directory = Objects.requireNonNull(directory, "directory");
         this.memberships = Objects.requireNonNull(memberships, "memberships");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.observations = observations;
     }
 
     @Override
     public BatchGetIdentityProfilesResponse batchGetIdentityProfiles(
             BatchGetIdentityProfilesRequest request) {
         Objects.requireNonNull(request, "request");
+        requireService(null);
         List<String> subjects = normalizedSubjects(request.getSubjectsList());
         LinkedHashMap<String, IdentityUser> users = new LinkedHashMap<>();
         for (IdentityUser user : Objects.requireNonNull(
@@ -80,6 +92,7 @@ public final class IdentityDirectoryRpcProvider
     ) {
         Objects.requireNonNull(request, "request");
         String tenantId = tenantId(request.getTenantId());
+        requireService(tenantId);
         String identitySub = identitySub(request.getIdentitySub());
         TenantMembershipService.TenantMembershipProfile profile;
         try {
@@ -113,6 +126,28 @@ public final class IdentityDirectoryRpcProvider
                         ))
                         .build())
                 .build();
+    }
+
+    /** Identity authority terminates locally; this proof gate never calls the RBAC authority that consumes it. */
+    private void requireService(String requestedTenant) {
+        var principal = top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcSecurityContext.currentPrincipalOrNull();
+        var proof = top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcSecurityContext.currentProofOrNull();
+        var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (!(principal instanceof top.egon.cola.platform.tianquan.shoubing.contract.ServiceIdentityPrincipal service)
+                || authentication == null || !authentication.isAuthenticated() || authentication.getPrincipal() != principal
+                || proof == null || !proof.equals(authentication.getDetails())
+                || !proof.resource().equals(service.resourceUri()) || !service.expiresAt().isAfter(clock.instant())
+                || service.scopeContext() != top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext.TENANT
+                || service.tenantId() == null || !service.scopes().contains("identity:read")
+                || requestedTenant != null && !requestedTenant.equals(service.tenantId())) {
+            if (observations != null && observations.enabled()) {
+                var marker = top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcSecurityContext.currentAuthorizationObservationContext();
+                boolean confirmed = proof == null ? observations.authenticationFailure()
+                        : marker == null ? observations.authorizationDenied(proof) : marker.denyOnce(() -> observations.authorizationDenied(proof));
+                if (!confirmed) throw new org.springframework.security.authentication.AuthenticationServiceException("OAUTH_AUDIT_DELIVERY_UNAVAILABLE");
+            }
+            throw new org.springframework.security.access.AccessDeniedException("IDENTITY_DIRECTORY_SERVICE_REQUIRED");
+        }
     }
 
     private List<String> normalizedSubjects(List<String> values) {

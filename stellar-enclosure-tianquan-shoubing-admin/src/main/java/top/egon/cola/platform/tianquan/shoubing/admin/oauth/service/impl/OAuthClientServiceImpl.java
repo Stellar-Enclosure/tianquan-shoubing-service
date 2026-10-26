@@ -141,6 +141,9 @@ public class OAuthClientServiceImpl implements OAuthClientService {
                 .redirectUris(redirectUris)
                 .resourceUris(resourceUris)
                 .allowedScopes(allowedScopes)
+                .browserBound(input.isBrowserBound())
+                .postLogoutRedirectUris(exactValues(input.getPostLogoutRedirectUris(), "postLogoutRedirectUris", 32, 2048).stream()
+                        .map(this::exactRedirectUri).toList())
                 .accessTtlSeconds(input.getAccessTokenTtlSeconds())
                 .refreshTtlSeconds(input.getRefreshTokenTtlSeconds())
                 .build();
@@ -215,6 +218,12 @@ public class OAuthClientServiceImpl implements OAuthClientService {
         List<String> scopes = input.getAllowedScopes() == null
                 ? client.getAllowedScopes()
                 : exactScopes(input.getAllowedScopes());
+        boolean browserBound = input.getBrowserBound() == null ? client.isBrowserBound() : input.getBrowserBound();
+        List<String> logoutRedirects = input.getPostLogoutRedirectUris() == null ? client.getPostLogoutRedirectUris()
+                : exactValues(input.getPostLogoutRedirectUris(), "postLogoutRedirectUris", 32, 2048).stream().map(this::exactRedirectUri).toList();
+        if (client.getPurpose() != OAuthClientPurposeEnum.USER && (browserBound || !logoutRedirects.isEmpty())) {
+            throw new IllegalArgumentException("OAUTH_SERVICE_BROWSER_CONFIGURATION_FORBIDDEN");
+        }
         OAuthClientBO changed = copy(client)
                 .version(Math.addExact(client.getVersion(), 1L))
                 .clientName(requiredText(input.getClientName(), "clientName", 200))
@@ -222,6 +231,8 @@ public class OAuthClientServiceImpl implements OAuthClientService {
                 .accessTtlSeconds(input.getAccessTokenTtlSeconds())
                 .refreshTtlSeconds(input.getRefreshTokenTtlSeconds())
                 .allowedScopes(scopes)
+                .browserBound(browserBound)
+                .postLogoutRedirectUris(logoutRedirects)
                 .updatedAt(clock.instant())
                 .build();
         OAuthClientBO saved = clients.save(realm, changed, client.getVersion());
@@ -351,6 +362,8 @@ public class OAuthClientServiceImpl implements OAuthClientService {
                 || !Objects.equals(previous.getRedirectUris(), current.getRedirectUris())
                 || !Objects.equals(previous.getResourceUris(), current.getResourceUris())
                 || !Objects.equals(previous.getAllowedScopes(), current.getAllowedScopes())
+                || previous.isBrowserBound() != current.isBrowserBound()
+                || !Objects.equals(previous.getPostLogoutRedirectUris(), current.getPostLogoutRedirectUris())
                 || !Objects.equals(previous.getAccessTtlSeconds(), current.getAccessTtlSeconds())
                 || !Objects.equals(previous.getRefreshTtlSeconds(), current.getRefreshTtlSeconds());
     }
@@ -450,6 +463,10 @@ public class OAuthClientServiceImpl implements OAuthClientService {
             throw new IllegalArgumentException("OAUTH_CLIENT_APP_ID_INVALID");
         }
         if (input.getPurpose() == OAuthClientPurposeEnum.SERVICE
+                && (input.isBrowserBound() || input.getPostLogoutRedirectUris() == null || !input.getPostLogoutRedirectUris().isEmpty())) {
+            throw new IllegalArgumentException("OAUTH_SERVICE_BROWSER_CONFIGURATION_FORBIDDEN");
+        }
+        if (input.getPurpose() == OAuthClientPurposeEnum.SERVICE
                 && input.getAllowedScopes() != null
                 && input.getAllowedScopes().stream().anyMatch(scope -> scope == null
                         || !scope.matches("[A-Za-z0-9._:-]{1,128}"))) {
@@ -503,6 +520,8 @@ public class OAuthClientServiceImpl implements OAuthClientService {
                 .redirectUris(value.getRedirectUris())
                 .resourceUris(value.getResourceUris())
                 .allowedScopes(value.getAllowedScopes())
+                .browserBound(value.isBrowserBound())
+                .postLogoutRedirectUris(value.getPostLogoutRedirectUris())
                 .accessTtlSeconds(value.getAccessTtlSeconds())
                 .refreshTtlSeconds(value.getRefreshTtlSeconds())
                 .createdAt(value.getCreatedAt())

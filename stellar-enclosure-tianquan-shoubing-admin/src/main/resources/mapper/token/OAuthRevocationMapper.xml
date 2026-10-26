@@ -17,12 +17,13 @@
         <result property="revokedAt" column="revoked_at"/>
         <result property="expiresAt" column="expires_at"/>
         <result property="revision" column="revision"/>
-        <result property="projectionStatus" column="projection_status"/>
+        <result property="retainUntil" column="retain_until"/>
     </resultMap>
 
     <sql id="Columns">
         id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
-        target_type, target_key, reason_code, revoked_at, expires_at, revision, projection_status
+        target_type, target_key, reason_code, revoked_at, expires_at, revision,
+        retain_until
     </sql>
 
     <select id="selectByTarget" resultMap="OAuthRevocationPOResultMap">
@@ -40,10 +41,10 @@
         FOR UPDATE
     </select>
 
-    <select id="selectByProjectionStatus" resultMap="OAuthRevocationPOResultMap">
+    <select id="selectByRevisionAfter" resultMap="OAuthRevocationPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_revocation
-        WHERE tenant_id = #{tenantId} AND projection_status = #{projectionStatus}
+        WHERE tenant_id = #{tenantId}
           AND deleted_at IS NULL
           AND (revision &gt; #{afterRevision} OR (revision = #{afterRevision} AND id &gt; #{afterId}))
         ORDER BY revision ASC, id ASC
@@ -53,8 +54,7 @@
     <select id="selectExpired" resultMap="OAuthRevocationPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_revocation
-        WHERE tenant_id = #{tenantId} AND expires_at IS NOT NULL AND expires_at &lt;= #{cutoff}
-          AND projection_status = 'APPLIED'
+        WHERE tenant_id = #{tenantId} AND retain_until IS NOT NULL AND retain_until &lt;= #{cutoff}
           AND id &gt; #{afterId} AND deleted_at IS NULL
         ORDER BY id ASC
         LIMIT #{limit}
@@ -78,8 +78,8 @@
 
     <update id="updateExpectedVersion">
         UPDATE tianquan_oauth.oauth_revocation
-        SET expires_at = #{po.expiresAt}, revision = #{po.revision},
-            projection_status = #{po.projectionStatus}, version = #{po.version},
+        SET expires_at = #{po.expiresAt}, retain_until = #{po.retainUntil}, revision = #{po.revision},
+            version = #{po.version},
             update_user_id = #{po.updateUserId}, update_time = #{po.updateTime}
         WHERE tenant_id = #{tenantId} AND id = #{po.id} AND target_type = #{po.targetType}
           AND target_key = #{po.targetKey} AND version = #{expectedVersion} AND deleted_at IS NULL

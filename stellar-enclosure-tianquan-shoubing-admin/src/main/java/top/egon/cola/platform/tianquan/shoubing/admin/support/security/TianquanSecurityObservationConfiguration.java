@@ -58,7 +58,6 @@ public class TianquanSecurityObservationConfiguration {
             }
         }
         secureEndpoint(idp.getResourceUri() == null ? null : idp.getResourceUri().toASCIIString(), "https", local);
-        secureEndpoint(idp.getRevocation().getPrimaryEndpoint(), "rediss", local);
         boolean trustedFallback = idp.getTrustedIssuers().isEmpty()
                 ? usage.getFallbackIssuer().toASCIIString().equals(idp.getIssuer())
                 : idp.getTrustedIssuers().values().stream().anyMatch(entry -> usage.getFallbackIssuer().toASCIIString().equals(entry.getIssuer())

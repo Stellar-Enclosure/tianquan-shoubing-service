@@ -111,7 +111,7 @@ class TokenRevocationServiceTest {
     }
 
     @Test
-    void revokesAccessTokenInThePrimaryTransactionAndProjectsAfterCommit() {
+    void revokesAccessTokenAndRetainsItsTombstoneInThePrimaryTransaction() {
         OAuthSecurityStateBO realmState = securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L);
         OAuthSecurityStateBO clientState = securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 8L);
         OAuthSecurityStateBO subjectState = securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L);
@@ -143,6 +143,7 @@ class TokenRevocationServiceTest {
                 });
 
         TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
         service.revoke(REALM, RevokeOAuthTokenCommand.builder()
                 .tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("ADMIN_REVOKE").build());
         List<TransactionSynchronization> callbacks = TransactionSynchronizationManager.getSynchronizations();
@@ -159,10 +160,10 @@ class TokenRevocationServiceTest {
         assertThat(event.revision()).isEqualTo(10L);
         assertThat(event.toString()).doesNotContain(TOKEN_DIGEST);
         verify(audits).save(eq(REALM), any(OAuthAuditBO.class), eq(0L));
-        verify(projection).applyProjection(REALM, event);
+        verify(projection, never()).applyProjection(any(), any());
         ArgumentCaptor<OAuthRevocationBO> statuses = ArgumentCaptor.forClass(OAuthRevocationBO.class);
-        verify(revocations, org.mockito.Mockito.times(2)).save(eq(REALM), statuses.capture(), eq(0L));
-        assertThat(statuses.getAllValues().get(1).getProjectionStatus()).isEqualTo("APPLIED");
+        verify(revocations).save(eq(REALM), statuses.capture(), eq(0L));
+        assertThat(statuses.getValue().getRetainUntil()).isAfter(statuses.getValue().getExpiresAt());
     }
 
     @Test
@@ -186,7 +187,7 @@ class TokenRevocationServiceTest {
     }
 
     @Test
-    void refreshRevocationCancelsTheAuthorizationFamilyBeforeAcknowledgingProjection() {
+    void refreshRevocationCancelsTheAuthorizationFamilyBeforeReturning() {
         OAuthSecurityStateBO realmState = securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L);
         OAuthSecurityStateBO clientState = securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 8L);
         OAuthSecurityStateBO subjectState = securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L);
@@ -233,7 +234,7 @@ class TokenRevocationServiceTest {
                 .thenReturn(Optional.empty(), Optional.of(OAuthRevocationBO.builder()
                         .id(801L).version(0L).targetType(OAuthSecurityTargetEnum.AUTHORIZATION)
                         .targetKey("700").reasonCode("ADMIN_REVOKE").revokedAt(NOW)
-                        .expiresAt(NOW.plusSeconds(3630)).revision(10L).projectionStatus("PENDING").build()));
+                        .expiresAt(NOW.plusSeconds(3630)).revision(10L).build()));
         when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
         when(authorizations.save(eq(REALM), any(OAuthAuthorizationBO.class), eq(0L)))
@@ -250,6 +251,7 @@ class TokenRevocationServiceTest {
                 });
 
         TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
         service.revoke(REALM, RevokeOAuthTokenCommand.builder()
                 .tokenDigest(refresh.getTokenDigest()).clientPk(501L).reasonCode("ADMIN_REVOKE").build());
         TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
@@ -265,7 +267,7 @@ class TokenRevocationServiceTest {
         OAuthSecurityChangedEvent event = (OAuthSecurityChangedEvent) outboxMessage.getValue().payload();
         assertThat(event.targetType()).isEqualTo("AUTHORIZATION");
         assertThat(event.targetKey()).isEqualTo("700");
-        verify(projection).applyProjection(REALM, event);
+        verify(projection, never()).applyProjection(any(), any());
     }
 
     @Test
@@ -283,6 +285,7 @@ class TokenRevocationServiceTest {
                 .thenAnswer(invocation -> invocation.getArgument(1));
 
         TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
         service.revokeClient(REALM, new OAuthClientRevokeCommand(501L, "CLIENT_CREATED"));
         TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
 
@@ -320,6 +323,7 @@ class TokenRevocationServiceTest {
                 .thenAnswer(invocation -> invocation.getArgument(1));
 
         TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
         service.revokeSubject(new OAuthSubjectRevokeCommand("alice", "USER_CREATED"));
         TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
 
@@ -365,7 +369,7 @@ class TokenRevocationServiceTest {
     private static OAuthRevocationBO pendingJti() {
         return OAuthRevocationBO.builder().id(800L).version(0L).targetType(OAuthSecurityTargetEnum.JTI)
                 .targetKey("123456").reasonCode("ADMIN_REVOKE").revokedAt(NOW)
-                .expiresAt(NOW.plusSeconds(630)).revision(10L).projectionStatus("PENDING").build();
+                .expiresAt(NOW.plusSeconds(630)).revision(10L).build();
     }
 
     private static OAuthRealmBO realmRow() {

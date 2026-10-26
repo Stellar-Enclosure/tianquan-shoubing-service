@@ -1,5 +1,13 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.tenant.controller;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.PermissionManifest;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.FieldPermissions;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionGroup;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.RequiresPermissions;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -76,6 +84,9 @@ public class TenantController {
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.tenant.list", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.tenant.list")
+    @RequiresPermissions(codes = IdentityPermissionCodes.TENANT_READ)
     @GetMapping
     @Operation(
             operationId = "tianquan-shoubing-tenant-list-v1",
@@ -109,6 +120,9 @@ public class TenantController {
         return page(filtered, page, size);
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.tenant.create", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.tenant.create")
+    @RequiresPermissions(codes = IdentityPermissionCodes.TENANT_MANAGE)
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
@@ -132,6 +146,9 @@ public class TenantController {
         )));
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.tenant.update", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.tenant.update")
+    @RequiresPermissions(codes = IdentityPermissionCodes.TENANT_MANAGE)
     @PatchMapping("/{tenantId}")
     @Operation(
             operationId = "tianquan-shoubing-tenant-update-v1",
@@ -159,6 +176,9 @@ public class TenantController {
         ));
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.tenant.listMembers", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.tenant.listMembers")
+    @RequiresPermissions(codes = IdentityPermissionCodes.TENANT_READ)
     @GetMapping("/{tenantId}/members")
     @Operation(
             operationId = "tianquan-shoubing-tenant-membership-list-v1",
@@ -195,6 +215,9 @@ public class TenantController {
         return pageMembers(filtered, page, size);
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.tenant.upsertMember", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.tenant.upsertMember")
+    @RequiresPermissions(codes = IdentityPermissionCodes.TENANT_MANAGE)
     @PutMapping("/{tenantId}/members/{identitySub}")
     @Operation(
             operationId = "tianquan-shoubing-tenant-membership-upsert-v1",
@@ -336,19 +359,59 @@ public class TenantController {
     }
 
     public record TenantPageVO(
+            @PermissionResource(key = "tianquan-shoubing.field.TenantPageVO.content", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.content")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.ARRAY,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             List<TenantVO> content,
+            @PermissionResource(key = "tianquan-shoubing.field.TenantPageVO.page", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.page")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             int page,
+            @PermissionResource(key = "tianquan-shoubing.field.TenantPageVO.size", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.size")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             int size,
+            @PermissionResource(key = "tianquan-shoubing.field.TenantPageVO.totalElements", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.totalElements")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             long totalElements,
+            @PermissionResource(key = "tianquan-shoubing.field.TenantPageVO.totalPages", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.totalPages")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             int totalPages
     ) {
     }
 
     public record TenantMembershipPageVO(
+            @PermissionResource(key = "tianquan-shoubing.field.TenantMembershipPageVO.content", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.content")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.ARRAY,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             List<TenantMembershipVO> content,
+            @PermissionResource(key = "tianquan-shoubing.field.TenantMembershipPageVO.page", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.page")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             int page,
+            @PermissionResource(key = "tianquan-shoubing.field.TenantMembershipPageVO.size", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.size")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             int size,
+            @PermissionResource(key = "tianquan-shoubing.field.TenantMembershipPageVO.totalElements", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.totalElements")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             long totalElements,
+            @PermissionResource(key = "tianquan-shoubing.field.TenantMembershipPageVO.totalPages", type = ResourceType.FIELD,
+                    labelPage = "identity.permissions", labelKey = "field.totalPages")
+            @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+                    plainRead = @PermissionGroup(codes = IdentityPermissionCodes.TENANT_READ))
             int totalPages
     ) {
     }

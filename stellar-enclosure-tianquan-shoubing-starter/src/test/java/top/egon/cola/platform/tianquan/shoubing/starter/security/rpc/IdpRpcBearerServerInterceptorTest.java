@@ -87,6 +87,9 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.*;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClient;
+import top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -161,8 +164,7 @@ class IdpRpcBearerServerInterceptorTest {
         @TempDir Path temporary;
         private final LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
         private final List<Map<String, String>> events = new CopyOnWriteArrayList<>();
-        private final RedissonClient redis = mock(RedissonClient.class);
-        @SuppressWarnings("unchecked") private final RStream<String, String> stream = mock(RStream.class);
+        private final IdentityAuthorityClient authority = mock(IdentityAuthorityClient.class);
         private final OAuthRevocationReader revocations = mock(OAuthRevocationReader.class);
         private IdpStarterProperties properties;
         private TenantIssuerAuthenticationManagerComponent managers;
@@ -172,18 +174,13 @@ class IdpRpcBearerServerInterceptorTest {
         @BeforeEach
         void prepare() throws Exception {
             validator.afterPropertiesSet();
-            var keyFile = temporary.resolve("audit.key");
-            Files.writeString(keyFile, "0123456789abcdef0123456789abcdef");
-            Files.setPosixFilePermissions(keyFile, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-            doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
-            when(stream.add(any(StreamAddArgs.class))).thenAnswer(call -> {
-                StreamAddParams<String, String> values = call.getArgument(0);
-                events.add(Map.copyOf(values.getEntries()));
-                return new StreamMessageId(events.size(), 1);
+            when(authority.appendAudit(any())).thenAnswer(call -> {
+                TokenUsageAuditEvent event = call.getArgument(0);
+            if (event == null) { return null; }
+                events.add(eventFields(event)); return receipt(event);
             });
             var clock = Clock.fixed(NOW, ZoneOffset.UTC);
-            var producer = new TokenUsageAuditComponent(redis, new ObjectMapper().findAndRegisterModules(),
-                    new OAuthAuditProperties(STREAM, temporary.resolve("spool"), 1_048_576, keyFile), new AuditDeliveryProperties(), clock, validator);
+            var producer = new TokenUsageAuditComponent(issuer -> authority, clock, validator, observation -> { });
             var converter = (TokenUsageAuditEventConverter) Class.forName(TokenUsageAuditEventConverter.class.getName() + "Impl").getConstructor().newInstance();
             var observations = new IdpObservedVerificationComponent(producer, converter,
                     new OAuthUsageObservationProperties(true, ISSUER, false, IdpSecurityObservationReceiverEnum.APPLICATION),
@@ -313,7 +310,7 @@ class IdpRpcBearerServerInterceptorTest {
             when(revocations.check(any())).thenReturn(new OAuthRevocationReader.Result(OAuthRevocationReader.Status.UNAVAILABLE, "OAUTH_SECURITY_STATE_UNAVAILABLE"));
             assertStrictRejected(token(false, ServiceTokenContext.TENANT, Set.of("inventory:read"), IdpRpcBindingPropertiesTest.RESOURCE, NOW.plusSeconds(300)), Status.Code.UNAVAILABLE);
             when(revocations.check(any())).thenReturn(OAuthRevocationReader.Result.valid());
-            when(stream.add(any(StreamAddArgs.class))).thenThrow(new org.redisson.client.RedisException("sensitive-broker-address"));
+            when(authority.appendAudit(any())).thenThrow(new IllegalStateException("sensitive-broker-address"));
             assertStrictRejected(token(false, ServiceTokenContext.TENANT, Set.of("inventory:read"), IdpRpcBindingPropertiesTest.RESOURCE, NOW.plusSeconds(300)), Status.Code.UNAVAILABLE);
             var missing = new RecordingServerCall(); var next = new RecordingHandler();
             interceptor.interceptCall(missing, new Metadata(), next);
@@ -322,10 +319,11 @@ class IdpRpcBearerServerInterceptorTest {
 
         @Test
         void deniedAuditFailureCannotBecomeOrdinaryPermissionDenied() throws Exception {
-            when(stream.add(any(StreamAddArgs.class))).thenAnswer(call -> {
-                StreamAddParams<String, String> values = call.getArgument(0);
-                if ("DENIED".equals(values.getEntries().get("result"))) { throw new org.redisson.client.RedisException("sensitive-broker-address"); }
-                events.add(Map.copyOf(values.getEntries())); return new StreamMessageId(events.size(), 1);
+            when(authority.appendAudit(any())).thenAnswer(call -> {
+                TokenUsageAuditEvent event = call.getArgument(0);
+            if (event == null) { return null; }
+                if ("DENIED".equals(event.result())) { throw new IllegalStateException("sensitive-broker-address"); }
+                events.add(eventFields(event)); return receipt(event);
             });
             assertStrictRejected(token(false, ServiceTokenContext.TENANT, Set.of("inventory:other"), IdpRpcBindingPropertiesTest.RESOURCE, NOW.plusSeconds(300)), Status.Code.UNAVAILABLE);
             assertThat(events).hasSize(1).allSatisfy(event -> assertThat(event).containsEntry("result", "SUCCESS"));

@@ -17,6 +17,8 @@ public interface OAuthClientConverter extends BaseConverter<OAuthClientPO, OAuth
     @Override
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "browserBound", source = "browserBound")
+    @Mapping(target = "postLogoutRedirectUris", source = "postLogoutRedirectUris")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "clientId", source = "clientId")
     @Mapping(target = "appId", source = "appId")
@@ -39,6 +41,8 @@ public interface OAuthClientConverter extends BaseConverter<OAuthClientPO, OAuth
     @Override
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "browserBound", source = "browserBound")
+    @Mapping(target = "postLogoutRedirectUris", source = "postLogoutRedirectUris")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "clientId", source = "clientId")
     @Mapping(target = "appId", source = "appId")

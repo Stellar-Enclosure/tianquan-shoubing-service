@@ -86,18 +86,16 @@ public class OAuthRevocationRepositoryImpl extends EgonColaRepository<OAuthRevoc
 
     @Override
     @Transactional(readOnly = true)
-    public List<OAuthRevocationBO> findByProjectionStatus(
+    public List<OAuthRevocationBO> findByRevisionAfter(
             @NotNull @Valid TrustedRealmBO trustedRealm,
-            @NotBlank @Size(max = 16) String projectionStatus,
             @PositiveOrZero long afterRevision,
             @PositiveOrZero long afterId,
             @Min(1) @Max(500) int limit) {
-        String status = requireProjectionStatus(projectionStatus);
         if (limit < 1 || limit > 500) {
             throw new IllegalArgumentException("OAUTH_REVOCATION_QUERY_LIMIT_INVALID");
         }
         return withTrustedStoragePartition(trustedRealm, tenantId -> baseMapper
-                .selectByProjectionStatus(tenantId, status, afterRevision, afterId, limit).stream()
+                .selectByRevisionAfter(tenantId, afterRevision, afterId, limit).stream()
                 .map(converter::toTarget)
                 .toList());
     }
@@ -145,10 +143,12 @@ public class OAuthRevocationRepositoryImpl extends EgonColaRepository<OAuthRevoc
             @PositiveOrZero long expectedVersion) {
         Objects.requireNonNull(revocation, "revocation");
         String targetKey = requireRevocationTarget(revocation.getTargetType(), revocation.getTargetKey());
-        requireProjectionStatus(revocation.getProjectionStatus());
         Objects.requireNonNull(revocation.getRevokedAt(), "revokedAt");
         if (revocation.getExpiresAt() != null && !revocation.getExpiresAt().isAfter(revocation.getRevokedAt())) {
             throw new IllegalArgumentException("OAUTH_REVOCATION_EXPIRY_INVALID");
+        }
+        if (revocation.getExpiresAt() != null && revocation.getRetainUntil() == null) {
+            revocation.setRetainUntil(revocation.getExpiresAt().plusSeconds(86_400));
         }
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
@@ -157,8 +157,7 @@ public class OAuthRevocationRepositoryImpl extends EgonColaRepository<OAuthRevoc
                 OAuthRevocationPO value = converter.toSource(revocation);
                 value.setTenantId(tenantId);
                 if (current == null) {
-                    if (revocation.getId() != null || expectedVersion != 0L || revocation.getVersion() != 0L
-                            || !"PENDING".equals(revocation.getProjectionStatus())) {
+                    if (revocation.getId() != null || expectedVersion != 0L || revocation.getVersion() != 0L) {
                         throw stale(expectedVersion, -1L);
                     }
                     value.setVersion(0L);
@@ -175,9 +174,7 @@ public class OAuthRevocationRepositoryImpl extends EgonColaRepository<OAuthRevoc
                         || !Objects.equals(revocation.getReasonCode(), current.getReasonCode())
                         || !Objects.equals(revocation.getRevokedAt(), current.getRevokedAt())
                         || expiryWasShortened(current.getExpiresAt(), revocation.getExpiresAt())
-                        || revocation.getRevision() < current.getRevision()
-                        || "APPLIED".equals(current.getProjectionStatus())
-                                && "PENDING".equals(revocation.getProjectionStatus())) {
+                        || revocation.getRevision() < current.getRevision()) {
                     throw stale(expectedVersion, current.getVersion());
                 }
                 value.setId(current.getId());
@@ -252,12 +249,7 @@ public class OAuthRevocationRepositoryImpl extends EgonColaRepository<OAuthRevoc
         }
     }
 
-    private static String requireProjectionStatus(String status) {
-        if (!"PENDING".equals(status) && !"APPLIED".equals(status)) {
-            throw new IllegalArgumentException("OAUTH_REVOCATION_PROJECTION_STATUS_INVALID");
-        }
-        return status;
-    }
+
 
     private static boolean expiryWasShortened(Instant current, Instant requested) {
         return current == null ? requested != null : requested != null && requested.isBefore(current);

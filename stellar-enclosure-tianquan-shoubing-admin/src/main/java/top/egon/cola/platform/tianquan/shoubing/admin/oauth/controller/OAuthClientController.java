@@ -1,5 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.RequiresPermissions;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
@@ -63,6 +68,9 @@ public class OAuthClientController {
     @Qualifier("oauthManagementRealmResolver")
     private final OAuthManagementRealmResolver realms;
 
+    @PermissionResource(key = "tianquan-shoubing.api.oAuthClient.list", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.oAuthClient.list")
+    @RequiresPermissions(codes = IdentityPermissionCodes.OAUTH_CLIENT_READ)
     @GetMapping
     @Operation(
             operationId = "tianquan-shoubing-oauth-client-list-v1",
@@ -80,6 +88,9 @@ public class OAuthClientController {
         return clients.list(realms.resolve(principal, realm));
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.oAuthClient.create", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.oAuthClient.create")
+    @RequiresPermissions(codes = IdentityPermissionCodes.OAUTH_CLIENT_CREATE)
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
@@ -102,6 +113,9 @@ public class OAuthClientController {
         return clients.create(trustedRealm, realms.platformRealm(), request, operator(principal));
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.oAuthClient.rotateSecret", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.oAuthClient.rotateSecret")
+    @RequiresPermissions(codes = IdentityPermissionCodes.OAUTH_CLIENT_UPDATE)
     @PostMapping("/{clientId}/secret-rotations")
     @Operation(
             operationId = "tianquan-shoubing-oauth-client-secret-rotate-v1",
@@ -124,6 +138,9 @@ public class OAuthClientController {
         return clients.rotateSecret(trustedRealm, clientId, request, operator(principal));
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.oAuthClient.update", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.oAuthClient.update")
+    @RequiresPermissions(codes = IdentityPermissionCodes.OAUTH_CLIENT_UPDATE)
     @PatchMapping("/{clientId}")
     @Operation(
             operationId = "tianquan-shoubing-oauth-client-update-v1",
@@ -143,6 +160,9 @@ public class OAuthClientController {
         return clients.update(realms.resolve(principal, realm), clientId, request);
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.oAuthClient.putRedirect", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.oAuthClient.putRedirect")
+    @RequiresPermissions(codes = IdentityPermissionCodes.OAUTH_CLIENT_UPDATE)
     @PutMapping("/{clientId}/redirect-uris")
     @Operation(
             operationId = "tianquan-shoubing-oauth-client-redirect-put-v1",
@@ -162,6 +182,9 @@ public class OAuthClientController {
         return clients.putRedirectUri(realms.resolve(principal, realm), clientId, request.getValue());
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.oAuthClient.deleteRedirect", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.oAuthClient.deleteRedirect")
+    @RequiresPermissions(codes = IdentityPermissionCodes.OAUTH_CLIENT_UPDATE)
     @DeleteMapping("/{clientId}/redirect-uris")
     @Operation(
             operationId = "tianquan-shoubing-oauth-client-redirect-delete-v1",
@@ -181,6 +204,9 @@ public class OAuthClientController {
         return clients.deleteRedirectUri(realms.resolve(principal, realm), clientId, request.getValue());
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.oAuthClient.putResourceUri", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.oAuthClient.putResourceUri")
+    @RequiresPermissions(codes = IdentityPermissionCodes.OAUTH_CLIENT_UPDATE)
     @PutMapping("/{clientId}/resource-uris")
     @Operation(
             operationId = "tianquan-shoubing-oauth-client-resource-put-v1",
@@ -201,6 +227,9 @@ public class OAuthClientController {
         return clients.putResourceUri(trustedRealm, realms.platformRealm(), clientId, request.getValue());
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.oAuthClient.deleteResourceUri", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.oAuthClient.deleteResourceUri")
+    @RequiresPermissions(codes = IdentityPermissionCodes.OAUTH_CLIENT_UPDATE)
     @DeleteMapping("/{clientId}/resource-uris")
     @Operation(
             operationId = "tianquan-shoubing-oauth-client-resource-delete-v1",

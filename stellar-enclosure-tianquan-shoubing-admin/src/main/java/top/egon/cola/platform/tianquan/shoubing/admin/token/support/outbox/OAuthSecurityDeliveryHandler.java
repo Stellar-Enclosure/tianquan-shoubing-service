@@ -70,7 +70,6 @@ public final class OAuthSecurityDeliveryHandler implements DeliveryHandler {
                 throw new IllegalArgumentException("OAUTH_SECURITY_EVENT_REALM_MISMATCH");
             }
             projectionComponent.applyProjection(trustedRealm, event);
-            markRevocationApplied(trustedRealm, event);
             return DeliveryResult.success();
         } catch (JsonProcessingException | IllegalArgumentException invalid) {
             return DeliveryResult.permanentFailure(
@@ -100,27 +99,4 @@ public final class OAuthSecurityDeliveryHandler implements DeliveryHandler {
         });
     }
 
-    private void markRevocationApplied(TrustedRealmBO trustedRealm, OAuthSecurityChangedEvent event) {
-        OAuthSecurityTargetEnum targetType = OAuthSecurityTargetEnum.fromCode(event.targetType());
-        if (!targetType.isRevocationTarget()) {
-            return;
-        }
-        OAuthRevocationBO current = revocationRepository.findByTarget(
-                trustedRealm, targetType, event.targetKey()).orElse(null);
-        if (current == null || "APPLIED".equals(current.getProjectionStatus())) {
-            return;
-        }
-        OAuthRevocationBO applied = OAuthRevocationBO.builder()
-                .id(current.getId())
-                .version(Math.addExact(current.getVersion(), 1L))
-                .targetType(current.getTargetType())
-                .targetKey(current.getTargetKey())
-                .reasonCode(current.getReasonCode())
-                .revokedAt(current.getRevokedAt())
-                .expiresAt(current.getExpiresAt())
-                .revision(current.getRevision())
-                .projectionStatus("APPLIED")
-                .build();
-        revocationRepository.save(trustedRealm, applied, current.getVersion());
-    }
 }

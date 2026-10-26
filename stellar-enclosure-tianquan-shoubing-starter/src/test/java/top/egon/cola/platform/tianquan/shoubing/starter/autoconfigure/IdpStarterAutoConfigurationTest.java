@@ -59,6 +59,9 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.settings;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClient;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClientResolver;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -78,7 +81,7 @@ class IdpStarterAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure()).hasStackTraceContaining("tokenUsageAuditComponent")
-                            .hasStackTraceContaining("RedissonClient");
+                            .hasStackTraceContaining("IdentityAuthorityClientResolver");
                 });
     }
 
@@ -87,8 +90,10 @@ class IdpStarterAutoConfigurationTest {
                     .withConfiguration(AutoConfigurations.of(
                             IdpStarterAutoConfiguration.class, IdpSecurityObservationAutoConfiguration.class))
                     .withBean("jacksonObjectMapper", ObjectMapper.class, ObjectMapper::new)
-                    .withBean(RedissonClient.class,
-                            () -> mock(RedissonClient.class))
+                    .withBean("defaultValidator", Validator.class, LocalValidatorFactoryBean::new)
+                    .withBean("registry", io.micrometer.core.instrument.MeterRegistry.class, io.micrometer.core.instrument.simple.SimpleMeterRegistry::new)
+                    .withBean("identityAuthorityClientResolver", IdentityAuthorityClientResolver.class, () -> issuer -> top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.confirmingAuditClient())
+                    .withPropertyValues(settings())
                     .withPropertyValues(
                             "egon.cola.platform.tianquan.shoubing.enabled=true",
                             "egon.cola.platform.tianquan.shoubing.issuer=https://tianquan-shoubing.local",
@@ -118,7 +123,7 @@ class IdpStarterAutoConfigurationTest {
         var compatibility = new IdpStarterAutoConfiguration();
         assertThat(compatibility.idpRpcClientCredentialInterceptorFactory()).isNotNull();
         assertThat(compatibility.idpRpcBearerServerInterceptor(mock(UserAccessTokenVerifier.class))).isNotNull();
-        contextRunner.withBean("defaultValidator", Validator.class, LocalValidatorFactoryBean::new)
+        contextRunner
                 .withPropertyValues(providerSettings()).run(context -> {
                     assertThat(context).hasNotFailed().doesNotHaveBean(IdpServiceOAuth2Client.class);
                     var interceptor = context.getBean("idpRpcBearerServerInterceptor", IdpRpcBearerServerInterceptor.class);
@@ -137,7 +142,7 @@ class IdpStarterAutoConfigurationTest {
     @Test
     void configuredConsumerRejectsWrongApplicationOrEnvironmentBeforeTokenAcquisition() {
         var client = mock(IdpServiceOAuth2Client.class);
-        contextRunner.withBean("defaultValidator", Validator.class, LocalValidatorFactoryBean::new)
+        contextRunner
                 .withBean("idpServiceOAuth2Client", IdpServiceOAuth2Client.class, () -> client)
                 .withPropertyValues(consumerSettings()).run(context -> {
                     assertThat(context).hasNotFailed();
@@ -155,12 +160,12 @@ class IdpStarterAutoConfigurationTest {
 
     @Test
     void enabledServiceConsumerNeedsItsActualOAuthClientAndValidatedBindings() {
-        contextRunner.withBean("defaultValidator", Validator.class, LocalValidatorFactoryBean::new)
+        contextRunner
                 .withPropertyValues(consumerSettings()).run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure()).hasStackTraceContaining("SERVICE RPC requires idpServiceOAuth2Client");
                 });
-        contextRunner.withBean("defaultValidator", Validator.class, LocalValidatorFactoryBean::new)
+        contextRunner
                 .withBean("idpServiceOAuth2Client", IdpServiceOAuth2Client.class, () -> mock(IdpServiceOAuth2Client.class))
                 .withPropertyValues(consumerSettings()).withPropertyValues("egon.cola.platform.tianquan.shoubing.rpc.consumer.bindings.inventory.scopes[0]=*")
                 .run(context -> assertThat(context).hasFailed());
@@ -168,7 +173,7 @@ class IdpStarterAutoConfigurationTest {
 
     @Test
     void rpcUnknownKeysFailStrictBindingWithoutChangingObservationBinding() {
-        contextRunner.withBean("defaultValidator", Validator.class, LocalValidatorFactoryBean::new)
+        contextRunner
                 .withBean("idpServiceOAuth2Client", IdpServiceOAuth2Client.class, () -> mock(IdpServiceOAuth2Client.class))
                 .withPropertyValues(consumerSettings())
                 .withPropertyValues("egon.cola.platform.tianquan.shoubing.rpc.consumer.bindings.inventory.unknown-authority=grant")
@@ -212,44 +217,21 @@ class IdpStarterAutoConfigurationTest {
     }
 
     @Test
-    void existingOverloadsAndNamedRedisStayCompatible() throws Exception {
+    void formalAuditConstructorRequiresTheAuthorityPortAndHasNoRedisAdapter() throws Exception {
         var type = top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent.class;
-        var propertiesType = top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties.class;
-        type.getConstructor(RedissonClient.class, ObjectMapper.class, propertiesType);
-        var legacy = type.getConstructor(RedissonClient.class, ObjectMapper.class, propertiesType,
-                top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties.class,
-                java.time.Clock.class, jakarta.validation.Validator.class);
-        var configured = type.getConstructor(RedissonClient.class, ObjectMapper.class, propertiesType,
-                top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties.class,
-                java.time.Clock.class, jakarta.validation.Validator.class,
+        type.getConstructor(IdentityAuthorityClientResolver.class, java.time.Clock.class, Validator.class,
                 top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder.class);
-        assertThat(legacy.getParameters()[0].getAnnotation(org.springframework.beans.factory.annotation.Qualifier.class).value())
-                .isEqualTo("rbac3RuntimeRedissonClient");
-        assertThat(configured.getParameters()[0].getAnnotation(org.springframework.beans.factory.annotation.Qualifier.class).value())
-                .isEqualTo("idpAuditRedissonClient");
-        var disabled = new top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties(false, null, false);
-        assertThat(disabled.isReceiverValid()).isTrue();
-        var primary = mock(RedissonClient.class);
-        contextRunner.withBean("rbac3RuntimeRedissonClient", RedissonClient.class, () -> primary)
-                .run(context -> {
-                    assertThat(context).hasNotFailed().doesNotHaveBean("idpSecurityMetricsRecorder");
-                    assertThat(context.getBean("idpAuditRedissonClient")).isSameAs(primary);
-                });
-        String resource = "META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports";
-        try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
-            assertThat(input).isNotNull();
-            assertThat(new String(input.readAllBytes(), StandardCharsets.UTF_8).lines()
-                    .filter(IdpSecurityObservationAutoConfiguration.class.getName()::equals).count()).isEqualTo(1);
-        }
+        assertThat(java.util.Arrays.stream(type.getConstructors()).flatMap(constructor -> java.util.Arrays.stream(constructor.getParameterTypes())))
+                .noneMatch(RedissonClient.class::equals);
+        contextRunner.run(context -> assertThat(context).hasNotFailed().doesNotHaveBean("idpAuditRedissonClient")
+                .doesNotHaveBean("idpAuditSpoolLease"));
     }
 
     @Test
     void providesIdentityOnlyFilterBeforeRbac3Filter() {
         contextRunner.run(context -> {
-            assertThat(context).hasSingleBean(
-                    IdentityResourceServerStateReader.class);
-            assertThat(context).hasSingleBean(
-                    IdentityOAuthClientStateReader.class);
+            assertThat(context).doesNotHaveBean(IdentityResourceServerStateReader.class);
+            assertThat(context).doesNotHaveBean(IdentityOAuthClientStateReader.class);
             assertThat(context).hasSingleBean(IdpJwtVerifier.class);
             assertThat(context).hasSingleBean(CurrentIdentity.class);
             assertThat(context).hasSingleBean(IdpBearerAuthenticationFilter.class);
@@ -328,27 +310,9 @@ class IdpStarterAutoConfigurationTest {
     }
 
     @Test
-    void doesNotRequireServiceClientWhenOnlyResourceServerIsEnabled() {
-        new ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(
-                        IdpStarterAutoConfiguration.class, IdpSecurityObservationAutoConfiguration.class))
-                .withBean("jacksonObjectMapper", ObjectMapper.class, ObjectMapper::new)
-                .withBean(RedissonClient.class,
-                        () -> mock(RedissonClient.class))
-                .withPropertyValues(
-                        "egon.cola.platform.tianquan.shoubing.enabled=true",
-                        "egon.cola.platform.tianquan.shoubing.issuer=https://tianquan-shoubing.local",
-                        "egon.cola.platform.tianquan.shoubing.jwk-set-uri=https://tianquan-shoubing.local/oauth2/jwks",
-                        "egon.cola.platform.tianquan.shoubing.resource-server-id=resource-tianshu-local",
-                        "egon.cola.platform.tianquan.shoubing.resource-uri=https://api.example/local/platform/tianshu",
-                        "egon.cola.component.tianshu.enabled=false",
-                        "egon.cola.component.tianshu.registry.enabled=false")
-                .run(context -> {
-                    assertThat(context).hasNotFailed();
-                    assertThat(context).hasSingleBean(IdpJwtVerifier.class);
-                    assertThat(context).doesNotHaveBean(
-                            IdpServiceOAuth2Client.class);
-                });
+    void localAuthorityAdapterDoesNotNeedAnHttpServiceClient() {
+        contextRunner.run(context -> assertThat(context).hasNotFailed().hasSingleBean(IdpJwtVerifier.class)
+                .doesNotHaveBean(IdpServiceOAuth2Client.class));
     }
 
     @Test
@@ -367,8 +331,10 @@ class IdpStarterAutoConfigurationTest {
                         IdpSecurityObservationAutoConfiguration.class,
                         ServiceTokenWebClientConfiguration.class))
                 .withBean("jacksonObjectMapper", ObjectMapper.class, ObjectMapper::new)
-                .withBean(RedissonClient.class,
-                        () -> mock(RedissonClient.class))
+                .withBean("defaultValidator", Validator.class, LocalValidatorFactoryBean::new)
+                .withBean("registry", io.micrometer.core.instrument.MeterRegistry.class, io.micrometer.core.instrument.simple.SimpleMeterRegistry::new)
+                .withBean("identityAuthorityClientResolver", IdentityAuthorityClientResolver.class, () -> issuer -> top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.confirmingAuditClient())
+                .withPropertyValues(settings())
                 .withBean(ClientRegistrationRepository.class,
                         () -> new InMemoryClientRegistrationRepository(
                                 registration))
@@ -404,18 +370,9 @@ class IdpStarterAutoConfigurationTest {
 
     @Test
     void rejectsLegacyPrivateKeyAndAdmissionProperties() {
-        new ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(
-                        IdpStarterAutoConfiguration.class, IdpSecurityObservationAutoConfiguration.class))
-                .withPropertyValues(
-                        "egon.cola.platform.tianquan.shoubing.enabled=true",
-                        "egon.cola.platform.tianquan.shoubing.admission.private-key-path=/run/secrets/tianquan-shoubing.pem")
-                .run(context -> assertThat(context)
-                        .hasFailed()
-                        .getFailure()
-                        .hasMessageContaining("migration")
-                        .hasMessageContaining("admission.private-key-path")
-                        .hasMessageNotContaining("/run/secrets/tianquan-shoubing.pem"));
+        contextRunner.withPropertyValues("egon.cola.platform.tianquan.shoubing.admission.private-key-path=/run/secrets/controlled.pem")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasStackTraceContaining("migration required")
+                        .hasStackTraceContaining("admission.private-key-path").hasMessageNotContaining("/run/secrets/controlled.pem"));
     }
 
     @Test

@@ -15,7 +15,6 @@ import java.util.stream.Collectors;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -45,7 +44,7 @@ import top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceGrantType;
 @Profile("local")
 @ConditionalOnProperty(prefix = "egon.tianquan-shoubing.development-bootstrap",
         name = "enabled", havingValue = "true")
-public class IdpDevelopmentClientBootstrap implements SmartInitializingSingleton {
+public class IdpDevelopmentClientBootstrap {
 
     private static final String ACTOR = "local-development-bootstrap";
 
@@ -275,8 +274,11 @@ public class IdpDevelopmentClientBootstrap implements SmartInitializingSingleton
     @Value("${egon.tianquan-shoubing.development-bootstrap.tianquan-jianshen-service-tenant-ids:default}")
     private final String rbac3ServiceTenantIds;
 
-    @Override
-    public void afterSingletonsInstantiated() {
+    /** Explicit compatibility entry; bean construction never initializes clients or grants. */
+    @Deprecated
+    public void afterSingletonsInstantiated() { initializeExplicitly(); }
+
+    public void initializeExplicitly() {
         Path.of(secretDirectory);
         Set<String> tenantIds = developmentTenants.resolveTenantIds(tenantIds(rbac3ServiceTenantIds));
         TrustedRealmBO platform = realms.platformRealm();

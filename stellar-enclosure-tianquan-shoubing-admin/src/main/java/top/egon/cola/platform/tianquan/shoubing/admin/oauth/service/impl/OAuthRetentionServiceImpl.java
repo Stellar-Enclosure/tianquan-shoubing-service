@@ -40,8 +40,6 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthToke
 public class OAuthRetentionServiceImpl implements OAuthRetentionService {
 
     private static final int BATCH_SIZE = 500;
-    private static final Duration AUDIT_RETENTION = Duration.ofDays(180);
-    private static final Duration TOKEN_FAMILY_GRACE = Duration.ofHours(24);
     private static final Duration MAX_REALM_RUN = Duration.ofSeconds(30);
 
     @Qualifier("oAuthAuditRepository")
@@ -58,6 +56,16 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
     private final OAuthManagementRealmResolver managementRealmResolver;
     @Qualifier("outboxStore")
     private final OutboxStore outboxStore;
+    @Qualifier("oAuthInteractionRepository")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository interactions;
+    @Qualifier("oAuthAuthenticationRepository")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository authentications;
+    @Qualifier("oAuthAuditReceiptRepository")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditReceiptRepository receipts;
+    @Qualifier("oAuthAuditDeadLetterRepository")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditDeadLetterRepository deadLetters;
+    @Qualifier("oAuthAuditInboxRepository")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditInboxRepository inboxes;
     @Qualifier("egonColaMybatisPlusClock")
     private final Clock clock;
     @Value("${egon.tianquan-shoubing.clock-skew:30s}")
@@ -113,12 +121,44 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
     private int cleanExpiredBatch(TrustedRealmBO realm) {
         long deadline = System.nanoTime() + MAX_REALM_RUN.toNanos();
         Instant now = clock.instant();
-        int deleted = purgeAudits(realm, now.minus(AUDIT_RETENTION), deadline);
+        int deleted = purgeAuditDelivery(realm, now, deadline);
+        if (!deadlineReached(deadline)) { deleted += purgeAudits(realm, now, deadline); }
         if (!deadlineReached(deadline)) {
             deleted += purgeRevocations(realm, now.minus(clockSkew), deadline);
         }
         if (!deadlineReached(deadline)) {
-            deleted += purgeAuthorizationFamilies(realm, now.minus(TOKEN_FAMILY_GRACE), deadline);
+            deleted += purgeAuthorizationFamilies(realm, now, deadline);
+        }
+        if (!deadlineReached(deadline)) { deleted += purgeBrowserState(realm, now, deadline); }
+        return deleted;
+    }
+
+    private int purgeAuditDelivery(TrustedRealmBO realm, Instant now, long deadline) {
+        int deleted = 0;
+        for (var receipt : receipts.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
+            if (deadlineReached(deadline)) { return deleted; }
+            if (receipts.deleteRetained(realm, receipt.getId(), receipt.getVersion(), now)) { deleted++; }
+        }
+        for (var letter : deadLetters.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
+            if (deadlineReached(deadline)) { return deleted; }
+            if (deadLetters.deleteRetained(realm, letter.getId(), letter.getVersion(), now)) { deleted++; }
+        }
+        for (var inbox : inboxes.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
+            if (deadlineReached(deadline)) { return deleted; }
+            if (inboxes.deleteRetained(realm, inbox.getId(), inbox.getVersion(), now)) { deleted++; }
+        }
+        return deleted;
+    }
+
+    private int purgeBrowserState(TrustedRealmBO realm, Instant now, long deadline) {
+        int deleted = 0;
+        for (var interaction : interactions.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
+            if (deadlineReached(deadline)) { return deleted; }
+            if (interactions.deleteRetained(realm, interaction.getId(), interaction.getVersion(), now)) { deleted++; }
+        }
+        for (var authentication : authentications.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
+            if (deadlineReached(deadline)) { return deleted; }
+            if (authentications.deleteRetained(realm, authentication.getId(), authentication.getVersion(), now)) { deleted++; }
         }
         return deleted;
     }
@@ -130,7 +170,7 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
             if (deadlineReached(deadline)) {
                 break;
             }
-            if (audit.getOccurredAt().isAfter(cutoff)) {
+            if (audit.getRetainUntil() == null || audit.getRetainUntil().isAfter(cutoff)) {
                 continue;
             }
             if (auditRepository.deleteVersionedById(realm, audit.getId(), audit.getVersion())) {
@@ -141,18 +181,14 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
     }
 
     private int purgeRevocations(TrustedRealmBO realm, Instant cutoff, long deadline) {
-        if (outboxStore.countBacklog() != 0L) {
-            return 0;
-        }
         List<OAuthRevocationBO> expired = revocationRepository.findExpiredBefore(realm, cutoff, 0L, BATCH_SIZE);
         int deleted = 0;
         for (OAuthRevocationBO revocation : expired) {
             if (deadlineReached(deadline)) {
                 break;
             }
-            if (!"APPLIED".equals(revocation.getProjectionStatus())
-                    || revocation.getTargetType() == OAuthSecurityTargetEnum.KID
-                    || revocation.getExpiresAt() == null || revocation.getExpiresAt().isAfter(cutoff)) {
+            if (revocation.getTargetType() == OAuthSecurityTargetEnum.KID
+                    || revocation.getRetainUntil() == null || revocation.getRetainUntil().isAfter(cutoff)) {
                 continue;
             }
             if (revocationRepository.deleteVersionedById(realm, revocation.getId(), revocation.getVersion())) {
@@ -175,7 +211,7 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
             }
             OAuthAuthorizationBO current = authorizationRepository.findByIdForUpdate(realm, candidate.getId())
                     .orElse(null);
-            if (current == null || current.getAbsoluteExpiresAt().isAfter(cutoff)) {
+            if (current == null || current.getRetainUntil() == null || current.getRetainUntil().isAfter(cutoff)) {
                 continue;
             }
             boolean familyComplete = true;
@@ -196,6 +232,7 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
                             throw new IllegalStateException("OAUTH_RETENTION_TOKEN_FAMILY_INVALID");
                         }
                         afterId = token.getId();
+                        if (token.getRetainUntil() == null || token.getRetainUntil().isAfter(cutoff)) { familyComplete = false; continue; }
                         if (!tokenRepository.deleteVersionedById(realm, token.getId(), token.getVersion())) {
                             familyComplete = false;
                         } else {

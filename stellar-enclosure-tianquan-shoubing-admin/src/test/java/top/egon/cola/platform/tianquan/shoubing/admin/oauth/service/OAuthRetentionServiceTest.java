@@ -65,6 +65,12 @@ class OAuthRetentionServiceTest {
 
     private OAuthRetentionServiceImpl service;
 
+    private final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository interactions = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository.class);
+    private final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository authentications = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class);
+    private final top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditReceiptRepository receipts = mock(top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditReceiptRepository.class);
+    private final top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditDeadLetterRepository deadLetters = mock(top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditDeadLetterRepository.class);
+    private final top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditInboxRepository inboxes = mock(top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditInboxRepository.class);
+
     @BeforeEach
     void setUp() {
         TransactionStatus transactionStatus = mock(TransactionStatus.class);
@@ -72,26 +78,26 @@ class OAuthRetentionServiceTest {
         when(transactionManager.getTransaction(any())).thenReturn(transactionStatus);
         when(outboxStore.countBacklog()).thenReturn(0L);
         service = new OAuthRetentionServiceImpl(auditRepository, revocationRepository, tokenRepository,
-                authorizationRepository, realmRepository, managementRealmResolver, outboxStore, clock,
+                authorizationRepository, realmRepository, managementRealmResolver, outboxStore, interactions, authentications, receipts, deadLetters, inboxes, clock,
                 java.time.Duration.ofSeconds(30), transactionManager);
     }
 
     @Test
-    void deletesOnlyAgedAuditAndAppliedExpiredRevocationsWithVersionGuards() {
+    void deletesOnlyFactsBeyondTheirDatabaseRetentionWindow() {
         Instant auditCutoff = NOW.minusSeconds(180L * 24 * 60 * 60);
         Instant revocationCutoff = NOW.minusSeconds(30);
         OAuthAuditBO oldAudit = OAuthAuditBO.builder()
-                .id(10L).version(4L).occurredAt(auditCutoff.minusSeconds(1)).build();
+                .id(10L).version(4L).occurredAt(auditCutoff.minusSeconds(1)).retainUntil(NOW.minusSeconds(1)).build();
         OAuthRevocationBO applied = OAuthRevocationBO.builder()
                 .id(20L).version(5L).targetType(OAuthSecurityTargetEnum.JTI)
-                .expiresAt(revocationCutoff.minusSeconds(1)).projectionStatus("APPLIED").build();
+                .expiresAt(revocationCutoff.minusSeconds(86_401)).retainUntil(revocationCutoff.minusSeconds(1)).build();
         OAuthRevocationBO pending = OAuthRevocationBO.builder()
                 .id(21L).version(1L).targetType(OAuthSecurityTargetEnum.JTI)
-                .expiresAt(revocationCutoff.minusSeconds(1)).projectionStatus("PENDING").build();
+                .expiresAt(revocationCutoff.minusSeconds(1)).retainUntil(revocationCutoff.plusSeconds(86_400)).build();
         OAuthRevocationBO permanentKid = OAuthRevocationBO.builder()
                 .id(22L).version(2L).targetType(OAuthSecurityTargetEnum.KID)
-                .expiresAt(null).projectionStatus("APPLIED").build();
-        when(auditRepository.findExpiredBefore(eq(TENANT), eq(auditCutoff), eq(0L), eq(500)))
+                .expiresAt(null).retainUntil(null).build();
+        when(auditRepository.findExpiredBefore(eq(TENANT), eq(NOW), eq(0L), eq(500)))
                 .thenReturn(List.of(oldAudit));
         when(auditRepository.deleteVersionedById(TENANT, 10L, 4L)).thenReturn(true);
         when(revocationRepository.findExpiredBefore(eq(TENANT), eq(revocationCutoff), eq(0L), eq(500)))
@@ -105,11 +111,11 @@ class OAuthRetentionServiceTest {
         verify(revocationRepository).deleteVersionedById(TENANT, 20L, 5L);
         verify(revocationRepository, never()).deleteVersionedById(TENANT, 21L, 1L);
         verify(revocationRepository, never()).deleteVersionedById(TENANT, 22L, 2L);
-        verify(outboxStore).countBacklog();
+        verify(outboxStore, never()).countBacklog();
     }
 
     @Test
-    void activeOutboxBacklogDefersRevocationRetention() {
+    void outboxBacklogDoesNotChangeAnAuthoritativeRevocationRetentionBoundary() {
         when(outboxStore.countBacklog()).thenReturn(1L);
         when(auditRepository.findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500))).thenReturn(List.of());
         when(authorizationRepository.findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500)))
@@ -118,7 +124,7 @@ class OAuthRetentionServiceTest {
         int deleted = service.cleanExpired(TENANT);
 
         assertThat(deleted).isZero();
-        verify(revocationRepository, never()).findExpiredBefore(eq(TENANT), any(), anyLong(), anyInt());
+        verify(revocationRepository).findExpiredBefore(eq(TENANT), any(), anyLong(), anyInt());
         verify(revocationRepository, never()).deleteVersionedById(eq(TENANT), any(), anyLong());
     }
 
@@ -126,14 +132,14 @@ class OAuthRetentionServiceTest {
     void removesFamilyTokensBeforeDeletingExpiredAuthorization() {
         Instant familyCutoff = NOW.minusSeconds(24L * 60 * 60);
         OAuthAuthorizationBO expiredAuthorization = OAuthAuthorizationBO.builder()
-                .id(30L).version(8L).absoluteExpiresAt(familyCutoff.minusSeconds(1)).build();
+                .id(30L).version(8L).absoluteExpiresAt(familyCutoff.minusSeconds(1)).retainUntil(NOW.minusSeconds(1)).build();
         OAuthTokenBO refreshToken = OAuthTokenBO.builder()
                 .id(31L).version(3L).authorizationPk(30L).tokenType(OAuthTokenTypeEnum.REFRESH)
-                .expiresAt(expiredAuthorization.getAbsoluteExpiresAt().minusSeconds(1)).build();
+                .expiresAt(expiredAuthorization.getAbsoluteExpiresAt().minusSeconds(1)).retainUntil(NOW.minusSeconds(1)).build();
         AtomicBoolean refreshTokenPresent = new AtomicBoolean(true);
         when(auditRepository.findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500))).thenReturn(List.of());
         when(revocationRepository.findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500))).thenReturn(List.of());
-        when(authorizationRepository.findExpiredBefore(eq(TENANT), eq(familyCutoff), eq(0L), eq(500)))
+        when(authorizationRepository.findExpiredBefore(eq(TENANT), eq(NOW), eq(0L), eq(500)))
                 .thenReturn(List.of(expiredAuthorization));
         when(authorizationRepository.findByIdForUpdate(TENANT, 30L)).thenReturn(Optional.of(expiredAuthorization));
         when(tokenRepository.findByAuthorization(eq(TENANT), eq(30L), any(), anyLong(), anyInt()))
@@ -157,10 +163,10 @@ class OAuthRetentionServiceTest {
     void restartContinuesFromRemainingActiveCandidatesAfterCommittedBatch() {
         Instant cutoff = NOW.minusSeconds(180L * 24 * 60 * 60);
         OAuthAuditBO first = OAuthAuditBO.builder().id(40L).version(1L)
-                .occurredAt(cutoff.minusSeconds(2)).build();
+                .occurredAt(cutoff.minusSeconds(2)).retainUntil(NOW.minusSeconds(2)).build();
         OAuthAuditBO second = OAuthAuditBO.builder().id(41L).version(2L)
-                .occurredAt(cutoff.minusSeconds(1)).build();
-        when(auditRepository.findExpiredBefore(eq(TENANT), eq(cutoff), eq(0L), eq(500)))
+                .occurredAt(cutoff.minusSeconds(1)).retainUntil(NOW.minusSeconds(1)).build();
+        when(auditRepository.findExpiredBefore(eq(TENANT), eq(NOW), eq(0L), eq(500)))
                 .thenReturn(List.of(first)).thenReturn(List.of(second));
         when(auditRepository.deleteVersionedById(TENANT, 40L, 1L)).thenReturn(true);
         when(auditRepository.deleteVersionedById(TENANT, 41L, 2L)).thenReturn(true);
@@ -201,4 +207,26 @@ class OAuthRetentionServiceTest {
         verify(realmRepository).findAllByStoragePartition(platformRealm);
         verify(auditRepository).findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500));
     }
+    @Test
+    void retainedDatabaseReferenceMayVetoRetiringExpiredBrowserFacts() {
+        var interaction = top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO.builder().id(71L).version(3L).build();
+        var authentication = top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO.builder().id(72L).version(4L).build();
+        when(interactions.findRetainedBefore(TENANT, NOW, 0L, 500)).thenReturn(List.of(interaction));
+        when(authentications.findRetainedBefore(TENANT, NOW, 0L, 500)).thenReturn(List.of(authentication));
+        when(interactions.deleteRetained(TENANT, 71L, 3L, NOW)).thenReturn(false);
+        when(authentications.deleteRetained(TENANT, 72L, 4L, NOW)).thenReturn(false);
+        assertThat(service.cleanExpired(TENANT)).isZero();
+        verify(interactions).deleteRetained(TENANT, 71L, 3L, NOW);
+        verify(authentications).deleteRetained(TENANT, 72L, 4L, NOW);
+    }
+
+    @Test
+    void delayedAuditReceiptRetentionWinsOverTheOriginalEventAge() {
+        var audit = OAuthAuditBO.builder().id(81L).version(0L).occurredAt(NOW.minusSeconds(181L * 86_400))
+                .retainUntil(NOW.plusSeconds(86_400)).build();
+        when(auditRepository.findExpiredBefore(TENANT, NOW, 0L, 500)).thenReturn(List.of(audit));
+        assertThat(service.cleanExpired(TENANT)).isZero();
+        verify(auditRepository, never()).deleteVersionedById(any(), any(), anyLong());
+    }
+
 }

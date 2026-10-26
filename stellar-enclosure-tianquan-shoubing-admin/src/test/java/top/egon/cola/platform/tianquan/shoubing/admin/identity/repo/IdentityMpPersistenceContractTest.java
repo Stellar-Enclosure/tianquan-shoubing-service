@@ -91,7 +91,7 @@ class IdentityMpPersistenceContractTest {
         Path root = repositoryRoot();
         for (String mapper : DIRECTORY_MAPPERS) {
             Path path = root.resolve(
-                    "stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+                    ""
                             + "stellar-enclosure-tianquan-shoubing-admin/src/main/resources/"
                             + mapper
             );
@@ -106,7 +106,7 @@ class IdentityMpPersistenceContractTest {
     @Test
     void identityAdapterNoLongerDependsOnJpa() throws IOException {
         Path source = repositoryRoot().resolve(
-                "stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+                ""
                         + "stellar-enclosure-tianquan-shoubing-admin/src/main/java/top/egon/cola/"
                         + "platform/tianquan/shoubing/admin/identity/repo/IdentityPersistenceAdapter.java"
         );
@@ -127,7 +127,7 @@ class IdentityMpPersistenceContractTest {
                 + "${EGON_TIANQUAN_SHOUBING_PLATFORM_STORAGE_PARTITION_ID}";
         for (String profile : List.of("application.yml", "application-local.yml")) {
             String yaml = Files.readString(repositoryRoot()
-                    .resolve("stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+                    .resolve(""
                             + "stellar-enclosure-tianquan-shoubing-admin/src/main/resources/")
                     .resolve(profile));
             assertTrue(yaml.contains(property), "Missing required P property in " + profile);
@@ -154,7 +154,7 @@ class IdentityMpPersistenceContractTest {
     @Test
     void mpNamedClockAliasUsesTheIdpClockInstance() throws IOException {
         Path configuration = repositoryRoot().resolve(
-                "stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+                ""
                         + "stellar-enclosure-tianquan-shoubing-admin/src/main/java/top/egon/cola/"
                         + "platform/tianquan/shoubing/admin/oauth/config/OAuthPersistenceConfiguration.java"
         );
@@ -236,7 +236,7 @@ class IdentityMpPersistenceContractTest {
                 .normalize();
         while (cursor != null) {
             if (Files.isRegularFile(cursor.resolve("pom.xml"))
-                    && Files.isDirectory(cursor.resolve("stellar-enclosure-platform"))) {
+                    && Files.isDirectory(cursor.resolve("stellar-enclosure-tianquan-shoubing-admin"))) {
                 return cursor;
             }
             cursor = cursor.getParent();

@@ -1,6 +1,5 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.support.runtime;
 
-import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.ApplicationArguments;
@@ -42,14 +41,6 @@ import java.util.Map;
 @Profile("!oauth-migration")
 public class IdpPlatformConfiguration {
 
-    /** Selects the host connection for Common cache when identity and Tianshu clients coexist. */
-    @Bean(name = "redissonClient", destroyMethod = "")
-    @ConditionalOnMissingBean(name = "redissonClient")
-    @ConditionalOnProperty(prefix = "egon.cola.component.cache", name = "enabled", havingValue = "true", matchIfMissing = true)
-    RedissonClient applicationCacheRedissonClient(@Qualifier("rbac3RuntimeRedissonClient") RedissonClient client) {
-        return client;
-    }
-
     @Bean
     ApplicationRunner idpBootstrapApplicationRunner(
             IdpBootstrapService bootstrap,
@@ -73,7 +64,6 @@ public class IdpPlatformConfiguration {
     IdpRuntimeReadiness idpRuntimeReadiness(
             ObjectProvider<DdcRuntimeCoordinator> coordinators,
             @Qualifier("outboxStore") OutboxStore outbox,
-            @Qualifier("rbac3RuntimeRedissonClient") RedissonClient redisson,
             @Qualifier("oauthManagementRealmResolver") OAuthManagementRealmResolver realms,
             @Qualifier("oAuthRealmRepository") OAuthRealmRepository realmRepository,
             @Qualifier("tenantJwkSourceComponent") JWKSource<SecurityContext> jwkSource,
@@ -114,10 +104,11 @@ public class IdpPlatformConfiguration {
             } finally {
                 AuthorizationServerContextHolder.setContext(previous);
             }
-            boolean outboxReady = outbox != null
-                    && !redisson.isShutdown()
-                    && !redisson.isShuttingDown()
-                    && auditReady.getIfAvailable(() -> () -> true).getAsBoolean();
+            boolean outboxReady;
+            try {
+                outboxReady = outbox.countBacklog() >= 0L
+                        && auditReady.getIfAvailable(() -> () -> false).getAsBoolean();
+            } catch (org.springframework.dao.DataAccessException unavailable) { outboxReady = false; }
             return new IdpHttpProviderPublicationGate.ReadinessStatus(
                     ddcReady,
                     oauthReady,

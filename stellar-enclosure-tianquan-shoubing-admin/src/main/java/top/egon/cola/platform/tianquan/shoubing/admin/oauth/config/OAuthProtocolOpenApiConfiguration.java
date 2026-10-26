@@ -86,10 +86,10 @@ public class OAuthProtocolOpenApiConfiguration {
         api.getComponents().addSecuritySchemes("oauthUserBearer", new io.swagger.v3.oas.models.security.SecurityScheme()
                 .type(io.swagger.v3.oas.models.security.SecurityScheme.Type.HTTP).scheme("bearer").bearerFormat("JWT")
                 .description("USER access token for this issuer and openid scope; ID Token is not an API credential."));
-        api.getComponents().addSecuritySchemes("oauthAuthorizationSession", new io.swagger.v3.oas.models.security.SecurityScheme()
+        api.getComponents().addSecuritySchemes("oauthAuthenticationCookie", new io.swagger.v3.oas.models.security.SecurityScheme()
                 .type(io.swagger.v3.oas.models.security.SecurityScheme.Type.APIKEY)
-                .in(io.swagger.v3.oas.models.security.SecurityScheme.In.COOKIE).name("SESSION")
-                .description("Authenticated SAS authorization session and transaction-bound CSRF."));
+                .in(io.swagger.v3.oas.models.security.SecurityScheme.In.HEADER).name("Cookie")
+                .description("Browser-managed issuer-specific __Host-idp-authn-<issuer hash> authentication JWT and browser binding cookies; SQL interaction-bound CSRF."));
 
         ObjectSchema jwks = new ObjectSchema();
         jwks.addProperty("keys", new io.swagger.v3.oas.models.media.ArraySchema().items(new ObjectSchema()
@@ -183,17 +183,17 @@ public class OAuthProtocolOpenApiConfiguration {
                 .requestBody(new RequestBody().required(true).content(new Content().addMediaType(
                         "application/x-www-form-urlencoded", new MediaType().schema(consentForm))))
                 .responses(redirectResponses("302", "Validated client callback with code or access_denied"))
-                .addSecurityItem(new io.swagger.v3.oas.models.security.SecurityRequirement().addList("oauthAuthorizationSession"));
+                .addSecurityItem(new io.swagger.v3.oas.models.security.SecurityRequirement().addList("oauthAuthenticationCookie"));
         api.path("/tenants/{tenantId}/oauth2/authorize", new PathItem().get(authorize).post(consent));
         Operation consentPage = nativeOperation("oauthSasConsentPage", "Render the current native consent transaction", false)
-                .description("Issuer/client/subject/session-bound pending state; escaped HTML, unchecked optional scopes and independent cancel form. Read only; no token or secret output.")
+                .description("Issuer/client/subject/authentication-JWT/browser-bound SQL pending state; escaped HTML, unchecked optional scopes and independent cancel form. Read only; no token or secret output.")
                 .addParametersItem(new Parameter().name("client_id").in("query").required(true)
                         .schema(new StringSchema().minLength(1).maxLength(128)))
                 .addParametersItem(new Parameter().name("state").in("query").required(true)
                         .schema(new StringSchema().minLength(32).maxLength(256).pattern("^[A-Za-z0-9_-]{32,256}={0,2}$")))
                 .addParametersItem(new Parameter().name("scope").in("query").required(false)
                         .schema(new StringSchema().maxLength(8320)))
-                .addSecurityItem(new io.swagger.v3.oas.models.security.SecurityRequirement().addList("oauthAuthorizationSession"));
+                .addSecurityItem(new io.swagger.v3.oas.models.security.SecurityRequirement().addList("oauthAuthenticationCookie"));
         ApiResponses consentPageResponses = new ApiResponses();
         for (String code : List.of("200", "400", "401", "404", "503")) {
             consentPageResponses.addApiResponse(code, new ApiResponse().description(code.equals("200") ? "Current escaped consent form" : "Constant HTML rejection")

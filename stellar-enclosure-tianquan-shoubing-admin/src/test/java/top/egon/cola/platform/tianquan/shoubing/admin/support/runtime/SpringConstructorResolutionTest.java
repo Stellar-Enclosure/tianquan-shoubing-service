@@ -56,6 +56,8 @@ class SpringConstructorResolutionTest {
     @Test
     void nativeConsentAndLoginConstructorsResolveQualifiedPortsWithCompetingTypes() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            org.springframework.test.context.support.TestPropertySourceUtils.addInlinedPropertiesToEnvironment(context,
+                    "egon.tianquan-shoubing.oauth.public-origin=https://idp.example");
             registerNamedMock(context, "tenantIssuerService", TenantIssuerService.class);
             registerNamedMock(context, "unrelatedIssuerService", TenantIssuerService.class);
             registerNamedMock(context, "tenantAuthorizationService", org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService.class);
@@ -65,7 +67,7 @@ class SpringConstructorResolutionTest {
             registerNamedMock(context, "identityFacade", top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityFacade.class);
             registerNamedMock(context, "tenantMembershipPort", top.egon.cola.platform.tianquan.shoubing.core.port.TenantMembershipPort.class);
             registerNamedMock(context, "oauthAuthorizationRequestCache", org.springframework.security.web.savedrequest.RequestCache.class);
-            registerNamedMock(context, "oauthLoginSessionAuthenticationStrategy", org.springframework.security.web.authentication.session.SessionAuthenticationStrategy.class);
+            registerNamedMock(context, "oauthBrowserInteractionComponent", top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class);
             context.registerBean("egonColaMybatisPlusClock", Clock.class, Clock::systemUTC);
             context.registerBean("unrelatedClock", Clock.class, Clock::systemUTC);
             context.registerBean(top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.OAuthConsentController.class);

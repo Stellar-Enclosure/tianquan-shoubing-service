@@ -46,19 +46,18 @@ class IdentityOutboxPublisherTest {
 
     private final OAuthAuditRepository audits = mock(OAuthAuditRepository.class);
     private final TransactionalOutbox outbox = mock(TransactionalOutbox.class);
-    private final RedissonClient redisson = mock(RedissonClient.class);
-    private final RBucket<String> bucket = mock(RBucket.class);
+    private final top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository users =
+            mock(top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository.class);
     private final OAuthManagementRealmResolver realmResolver = mock(OAuthManagementRealmResolver.class);
     private IdentityOutboxPublisher publisher;
 
     @BeforeEach
     void setUp() {
-        doReturn(bucket).when(redisson).getBucket(anyString(), eq(StringCodec.INSTANCE));
         when(realmResolver.platformRealm()).thenReturn(PLATFORM);
         when(audits.save(eq(PLATFORM), any(OAuthAuditBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
-        publisher = new IdentityOutboxPublisher(audits, outbox, redisson,
-                new ObjectMapper().findAndRegisterModules(), realmResolver, "identity:v1:user-state:",
+        publisher = new IdentityOutboxPublisher(audits, outbox, users,
+                new ObjectMapper().findAndRegisterModules(), realmResolver,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
@@ -86,30 +85,33 @@ class IdentityOutboxPublisherTest {
                 .containsEntry("targetSub", "alice-sub")
                 .doesNotContainKey("passwordHash")
                 .doesNotContainKey("token");
-        verifyNoInteractions(redisson);
+        verifyNoInteractions(users);
     }
 
     @Test
-    void businessStateProjectionWaitsUntilAfterTheDatabaseCommit() {
-        TransactionSynchronizationManager.initSynchronization();
-        try {
-            publisher.publish(new IdentityUserState("alice-sub", IdentityUserState.Status.DISABLED, NOW));
-            verifyNoInteractions(redisson, bucket, outbox, audits);
-            for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
-                synchronization.afterCommit();
-            }
-            verify(redisson).getBucket("identity:v1:user-state:alice-sub", StringCodec.INSTANCE);
-            verify(bucket).set(anyString());
-        } finally {
-            TransactionSynchronizationManager.clearSynchronization();
-        }
-    }
-
-    @Test
-    void startupProjectionRestoresRedisWithoutCreatingDomainEvents() {
-        publisher.project(new IdentityUserState("alice-sub", IdentityUserState.Status.ACTIVE, NOW));
-
-        verify(bucket).set(anyString());
+    void statePublicationChecksTheCurrentDatabaseFactWithoutAnotherStore() {
+        when(users.findByIdentitySub("alice-sub")).thenReturn(java.util.Optional.of(user(
+                top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.DISABLED)));
+        publisher.publish(new IdentityUserState("alice-sub", IdentityUserState.Status.DISABLED, NOW));
+        verify(users).findByIdentitySub("alice-sub");
         verifyNoInteractions(outbox, audits);
+    }
+
+    @Test
+    void missingOrConflictingDatabaseStateFailsClosed() {
+        when(users.findByIdentitySub("alice-sub")).thenReturn(java.util.Optional.empty());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> publisher.project(
+                new IdentityUserState("alice-sub", IdentityUserState.Status.ACTIVE, NOW))).isInstanceOf(IllegalStateException.class);
+        when(users.findByIdentitySub("alice-sub")).thenReturn(java.util.Optional.of(user(
+                top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.DISABLED)));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> publisher.project(
+                new IdentityUserState("alice-sub", IdentityUserState.Status.ACTIVE, NOW))).isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(outbox, audits);
+    }
+
+    private static top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUser user(
+            top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus status) {
+        return new top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUser(
+                "alice-sub", "alice", "alice", "Alice", status, 0, null, null, 0L);
     }
 }

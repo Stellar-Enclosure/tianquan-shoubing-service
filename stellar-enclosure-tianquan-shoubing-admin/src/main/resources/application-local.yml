@@ -23,21 +23,8 @@ egon.cola.platform:
         allow-local-plaintext: true
       issuer: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}
       jwk-set-uri: ${TIANQUAN_SHOUBING_JWK_SET_URI}
-      revocation:
-        primary-endpoint: ${TIANQUAN_SHOUBING_REVOCATION_PRIMARY_ENDPOINT:redis://127.0.0.1:6379}
-        epoch: ${EGON_TIANQUAN_SHOUBING_REVOCATION_EPOCH}
       audit:
-        delivery:
-          receipt-ttl: PT1H
-          confirmation-timeout: PT30S
-          batch-size: 100
-        stream: egon:oauth:audit:v1
-        spool-directory: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_SPOOL_DIRECTORY}
-        spool-max-bytes: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_SPOOL_MAX_BYTES:1073741824}
-        hmac-key-file: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_HMAC_KEY_FILE}
         consumer-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_CONSUMER_DELAY:1000}
-        replay-initial-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_REPLAY_INITIAL_DELAY:5000}
-        replay-delay: ${EGON_TIANQUAN_SHOUBING_OAUTH_AUDIT_REPLAY_DELAY:5000}
     jianshen:
       user-scope-policy:
         enabled: true
@@ -63,9 +50,6 @@ egon.cola.platform:
           "[tianquan-shoubing:signing-key:retire]": ["tianquan-shoubing:signing-key:retire"]
           "[tianquan-shoubing:tenant:manage]": ["tianquan-shoubing:tenant:manage"]
           "[tianquan-shoubing:tenant:read]": ["tianquan-shoubing:tenant:read"]
-      runtime:
-        redis-address: ${TIANQUAN_SHOUBING_AUTHORIZATION_REDIS_ADDRESS:redis://127.0.0.1:6379}
-        password-file: ${UNIFIED_IDENTITY_REDIS_PASSWORD_FILE:${UNIFIED_XINGYUAN_RUNTIME_DIR:target/local-unified-xingyuan}/secrets/redis.password}
       authorization:
         endpoint: ${TIANQUAN_JIANSHEN_AUTHORIZATION_ENDPOINT:http://127.0.0.1:18130}
 

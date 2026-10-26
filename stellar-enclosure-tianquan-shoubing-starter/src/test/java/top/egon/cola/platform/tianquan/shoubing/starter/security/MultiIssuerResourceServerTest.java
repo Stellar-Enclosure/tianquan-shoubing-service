@@ -144,39 +144,21 @@ class MultiIssuerResourceServerTest {
     }
 
     @Test
-    void autoConfigurationBindsMultiIssuerMapAndStrictRevocationReader() {
-        Config redisConfig = new Config();
-        redisConfig.useSingleServer().setAddress("rediss://redis.example:6379");
-        RedissonClient redisson = mock(RedissonClient.class);
-        when(redisson.getConfig()).thenReturn(redisConfig);
-        String issuer = "https://idp.example/tenants/1001";
-
-        new ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(
-                        top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure
-                                .IdpStarterAutoConfiguration.class))
-                .withBean("rbac3RuntimeRedissonClient", RedissonClient.class, () -> redisson)
+    void autoConfigurationBindsMultiIssuerMapAndDatabaseAuthorityReader() {
+        new ApplicationContextRunner().withConfiguration(AutoConfigurations.of(
+                        top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterAutoConfiguration.class,
+                        top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpSecurityObservationAutoConfiguration.class))
                 .withBean("jacksonObjectMapper", ObjectMapper.class, ObjectMapper::new)
-                .withPropertyValues(
-                        "egon.cola.platform.tianquan.shoubing.enabled=true",
-                        "egon.cola.platform.tianquan.shoubing.resource-server-id=orders-resource",
-                        "egon.cola.platform.tianquan.shoubing.resource-uri=https://api.example/orders",
-                        "egon.cola.platform.tianquan.shoubing.revocation.primary-endpoint=rediss://redis.example:6379",
-                        "egon.cola.platform.tianquan.shoubing.revocation.epoch=epoch-1",
-                        "egon.cola.platform.tianquan.shoubing.trusted-issuers.[tenant-a].issuer=" + issuer,
-                        "egon.cola.platform.tianquan.shoubing.trusted-issuers.[tenant-a].jwks-uri=" + issuer + "/.well-known/jwks.json",
-                        "egon.cola.platform.tianquan.shoubing.trusted-issuers.[tenant-a].realm-key=tenant:1001",
-                        "egon.cola.platform.tianquan.shoubing.trusted-issuers.[tenant-a].realm-type=TENANT",
-                        "egon.cola.platform.tianquan.shoubing.trusted-issuers.[tenant-a].tenant-id=1001",
-                        "egon.cola.platform.tianquan.shoubing.trusted-issuers.[tenant-a].status=ACTIVE",
-                        "egon.cola.platform.tianquan.shoubing.trusted-issuers.[tenant-a].trust-version=1")
+                .withBean("defaultValidator", jakarta.validation.Validator.class, org.springframework.validation.beanvalidation.LocalValidatorFactoryBean::new)
+                .withBean("registry", io.micrometer.core.instrument.MeterRegistry.class, io.micrometer.core.instrument.simple.SimpleMeterRegistry::new)
+                .withBean("identityAuthorityClientResolver", top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClientResolver.class,
+                        () -> issuer -> top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.confirmingAuditClient())
+                .withPropertyValues(top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.settings())
                 .run(context -> {
-                    assertThat(context).hasNotFailed();
-                    assertThat(context).hasSingleBean(IdpJwtVerifier.class);
-                    assertThat(context).hasSingleBean(IdpBearerAuthenticationFilter.class);
-                    assertThat(context).hasSingleBean(OAuthRevocationReader.class);
-                    assertThat(context).hasBean("trustedIssuerRegistry");
-                    assertThat(context).hasBean("verifiedPrincipalConverter");
+                    assertThat(context).hasNotFailed().hasSingleBean(IdpJwtVerifier.class).hasSingleBean(IdpBearerAuthenticationFilter.class)
+                            .hasSingleBean(OAuthRevocationReader.class).hasBean("trustedIssuerRegistry").hasBean("verifiedPrincipalConverter");
+                    assertThat(context.getBean(OAuthRevocationReader.class))
+                            .isInstanceOf(top.egon.cola.platform.tianquan.shoubing.starter.security.impl.DatabaseOAuthRevocationReader.class);
                 });
     }
 

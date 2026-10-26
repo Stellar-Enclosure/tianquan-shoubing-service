@@ -1,9 +1,7 @@
 package top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -47,32 +45,28 @@ import top.egon.cola.platform.tianquan.shoubing.starter.security.CurrentIdentity
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpBearerAuthenticationFilter;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpEndpointAuthenticationPolicy;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier;
-import top.egon.cola.platform.tianquan.shoubing.starter.security.LegacyIssuerCutoverPolicy;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.OAuthRevocationReader;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.TenantIssuerAuthenticationManagerComponent;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.TrustedIssuerRegistry;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.VerifiedPrincipalConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.VerifiedTenantContextFilter;
-import top.egon.cola.platform.tianquan.shoubing.starter.security.impl.RedisOAuthRevocationReader;
-import top.egon.cola.platform.tianquan.shoubing.starter.security.reactive.ReactiveOAuthRevocationReader;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.ServiceAccessTokenVerifier;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.UserAccessTokenVerifier;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.RetryingJwtDecoder;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.ServiceScopeAuthorization;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcBearerServerInterceptor;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcClientCredentialInterceptorFactory;
-import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityOAuthClientStateReader;
-import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityResourceServerStateReader;
-import top.egon.cola.platform.tianquan.shoubing.starter.state.RedisIdentityOAuthClientStateReader;
-import top.egon.cola.platform.tianquan.shoubing.starter.state.RedisIdentityResourceServerStateReader;
-import top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthAuditProperties;
 import top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpSecurityObservationFilter;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverter;
-import top.egon.cola.platform.tianquan.shoubing.starter.audit.AuditDeliveryProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent;
+
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClientResolver;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityProperties;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.ConfiguredIdentityAuthorityClients;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.impl.DatabaseOAuthRevocationReader;
 
 import java.time.Clock;
 import java.util.ArrayList;
@@ -117,27 +111,15 @@ public class IdpStarterAutoConfiguration {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(
-            prefix = "egon.cola.platform.tianquan.shoubing.audit",
-            name = {"spool-directory", "hmac-key-file"})
-    @EnableConfigurationProperties(OAuthAuditProperties.class)
     public static class OAuthAuditConfiguration {
-        @Bean(name = "auditDeliveryProperties")
-        AuditDeliveryProperties auditDeliveryProperties() {
-            return new AuditDeliveryProperties();
-        }
-
         @Bean(name = "tokenUsageAuditComponent")
         @ConditionalOnMissingBean(TokenUsageAuditComponent.class)
         public TokenUsageAuditComponent tokenUsageAuditComponent(
-                @Qualifier("idpAuditRedissonClient") RedissonClient redisson,
-                @Qualifier("jacksonObjectMapper") ObjectMapper objectMapper,
-                @Qualifier("oauthAuditProperties") OAuthAuditProperties properties,
-                @Qualifier("auditDeliveryProperties") AuditDeliveryProperties delivery,
+                IdentityAuthorityClientResolver authority,
                 @Qualifier("idpClock") Clock clock,
                 @Qualifier("defaultValidator") jakarta.validation.Validator validator,
                 @Qualifier("idpSecurityMetricsRecorder") ObjectProvider<IdpSecurityMetricsRecorder> metrics) {
-            return new TokenUsageAuditComponent(redisson, objectMapper, properties, delivery, clock, validator,
+            return new TokenUsageAuditComponent(authority, clock, validator,
                     metrics.getIfAvailable(() -> IdpSecurityMetricsRecorder.NOOP));
         }
     }
@@ -238,57 +220,35 @@ public class IdpStarterAutoConfiguration {
         return component;
     }
 
-    @Bean(name = "oauthRevocationReader")
-    @ConditionalOnBean(RedissonClient.class)
-    @ConditionalOnMissingBean(OAuthRevocationReader.class)
-    public OAuthRevocationReader oauthRevocationReader(
-            ObjectProvider<RedissonClient> redissonClients,
-            ListableBeanFactory beanFactory,
-            @Qualifier("trustedIssuerRegistry") TrustedIssuerRegistry trustedIssuerRegistry,
-            ObjectProvider<ObjectMapper> objectMappers,
-            @Qualifier("idpStarterProperties") IdpStarterProperties properties) {
-        ObjectMapper objectMapper = beanFactory.containsBean("jacksonObjectMapper")
-                ? beanFactory.getBean("jacksonObjectMapper", ObjectMapper.class)
-                : objectMappers.getIfUnique();
-        if (objectMapper == null) {
-            throw new IllegalStateException("OAuth revocation Reader requires the named Jackson mapper");
-        }
-        return new RedisOAuthRevocationReader(
-                identityStateRedisson(redissonClients, beanFactory),
-                trustedIssuerRegistry,
-                objectMapper,
-                properties);
+    @Bean(name = "identityAuthorityProperties")
+    @ConfigurationProperties("egon.cola.platform.tianquan.shoubing.authority")
+    public IdentityAuthorityProperties identityAuthorityProperties() {
+        return new IdentityAuthorityProperties();
     }
 
-    @Bean(name = "reactiveOAuthRevocationReader")
-    @ConditionalOnBean(RedissonClient.class)
-    @ConditionalOnMissingBean(name = "reactiveOAuthRevocationReader")
-    public ReactiveOAuthRevocationReader reactiveOAuthRevocationReader(
-            ObjectProvider<RedissonClient> redissonClients,
-            ListableBeanFactory beanFactory,
-            @Qualifier("trustedIssuerRegistry") TrustedIssuerRegistry trustedIssuerRegistry,
+    /** Local database owners provide this port directly; other hosts use one finite SERVICE binding per issuer. */
+    @Bean(name = "identityAuthorityClientResolver")
+    @ConditionalOnMissingBean(IdentityAuthorityClientResolver.class)
+    public IdentityAuthorityClientResolver identityAuthorityClientResolver(
+            @Qualifier("identityAuthorityProperties") IdentityAuthorityProperties authority,
+            @Qualifier("idpStarterProperties") IdpStarterProperties properties,
+            @Qualifier("trustedIssuerRegistry") TrustedIssuerRegistry issuers,
+            @Qualifier("idpServiceOAuth2Client") IdpServiceOAuth2Client serviceClient,
+            @Qualifier("jacksonObjectMapper") ObjectMapper mapper) {
+        return new ConfiguredIdentityAuthorityClients(authority, properties, issuers, serviceClient, mapper);
+    }
+
+    @Bean(name = "oauthRevocationReader")
+    @ConditionalOnMissingBean(OAuthRevocationReader.class)
+    public OAuthRevocationReader oauthRevocationReader(IdentityAuthorityClientResolver authority,
             @Qualifier("idpStarterProperties") IdpStarterProperties properties) {
-        return new ReactiveOAuthRevocationReader(
-                identityStateRedisson(redissonClients, beanFactory).reactive(),
-                trustedIssuerRegistry,
-                properties);
+        return new DatabaseOAuthRevocationReader(authority, properties.getResourceUri());
     }
 
     @Bean(name = "verifiedTenantContextFilter")
     @ConditionalOnMissingBean(name = "verifiedTenantContextFilter")
     public VerifiedTenantContextFilter verifiedTenantContextFilter() {
         return new VerifiedTenantContextFilter();
-    }
-
-    @Bean(name = "legacyIssuerCutoverPolicy")
-    @ConditionalOnBean(RedissonClient.class)
-    @ConditionalOnMissingBean(name = "legacyIssuerCutoverPolicy")
-    public LegacyIssuerCutoverPolicy legacyIssuerCutoverPolicy(
-            ObjectProvider<RedissonClient> redissonClients,
-            ListableBeanFactory beanFactory,
-            @Qualifier("idpStarterProperties") IdpStarterProperties properties) {
-        return new LegacyIssuerCutoverPolicy(
-                identityStateRedisson(redissonClients, beanFactory), properties);
     }
 
     /** Creates the request converter used by the standard client-credentials provider. */
@@ -327,11 +287,17 @@ public class IdpStarterAutoConfiguration {
             ClientRegistrationRepository registrations,
             OAuth2AuthorizedClientService authorizedClients,
             IdpClientCredentialsRequestEntityConverter converter,
-            @Qualifier("idpStarterProperties") IdpStarterProperties properties
+            @Qualifier("idpStarterProperties") IdpStarterProperties properties,
+            @Qualifier("identityAuthorityProperties") IdentityAuthorityProperties authorityProperties
     ) {
         properties.getServiceClient().validate();
         RestClientClientCredentialsTokenResponseClient responseClient =
                 new RestClientClientCredentialsTokenResponseClient();
+        responseClient.setRestClient(top.egon.cola.platform.tianquan.shoubing.starter.state.HttpIdentityAuthorityClient
+                .boundedTransport(authorityProperties.getTimeout()).mutate().configureMessageConverters(converters -> {
+                    converters.addCustomConverter(new org.springframework.http.converter.FormHttpMessageConverter());
+                    converters.addCustomConverter(new org.springframework.security.oauth2.core.http.converter.OAuth2AccessTokenResponseHttpMessageConverter());
+                }).defaultStatusHandler(new org.springframework.security.oauth2.client.http.OAuth2ErrorResponseErrorHandler()).build());
         responseClient.setHeadersConverter(converter::convertHeaders);
         responseClient.setParametersConverter(converter::convertParameters);
         ClientCredentialsOAuth2AuthorizedClientProvider provider =
@@ -401,7 +367,19 @@ public class IdpStarterAutoConfiguration {
                 "egon.cola.platform.tianquan.shoubing.admission.rpc-target",
                 "egon.tianquan-shoubing.tianquan-jianshen.service-token.private-key-file",
                 "egon.tianquan-shoubing.tianquan-jianshen.service-token.key-id",
-                "egon.tianquan-shoubing.oauth.client-assertion-key-prefix"
+                "egon.tianquan-shoubing.oauth.client-assertion-key-prefix",
+                "egon.cola.platform.tianquan.shoubing.resource-state-key-prefix",
+                "egon.cola.platform.tianquan.shoubing.oauth-client-state-key-prefix",
+                "egon.cola.platform.tianquan.shoubing.audit.spool-directory",
+                "egon.cola.platform.tianquan.shoubing.audit.hmac-key-file",
+                "egon.cola.platform.tianquan.shoubing.audit.stream",
+                "egon.cola.platform.tianquan.shoubing.revocation.key-prefix",
+                "egon.cola.platform.tianquan.shoubing.revocation.mode",
+                "egon.cola.platform.tianquan.shoubing.revocation.primary-endpoint",
+                "egon.cola.platform.tianquan.shoubing.revocation.epoch",
+                "egon.cola.platform.tianquan.shoubing.migration.legacy-issuer",
+                "egon.cola.platform.tianquan.shoubing.migration.legacy-tenant-allowlist-key",
+                "egon.cola.platform.tianquan.shoubing.migration.legacy-enabled"
         );
         List<String> configured = retired.stream()
                 .filter(environment::containsProperty)
@@ -434,108 +412,19 @@ public class IdpStarterAutoConfiguration {
         return new RetryingJwtDecoder(() -> decoder(properties));
     }
 
-    /**
-     * 创建从共享 Redis 键空间读取 Resource Server 运行态投影的端口实现。
-     *
-     * <p>Creates the port implementation that reads Resource Server runtime projections from the
-     * shared Redis key space.</p>
-     *
-     * @param redissonClients 容器中的 Redisson 客户端候选；Redisson client candidates
-     * @param beanFactory 用于按名称选择客户端的 Bean 工厂；bean factory used for named lookup
-     * @param objectMapper Resource 投影 JSON 反序列化器；Resource projection JSON mapper
-     * @param properties Tianquan-Shoubing Starter 配置；Tianquan-Shoubing Starter settings
-     * @return Resource Server 状态读取器；Resource Server state reader
-     */
-    @Bean
-    @ConditionalOnBean(RedissonClient.class)
-    @ConditionalOnMissingBean
-    public IdentityResourceServerStateReader
-            identityResourceServerStateReader(
-                    ObjectProvider<RedissonClient> redissonClients,
-                    ListableBeanFactory beanFactory,
-                    ObjectMapper objectMapper,
-                    @Qualifier("idpStarterProperties") IdpStarterProperties properties
-            ) {
-        properties.validate();
-        return new RedisIdentityResourceServerStateReader(
-                identityStateRedisson(redissonClients, beanFactory),
-                objectMapper,
-                properties.getResourceStateKeyPrefix()
-        );
-    }
-
-    /**
-     * 创建从共享 Redis 键空间读取 OAuth Client 运行态投影的端口实现。
-     *
-     * <p>Creates the port implementation that reads OAuth Client runtime projections from the
-     * shared Redis key space.</p>
-     *
-     * @param redissonClients 容器中的 Redisson 客户端候选；Redisson client candidates
-     * @param beanFactory 用于按名称选择客户端的 Bean 工厂；bean factory used for named lookup
-     * @param objectMapper Client 投影 JSON 反序列化器；Client projection JSON mapper
-     * @param properties Tianquan-Shoubing Starter 配置；Tianquan-Shoubing Starter settings
-     * @return OAuth Client 状态读取器；OAuth Client state reader
-     */
-    @Bean
-    @ConditionalOnBean(RedissonClient.class)
-    @ConditionalOnMissingBean
-    public IdentityOAuthClientStateReader identityOAuthClientStateReader(
-            ObjectProvider<RedissonClient> redissonClients,
-            ListableBeanFactory beanFactory,
-            ObjectMapper objectMapper,
-            @Qualifier("idpStarterProperties") IdpStarterProperties properties
-    ) {
-        properties.validate();
-        return new RedisIdentityOAuthClientStateReader(
-                identityStateRedisson(redissonClients, beanFactory),
-                objectMapper,
-                properties.getOauthClientStateKeyPrefix()
-        );
-    }
-
-    /**
-     * 创建共享的 Tianquan-Shoubing 访问令牌验证器。
-     *
-     * <p>Creates the shared Tianquan-Shoubing access-token verifier.</p>
-     *
-     * @param decoder JWT 解码器；JWT decoder
-     * @param resourceStates Resource Server 状态读取器；Resource Server state reader
-     * @param clientStates OAuth Client 状态读取器；OAuth Client state reader
-     * @param properties Tianquan-Shoubing Starter 配置；Tianquan-Shoubing Starter settings
-     * @return Tianquan-Shoubing JWT 验证器；Tianquan-Shoubing JWT verifier
-     */
+    /** Every protected decision requires the current SQL authority state and a confirmed durable audit event. */
     @Bean(name = "idpJwtVerifier")
-    @ConditionalOnBean({
-            IdentityResourceServerStateReader.class,
-            IdentityOAuthClientStateReader.class
-    })
     @ConditionalOnMissingBean
     public IdpJwtVerifier idpJwtVerifier(
-            @Qualifier("idpJwtDecoder") ObjectProvider<JwtDecoder> legacyDecoder,
-            @Qualifier("identityResourceServerStateReader") IdentityResourceServerStateReader resourceStates,
-            @Qualifier("identityOAuthClientStateReader") IdentityOAuthClientStateReader clientStates,
             @Qualifier("idpStarterProperties") IdpStarterProperties properties,
-            @Qualifier("tenantIssuerAuthenticationManagerComponent")
-                    TenantIssuerAuthenticationManagerComponent tenantIssuerAuthenticationManager,
-            @Qualifier("oauthRevocationReader") ObjectProvider<OAuthRevocationReader> revocationReaders,
-            @Qualifier("verifiedPrincipalConverter") VerifiedPrincipalConverter verifiedPrincipalConverter,
-            @Qualifier("legacyIssuerCutoverPolicy") ObjectProvider<LegacyIssuerCutoverPolicy> legacyIssuerCutoverPolicies,
-            @Qualifier("idpClock") Clock idpClock,
-            @Qualifier("idpObservedVerificationComponent") ObjectProvider<IdpObservedVerificationComponent> observations
-    ) {
-        properties.validate();
-        return IdpJwtVerifier.createConfigured(
-                legacyDecoder.getIfAvailable(),
-                resourceStates,
-                clientStates,
-                properties.getResourceServerId(),
-                properties.getResourceUri(),
-                properties.getPlatformAudience(),
-                idpClock,
-                tenantIssuerAuthenticationManager,
-                revocationReaders.getIfAvailable(),
-                verifiedPrincipalConverter,
-                legacyIssuerCutoverPolicies.getIfAvailable(), observations.getIfAvailable());
+            @Qualifier("tenantIssuerAuthenticationManagerComponent") TenantIssuerAuthenticationManagerComponent manager,
+            @Qualifier("oauthRevocationReader") OAuthRevocationReader revocations,
+            @Qualifier("verifiedPrincipalConverter") VerifiedPrincipalConverter converter,
+            @Qualifier("idpClock") Clock clock,
+            @Qualifier("idpObservedVerificationComponent") IdpObservedVerificationComponent observations) {
+        properties.validateJwtVerification();
+        return IdpJwtVerifier.createDatabaseConfigured(properties.getResourceUri(), clock, manager,
+                revocations, converter, observations);
     }
 
     /**
@@ -720,29 +609,4 @@ public class IdpStarterAutoConfiguration {
         return decoder;
     }
 
-    /**
-     * 选择读取 Tianquan-Shoubing Resource/Client 运行态所用的 Redisson 客户端。
-     *
-     * <p>Selects the Redisson client used to read Tianquan-Shoubing Resource/Client runtime state.</p>
-     *
-     * @param clients 容器中的 Redisson 客户端候选；Redisson client candidates
-     * @param beanFactory 用于按名称查找客户端的 Bean 工厂；bean factory for named lookup
-     * @return 已确定的 Redisson 客户端；resolved Redisson client
-     * @throws IllegalStateException 当没有专用客户端且普通客户端不唯一时；when no dedicated
-     *                               client exists and the general client is ambiguous
-     */
-    private RedissonClient identityStateRedisson(
-            ObjectProvider<RedissonClient> clients,
-            ListableBeanFactory beanFactory) {
-        if (beanFactory.containsBean("rbac3RuntimeRedissonClient")) {
-            return beanFactory.getBean(
-                    "rbac3RuntimeRedissonClient", RedissonClient.class);
-        }
-        RedissonClient unique = clients.getIfUnique();
-        if (unique == null) {
-            throw new IllegalStateException(
-                    "Tianquan-Shoubing service-state Redis client is ambiguous");
-        }
-        return unique;
-    }
 }

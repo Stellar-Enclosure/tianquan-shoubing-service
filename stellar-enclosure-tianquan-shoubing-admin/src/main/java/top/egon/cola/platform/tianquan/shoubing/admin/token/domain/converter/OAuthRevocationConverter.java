@@ -14,6 +14,7 @@ public interface OAuthRevocationConverter extends BaseConverter<OAuthRevocationP
     @Override
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "retainUntil", source = "retainUntil")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "targetType", source = "targetType")
     @Mapping(target = "targetKey", source = "targetKey")
@@ -21,12 +22,12 @@ public interface OAuthRevocationConverter extends BaseConverter<OAuthRevocationP
     @Mapping(target = "revokedAt", source = "revokedAt")
     @Mapping(target = "expiresAt", source = "expiresAt")
     @Mapping(target = "revision", source = "revision")
-    @Mapping(target = "projectionStatus", source = "projectionStatus")
     OAuthRevocationBO toTarget(OAuthRevocationPO source);
 
     @Override
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "id", source = "id")
+    @Mapping(target = "retainUntil", source = "retainUntil")
     @Mapping(target = "version", source = "version")
     @Mapping(target = "targetType", source = "targetType")
     @Mapping(target = "targetKey", source = "targetKey")
@@ -34,6 +35,5 @@ public interface OAuthRevocationConverter extends BaseConverter<OAuthRevocationP
     @Mapping(target = "revokedAt", source = "revokedAt")
     @Mapping(target = "expiresAt", source = "expiresAt")
     @Mapping(target = "revision", source = "revision")
-    @Mapping(target = "projectionStatus", source = "projectionStatus")
     OAuthRevocationPO toSource(OAuthRevocationBO target);
 }

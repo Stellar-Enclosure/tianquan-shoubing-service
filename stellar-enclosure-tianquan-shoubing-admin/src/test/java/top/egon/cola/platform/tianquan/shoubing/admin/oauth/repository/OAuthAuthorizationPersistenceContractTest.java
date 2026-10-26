@@ -80,7 +80,7 @@ import static org.mockito.Mockito.when;
 class OAuthAuthorizationPersistenceContractTest {
 
     private static final String ADMIN_PREFIX =
-            "stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+            ""
                     + "stellar-enclosure-tianquan-shoubing-admin/src/main/";
     private static final long TENANT_PARTITION_ID = 1_001L;
 
@@ -99,7 +99,7 @@ class OAuthAuthorizationPersistenceContractTest {
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
         OAuthAuthorizationBO value = authorization(authorizationRow(101L, 0L), 0L);
         OAuthPendingConsentBO pending = OAuthPendingConsentBO.builder().clientState("original-client-state")
-                .consentState("S".repeat(43) + "=").sessionBindingDigest("b".repeat(64))
+                .consentState("S".repeat(43) + "=").browserBindingDigest("b".repeat(64))
                 .requestedScopes(List.of("openid", "orders.read")).issuedAt(Instant.parse("2026-10-09T00:00:00Z"))
                 .expiresAt(Instant.parse("2026-10-09T00:05:00Z")).build();
         value.getAttributes().setSchemaVersion(2).setPendingConsent(pending);
@@ -110,7 +110,7 @@ class OAuthAuthorizationPersistenceContractTest {
         assertNotNull(restored.getPendingConsent());
         assertEquals(pending.getClientState(), restored.getPendingConsent().getClientState());
         assertEquals(pending.getConsentState(), restored.getPendingConsent().getConsentState());
-        assertEquals(pending.getSessionBindingDigest(), restored.getPendingConsent().getSessionBindingDigest());
+        assertEquals(pending.getBrowserBindingDigest(), restored.getPendingConsent().getBrowserBindingDigest());
         assertEquals(pending.getRequestedScopes(), restored.getPendingConsent().getRequestedScopes());
         assertFalse(mapper.writeValueAsString(value.getAttributes()).contains("pendingConsent"));
         assertFalse(mapper.writeValueAsString(pending).contains("original-client-state"));
@@ -151,7 +151,7 @@ class OAuthAuthorizationPersistenceContractTest {
         }
         assertFalse(sql.contains("ck_oauth_token_jti"));
         JsonNode manifest = new ObjectMapper().readTree(Files.readString(directory.resolve("repository-manifest.json")));
-        assertEquals(2, manifest.path("scripts").size());
+        assertEquals(3, manifest.path("scripts").size());
         assertEquals("20261008_001", manifest.path("scripts").get(0).path("version").asText());
         assertEquals("238adf24fc3025f27ac5da91528b6110962977762f3ce751467a970a7c6acc23",
                 manifest.path("scripts").get(0).path("sha256").asText());
@@ -957,7 +957,7 @@ class OAuthAuthorizationPersistenceContractTest {
         Path cursor = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
         while (cursor != null) {
             if (Files.isRegularFile(cursor.resolve("pom.xml"))
-                    && Files.isDirectory(cursor.resolve("stellar-enclosure-platform"))) {
+                    && Files.isDirectory(cursor.resolve("stellar-enclosure-tianquan-shoubing-admin"))) {
                 return cursor;
             }
             cursor = cursor.getParent();

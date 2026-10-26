@@ -91,14 +91,8 @@ import org.springframework.security.oauth2.server.authorization.web.authenticati
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AuthenticationFailureHandler;
 import org.springframework.security.web.authentication.preauth.AbstractPreAuthenticatedProcessingFilter;
-import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
-import org.springframework.security.web.authentication.session.CompositeSessionAuthenticationStrategy;
-import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
-import org.springframework.security.web.csrf.CsrfAuthenticationStrategy;
 import org.springframework.security.web.csrf.CsrfFilter;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
-import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
-import org.springframework.security.web.savedrequest.HttpSessionRequestCache;
 import org.springframework.security.web.savedrequest.RequestCache;
 import org.springframework.security.web.util.matcher.AndRequestMatcher;
 import org.springframework.security.web.util.matcher.OrRequestMatcher;
@@ -151,24 +145,28 @@ public class AuthorizationServerConfiguration {
     }
 
     @Bean("oauthAuthorizationRequestCache")
-    RequestCache oauthAuthorizationRequestCache() {
-        HttpSessionRequestCache requestCache = new HttpSessionRequestCache();
-        requestCache.setCreateSessionAllowed(true);
-        requestCache.setMatchingRequestParameterName(null);
-        return requestCache;
+    RequestCache oauthAuthorizationRequestCache(
+            @Qualifier("oauthBrowserInteractionComponent") top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent interactions) {
+        return interactions;
     }
 
     @Bean("oauthLoginCsrfTokenRepository")
-    CsrfTokenRepository oauthLoginCsrfTokenRepository() {
-        return new HttpSessionCsrfTokenRepository();
+    CsrfTokenRepository oauthLoginCsrfTokenRepository(
+            @Qualifier("oauthBrowserInteractionComponent") top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent interactions) {
+        return interactions;
     }
 
-    @Bean("oauthLoginSessionAuthenticationStrategy")
-    SessionAuthenticationStrategy oauthLoginSessionAuthenticationStrategy(
-            @Qualifier("oauthLoginCsrfTokenRepository") CsrfTokenRepository csrfTokenRepository) {
-        return new CompositeSessionAuthenticationStrategy(List.of(
-                new ChangeSessionIdAuthenticationStrategy(),
-                new CsrfAuthenticationStrategy(csrfTokenRepository)));
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthBrowserAuthenticationFilter> oauthBrowserAuthenticationFilterRegistration(
+            top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthBrowserAuthenticationFilter filter) {
+        var registration = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        registration.setEnabled(false); return registration;
+    }
+
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<TenantLoginAuthenticationFilter> tenantLoginAuthenticationFilterRegistration(TenantLoginAuthenticationFilter filter) {
+        var registration = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        registration.setEnabled(false); return registration;
     }
 
     @Bean("tenantAuthorizationServerJwtDecoder")
@@ -273,6 +271,7 @@ public class AuthorizationServerConfiguration {
             ObjectProvider<OAuth2TokenGenerator<? extends OAuth2Token>> tokenGenerators,
             ObjectProvider<PlatformTransactionManager> transactionManagers,
             ObjectProvider<TenantLoginAuthenticationFilter> loginFilters,
+            @Qualifier("oauthBrowserAuthenticationFilter") ObjectProvider<top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthBrowserAuthenticationFilter> browserFilters,
             ObjectProvider<TokenRevocationService> tokenRevocationServices,
             @Qualifier("oAuthClientRepository") ObjectProvider<OAuthClientRepository> clientRepositories,
             @Qualifier("oauthLoginCsrfTokenRepository") CsrfTokenRepository csrfTokenRepository,
@@ -294,6 +293,13 @@ public class AuthorizationServerConfiguration {
                 receiver == null ? null : receiver.getResourceUri(), clock, validator);
         OAuth2AuthorizationServerConfigurer authorizationServer =
                 new OAuth2AuthorizationServerConfigurer();
+        authorizationServer.addObjectPostProcessor(new ObjectPostProcessor<org.springframework.security.oauth2.server.authorization.web.OAuth2AuthorizationEndpointFilter>() {
+            @Override
+            public <O extends org.springframework.security.oauth2.server.authorization.web.OAuth2AuthorizationEndpointFilter> O postProcess(O filter) {
+                filter.setSessionAuthenticationStrategy(new org.springframework.security.web.authentication.session.NullAuthenticatedSessionStrategy());
+                return filter;
+            }
+        });
         authorizationServer.addObjectPostProcessor(new ObjectPostProcessor<AuthenticationProvider>() {
             @Override
             @SuppressWarnings("unchecked")
@@ -312,11 +318,11 @@ public class AuthorizationServerConfiguration {
         RequestMatcher endpoints = authorizationServer.getEndpointsMatcher();
         RequestMatcher loginRequests = request -> request.getRequestURI().substring(
                 request.getContextPath() == null ? 0 : request.getContextPath().length())
-                .matches("/tenants/[1-9][0-9]{0,18}/login");
+                .matches("/tenants/[1-9][0-9]{0,18}/(?:login|password-change)");
         RequestMatcher canonicalIssuerPaths = request -> request.getRequestURI().substring(
                 request.getContextPath().length()).matches("/(platform|tenants/[1-9][0-9]{0,18})/.*"
                         + "|/\\.well-known/oauth-authorization-server/(platform|tenants/[1-9][0-9]{0,18})");
-        RequestMatcher consentPage = request -> contextPath(request).matches("/tenants/[1-9][0-9]{0,18}/consent");
+        RequestMatcher consentPage = request -> contextPath(request).matches("/tenants/[1-9][0-9]{0,18}/(?:consent|logout)");
         RequestMatcher protocolAndLogin = new AndRequestMatcher(canonicalIssuerPaths,
                 new OrRequestMatcher(endpoints, loginRequests, consentPage));
         OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator = tokenGenerators.getIfAvailable();
@@ -330,6 +336,7 @@ public class AuthorizationServerConfiguration {
         http.addFilter(nativeCors);
         http.securityMatcher(new OrRequestMatcher(protocolAndLogin, OAuthNativeCorsProcessor::isNativePreflight))
                 .csrf(csrf -> csrf.csrfTokenRepository(csrfTokenRepository)
+                        .sessionAuthenticationStrategy(new org.springframework.security.web.authentication.session.NullAuthenticatedSessionStrategy())
                         .withObjectPostProcessor(new ObjectPostProcessor<CsrfFilter>() {
                             @Override
                             public <O extends CsrfFilter> O postProcess(O filter) {
@@ -338,15 +345,16 @@ public class AuthorizationServerConfiguration {
                                         && (!endpoints.matches(request) || isConsentSubmit(request)));
                                 var rejected = new org.springframework.security.web.access.AccessDeniedHandlerImpl();
                                 filter.setAccessDeniedHandler((request, response, failure) -> {
-                                    log.warn("OAuth browser CSRF rejected; method={} path={} tokenPresent={} sessionValid={} failureType={}",
-                                            request.getMethod(), contextPath(request), request.getParameter("_csrf") != null,
-                                            request.isRequestedSessionIdValid(), failure.getClass().getSimpleName());
+                                    log.warn("OAuth browser CSRF rejected; method={} path={} failureType={}",
+                                            request.getMethod(), contextPath(request), failure.getClass().getSimpleName());
                                     rejected.handle(request, response, failure);
                                 });
                                 return filter;
                             }
                         }))
-                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                        .sessionAuthenticationStrategy(new org.springframework.security.web.authentication.session.NullAuthenticatedSessionStrategy()))
+                .securityContext(context -> context.securityContextRepository(new org.springframework.security.web.context.NullSecurityContextRepository()))
                 .requestCache(cache -> cache.requestCache(requestCache))
                 .with(authorizationServer, server -> server
                         .tokenGenerator(tokenGenerator)
@@ -356,6 +364,14 @@ public class AuthorizationServerConfiguration {
                         .authorizationConsentService(authorizationConsentService)
                         .clientAuthentication(client -> {
                             client.authenticationConverters(converters -> converters.add(0, request -> {
+                                if (contextPath(request).endsWith("/oauth2/token") && (request.getContentLengthLong() > 16_384
+                                        || request.getQueryString() != null
+                                        || request.getParameterMap().values().stream().anyMatch(values -> values == null || values.length != 1
+                                                || values[0] == null || values[0].length() > 16_384)
+                                        || request.getParameter("browser_binding") != null
+                                            && !"authorization_code".equals(request.getParameter("grant_type")) && !"refresh_token".equals(request.getParameter("grant_type")))) {
+                                    throw new OAuth2AuthenticationException(new OAuth2Error("invalid_request", "Request rejected", null));
+                                }
                                 var headers = request.getHeaders("Authorization");
                                 boolean hasAuthorization = headers.hasMoreElements();
                                 if (hasAuthorization) {
@@ -395,7 +411,15 @@ public class AuthorizationServerConfiguration {
                                     builder.tokenRevocationEndpointAuthenticationMethods(AuthorizationServerConfiguration::metadataAuthenticationMethods);
                                     builder.grantTypes(AuthorizationServerConfiguration::metadataGrantTypes);
                                 }))
-                        .oidc(oidc -> oidc.userInfoEndpoint(userinfo -> userinfo
+                        .oidc(oidc -> oidc.logoutEndpoint(logout -> logout.logoutRequestConverter(request -> {
+                                    throw new OAuth2AuthenticationException(new OAuth2Error("invalid_request", "Logout endpoint retired", null));
+                                }).errorResponseHandler((request, response, failure) -> {
+                                    response.setStatus(HttpServletResponse.SC_GONE);
+                                    response.setHeader("Cache-Control", "no-store");
+                                    response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                                    objectMapper.writeValue(response.getWriter(), Map.of("error", "invalid_request", "error_description", "Logout endpoint retired"));
+                                }))
+                                .userInfoEndpoint(userinfo -> userinfo
                                 .authenticationProviders(providers -> configureUserInfoProviders(providers,
                                         tokenIssueServices, transactionManagers, tenantIssuerService, producer, converter, usage,
                                         receiver == null ? null : receiver.getResourceUri(), clock, validator))
@@ -405,6 +429,13 @@ public class AuthorizationServerConfiguration {
                                     builder.tokenEndpointAuthenticationMethods(AuthorizationServerConfiguration::metadataAuthenticationMethods);
                                     builder.tokenRevocationEndpointAuthenticationMethods(AuthorizationServerConfiguration::metadataAuthenticationMethods);
                                     builder.grantTypes(AuthorizationServerConfiguration::metadataGrantTypes);
+                                    builder.claims(claims -> {
+                                        claims.remove("end_session_endpoint");
+                                        var realm = tenantIssuerService.resolveCurrentIssuer();
+                                        if (realm.getBusinessTenantId() != null) {
+                                            claims.put("egon_sso_logout_endpoint", realm.getIssuer().toASCIIString() + "/logout");
+                                        }
+                                    });
                                 }))))
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults())
                         .authenticationEntryPoint((request, response, failure) ->
@@ -422,7 +453,7 @@ public class AuthorizationServerConfiguration {
                         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                         response.setContentType("text/html;charset=UTF-8");
                         response.setHeader("Cache-Control", "no-store");
-                        response.getWriter().write("<!doctype html><html><body><p>SAS session required</p></body></html>");
+                        response.getWriter().write("<!doctype html><html><body><p>Authentication credential required</p></body></html>");
                         return;
                     }
                     response.setStatus(HttpServletResponse.SC_SEE_OTHER);
@@ -433,6 +464,10 @@ public class AuthorizationServerConfiguration {
         // SAS installs its protocol endpoint filters at this anchor after the issuer context filter.
         http.addFilterBefore(ExactIssuerContextFilter.create(tenantIssuerService, publicOrigin, objectMapper),
                 AbstractPreAuthenticatedProcessingFilter.class);
+        var browserFilter = browserFilters.getIfAvailable();
+        if (browserFilter == null) { throw new IllegalStateException("OAUTH_BROWSER_AUTHENTICATION_REQUIRED"); }
+        // Security 7 captures the authorization principal before its protocol endpoint filter runs.
+        http.addFilterAfter(browserFilter, org.springframework.security.web.context.SecurityContextHolderFilter.class);
         TenantLoginAuthenticationFilter loginFilter = loginFilters.getIfAvailable();
         if (loginFilter != null) {
             http.addFilterAfter(loginFilter, ExactIssuerContextFilter.class);
@@ -737,6 +772,7 @@ public class AuthorizationServerConfiguration {
                 .claim("iss", trustedRealm.getIssuer().toASCIIString())
                 .claim("sub", issue.subject());
         if (idToken) {
+            context.getClaims().claims(values -> values.remove("sid"));
             context.getClaims().claim("aud", List.of(registeredClient.getClientId()))
                     .claim("jti", SnowflakeIdGenerator.nextId());
             if (attributes.getNonce() != null) {
@@ -759,6 +795,9 @@ public class AuthorizationServerConfiguration {
                     .claim("client_id", registeredClient.getClientId())
                     .claim("authorization_id", Long.toString(issue.authorizationId()))
                     .claim("client_registration_id", registeredClient.getId())
+                    .claim("authn_jti", Objects.requireNonNull(attributes.getAuthenticationJti(), "authenticationJti"))
+                    .claim("authorization_expires_at", absoluteExpiresAt.getEpochSecond())
+                    .claim("refresh_generation", Long.toString(refreshGeneration(context, authorization)))
                     .claim("principal_type", "USER")
                     .claim("scope_context", trustedRealm.getBusinessTenantId() == null ? "PLATFORM" : "TENANT")
                     .claim("security_version", securityVersion(issue.securitySnapshot()));
@@ -778,6 +817,12 @@ public class AuthorizationServerConfiguration {
         if (generatedExpiry != null && generatedExpiry.isAfter(absoluteExpiresAt)) {
             context.getClaims().expiresAt(absoluteExpiresAt);
         }
+    }
+
+    private static long refreshGeneration(JwtEncodingContext context, OAuth2Authorization authorization) {
+        Long generation = authorization.getAttribute(SasAuthorizationConverter.REFRESH_GENERATION_ATTRIBUTE);
+        long current = generation == null ? 0L : generation;
+        return AuthorizationGrantType.REFRESH_TOKEN.equals(context.getAuthorizationGrantType()) ? Math.addExact(current, 1L) : current;
     }
 
     private static Map<String, Object> securityVersion(OAuthSecuritySnapshotBO snapshot) {
@@ -853,7 +898,7 @@ public class AuthorizationServerConfiguration {
         if (request.getHeader("Authorization") != null
                 || request.getQueryString() != null && request.getQueryString().length() > 16 * 1024
                 || !java.util.Set.of("client_id", "response_type", "redirect_uri", "scope", "resource", "state", "nonce",
-                        "code_challenge", "code_challenge_method", "prompt", "max_age").containsAll(request.getParameterMap().keySet())) {
+                        "code_challenge", "code_challenge_method", "prompt", "max_age", "browser_binding").containsAll(request.getParameterMap().keySet())) {
             return false;
         }
         for (var entry : request.getParameterMap().entrySet()) {
@@ -1025,7 +1070,7 @@ public class AuthorizationServerConfiguration {
                 URI requestIssuer = URI.create(current.getIssuer());
                 String path = requestIssuer.getRawPath();
                 String pagePath = contextPath(request);
-                if (pagePath.matches("/tenants/[1-9][0-9]{0,18}/(login|consent)")) {
+                if (pagePath.matches("/tenants/[1-9][0-9]{0,18}/(login|consent|password-change|logout)")) {
                     path = pagePath.substring(0, pagePath.lastIndexOf('/'));
                 }
                 if (path == null || path.isEmpty()) {

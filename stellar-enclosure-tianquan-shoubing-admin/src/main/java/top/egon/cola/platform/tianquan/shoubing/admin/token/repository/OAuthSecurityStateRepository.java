@@ -17,6 +17,8 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSe
 @Validated
 public interface OAuthSecurityStateRepository {
 
+    List<OAuthSecurityStateBO> findSnapshot(TrustedRealmBO trustedRealm, Long clientPk, String subject);
+
     Optional<OAuthSecurityStateBO> findByTarget(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotNull OAuthSecurityTargetEnum targetType,

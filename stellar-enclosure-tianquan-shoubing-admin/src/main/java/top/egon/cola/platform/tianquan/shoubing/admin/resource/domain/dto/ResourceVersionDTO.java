@@ -1,5 +1,12 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.dto;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.PermissionManifest;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.FieldPermissions;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionGroup;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import jakarta.validation.constraints.PositiveOrZero;
 
 /**
@@ -9,5 +16,9 @@ import jakarta.validation.constraints.PositiveOrZero;
  *
  * @param expectedVersion 客户端已读取的版本；version previously read by the caller
  */
-public record ResourceVersionDTO(@PositiveOrZero long expectedVersion) {
+public record ResourceVersionDTO(@PermissionResource(key = "tianquan-shoubing.field.ResourceVersionDTO.expectedVersion", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.expectedVersion")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.NUMBER,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_STATUS))
+    @PositiveOrZero long expectedVersion) {
 }

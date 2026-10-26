@@ -3,59 +3,40 @@ package top.egon.cola.platform.tianquan.shoubing.admin.audit.support.outbox;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import java.net.URI;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.redisson.api.RStream;
-import org.redisson.api.RedissonClient;
-import org.redisson.api.stream.StreamMessageId;
-import org.redisson.api.stream.StreamAddArgs;
-import org.redisson.client.codec.StringCodec;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import top.egon.cola.component.outbox.delivery.DeliveryContext;
 import top.egon.cola.component.outbox.delivery.DeliveryHandler;
 import top.egon.cola.component.outbox.delivery.DeliveryResult;
+import top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.TenantIssuerService;
 
+/** Confirms the existing transactional outbox only after the owner's audit row commits. */
 @Component("oauthAuditOutboxDeliveryHandler")
-@RequiredArgsConstructor(onConstructor_ = @Autowired)
-@Slf4j
+@RequiredArgsConstructor
 public final class OAuthAuditOutboxDeliveryHandler implements DeliveryHandler {
 
     public static final String CHANNEL = "oauth-audit";
     public static final String DESTINATION = "oauth.audit.token-issued.v1";
     public static final String IDENTITY_DESTINATION = "oauth.audit.identity.v1";
-    public static final String STREAM = "egon:oauth:audit:v1";
-    private static final java.util.Set<String> ALLOWED_FIELDS = java.util.Set.of(
-            "eventId", "schemaVersion", "issuer", "resource", "subjectRef", "clientRef",
-            "result", "reasonCode", "occurredAt", "auditKind", "eventType", "actorSub", "targetSub",
-            "identityTenantId", "traceId", "sourceBucket");
+    private static final Set<String> ALLOWED_FIELDS = Set.of("eventId", "schemaVersion", "issuer", "resource",
+            "subjectRef", "clientRef", "tokenRef", "result", "reasonCode", "occurredAt", "auditKind", "eventType",
+            "actorSub", "targetSub", "identityTenantId", "traceId", "sourceBucket");
 
-    @Qualifier("rbac3RuntimeRedissonClient")
-    private final RedissonClient redisson;
-    @Qualifier("jacksonObjectMapper")
-    private final ObjectMapper objectMapper;
-    @Value("${egon.cola.platform.tianquan.shoubing.audit.stream:" + STREAM + "}")
-    private final String auditStream;
+    @Qualifier("oAuthAuditRepository") private final OAuthAuditRepository audits;
+    @Qualifier("tenantIssuerService") private final TenantIssuerService issuers;
+    @Qualifier("jacksonObjectMapper") private final ObjectMapper objectMapper;
 
-    @PostConstruct
-    void validateConfiguration() {
-        if (auditStream == null || !auditStream.matches("[A-Za-z0-9:._-]{1,128}")) {
-            throw new IllegalStateException("OAUTH_AUDIT_STREAM_INVALID");
-        }
-    }
-
-    @Override
-    public String channel() {
-        return CHANNEL;
-    }
+    @Override public String channel() { return CHANNEL; }
 
     @Override
     public void validateDestination(String destination) {
@@ -68,20 +49,28 @@ public final class OAuthAuditOutboxDeliveryHandler implements DeliveryHandler {
     public DeliveryResult deliver(DeliveryContext context) {
         try {
             validateDestination(context.destination());
-            JsonNode event = objectMapper.readTree(context.payload());
-            Map<String, String> fields = streamFields(context, event);
-            RStream<String, String> stream = redisson.getStream(auditStream, StringCodec.INSTANCE);
-            StreamMessageId messageId = stream.add(StreamAddArgs.entries(fields));
-            if (messageId == null) {
-                return DeliveryResult.retryableFailure(
-                        "OAUTH_AUDIT_STREAM_NOT_CONFIRMED", "OAuth audit stream did not confirm the event");
+            Map<String, String> fields = streamFields(context, objectMapper.readTree(context.payload()));
+            var realm = issuers.resolveExactIssuer(URI.create(fields.get("issuer")));
+            var payload = JsonNodeFactory.instance.objectNode();
+            if ("IDENTITY".equals(fields.get("auditKind"))) {
+                payload.put("schemaVersion", 1).put("sourceBucket", fields.get("sourceBucket"));
+            }
+            var audit = OAuthAuditBO.builder().eventId(fields.get("eventId")).publicId(fields.get("eventId"))
+                    .eventType(fields.get("eventType")).auditKind(fields.get("auditKind"))
+                    .subjectRef(fields.get("subjectRef")).clientRef(fields.get("clientRef")).tokenRef(fields.get("tokenRef"))
+                    .resourceRef(fields.get("resource")).result(fields.get("result")).reasonCode(fields.get("reasonCode"))
+                    .occurredAt(Instant.parse(fields.get("occurredAt"))).actorSub(fields.get("actorSub"))
+                    .targetSub(fields.get("targetSub")).identityTenantId(fields.get("identityTenantId"))
+                    .traceId(fields.get("traceId")).payload(payload).build();
+            var stored = audits.save(realm, audit, 0L);
+            if (stored == null || stored.getId() == null || !audit.getEventId().equals(stored.getEventId())) {
+                throw new IllegalStateException("OAUTH_AUDIT_DATABASE_NOT_CONFIRMED");
             }
             return DeliveryResult.success();
         } catch (JsonProcessingException | IllegalArgumentException invalid) {
             return DeliveryResult.permanentFailure("OAUTH_AUDIT_EVENT_INVALID", "OAuth audit event is invalid");
         } catch (RuntimeException unavailable) {
-            return DeliveryResult.retryableFailure(
-                    "OAUTH_AUDIT_STREAM_UNAVAILABLE", "OAuth audit stream is unavailable");
+            return DeliveryResult.retryableFailure("OAUTH_AUDIT_DATABASE_UNAVAILABLE", "OAuth audit storage is unavailable");
         }
     }
 

@@ -29,13 +29,16 @@
                 typeHandler="top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler"/>
         <result property="accessTtlSeconds" column="access_ttl_seconds"/>
         <result property="refreshTtlSeconds" column="refresh_ttl_seconds"/>
+        <result property="browserBound" column="browser_bound"/>
+        <result property="postLogoutRedirectUris" column="post_logout_redirect_uris" typeHandler="top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler"/>
     </resultMap>
 
     <sql id="Columns">
         id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
         client_id, app_id, client_name, client_type, purpose, status, secret_hash, secret_hint,
         credential_version, redirect_uris, resource_uris, allowed_scopes, access_ttl_seconds,
-        refresh_ttl_seconds
+        refresh_ttl_seconds,
+        browser_bound, post_logout_redirect_uris
     </sql>
 
     <select id="selectActiveById" resultMap="OAuthClientPOResultMap">
@@ -76,7 +79,7 @@
 
     <update id="updateExpectedVersion">
         UPDATE tianquan_oauth.oauth_client
-        SET client_name = #{po.clientName},
+        SET post_logout_redirect_uris = #{po.postLogoutRedirectUris,typeHandler=top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler}, client_name = #{po.clientName},
             status = #{po.status},
             secret_hash = #{po.secretHash},
             secret_hint = #{po.secretHint},

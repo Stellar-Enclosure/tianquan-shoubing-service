@@ -90,7 +90,7 @@ class IdentityMigrationContractTest {
             assertThat(configuration.getMappedStatement(namespace + "selectAuditByEventId")
                     .getResultMaps().getFirst().getResultMappings().stream()
                     .filter(mapping -> "payload".equals(mapping.getProperty())).findFirst().orElseThrow()
-                    .getTypeHandler().getClass().getSimpleName()).isEqualTo("JacksonTypeHandler");
+                    .getTypeHandler().getClass().getSimpleName()).isEqualTo("OAuthJsonbTypeHandler");
         }
         assertThat(mapper).contains("CAST(#{row.payload", " AS jsonb)");
 

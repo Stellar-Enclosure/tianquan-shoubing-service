@@ -49,6 +49,10 @@ class IdpPublishedOpenApiContractTest {
                 continue;
             }
             Class<?> controller = Class.forName(name);
+            if (controller.isAnnotationPresent(io.swagger.v3.oas.annotations.Hidden.class)) {
+                assertThat(controller.getAnnotation(EgonApiCatalog.class)).isNull();
+                continue;
+            }
             if (name.endsWith(".OAuthConsentController")) {
                 assertThat(controller.getAnnotation(RestController.class).value()).isEqualTo("oauthConsentController");
                 assertThat(controller.getAnnotation(EgonApiCatalog.class)).isNull();
@@ -58,7 +62,7 @@ class IdpPublishedOpenApiContractTest {
                         .containsExactly("/tenants/{tenantId}/consent");
                 assertThat(page.getAnnotation(Operation.class).operationId()).isEqualTo("oauthSasConsentPage");
                 assertThat(page.getAnnotation(io.swagger.v3.oas.annotations.security.SecurityRequirement.class).name())
-                        .isEqualTo("oauthAuthorizationSession");
+                        .isEqualTo("oauthAuthenticationCookie");
                 continue;
             }
             if (name.endsWith(".TenantLoginController")) {

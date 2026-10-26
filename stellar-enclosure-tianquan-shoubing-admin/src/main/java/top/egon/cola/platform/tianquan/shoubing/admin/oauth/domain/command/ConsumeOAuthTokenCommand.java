@@ -50,4 +50,10 @@ public class ConsumeOAuthTokenCommand {
     private Set<@NotBlank @Size(max = 128) String> scopes;
 
     private URI resource;
+
+    @JsonIgnore
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
+    @Pattern(regexp = "[0-9a-f]{64}")
+    private String browserBindingDigest;
 }

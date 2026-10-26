@@ -82,4 +82,75 @@ jobs:
       - name: Compile and run unit tests
         working-directory: workspace/tianquan-shoubing-service
         run: |
-          ./mvnw -B -ntp -DskipTests=false -DskipITs -Dinvoker.skip=true -Darchetype.test.skip=true test
+          ./mvnw -B -ntp -Ppermission-producer -DskipTests=false -DskipITs -Dinvoker.skip=true -Darchetype.test.skip=true \
+            -Dpermission.commit="$(git rev-parse HEAD)" -Dpermission.buildId="github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" clean verify
+      - name: Save packaged permission artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: permission-java-artifacts
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            workspace/tianquan-shoubing-service/*/target/permissions/
+            workspace/tianquan-shoubing-service/*/target/*-exec.jar
+  permission-validate:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PERMISSION_SDK_ROOT: ${{ github.workspace }}/permission-tools
+      PERMISSION_BUILD_ROOT: ${{ github.workspace }}/permission-temp/permission-build
+      PERMISSION_OUTPUT_ROOT: ${{ github.workspace }}/permission-temp/permission-results
+      PERMISSION_CONTRACT_ARTIFACT_FILE: ${{ github.workspace }}/permission-temp/permission-contract.jar
+      PERMISSION_CONTRACT_ARTIFACT_URL: ${{ vars.PERMISSION_CONTRACT_ARTIFACT_URL }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: source
+          persist-credentials: false
+      - name: Read immutable SDK toolchain pin
+        id: pin
+        working-directory: source
+        run: |
+          sdk_commit=$(python3 scripts/permission-ci.py pin)
+          echo "commit=$sdk_commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: Stellar-Enclosure/web-sdk
+          ref: ${{ steps.pin.outputs.commit }}
+          path: permission-tools
+          token: ${{ secrets.STELLAR_ENCLOSURE_READ_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: permission-tools/package-lock.json
+      - name: Install the pinned tool dependencies
+        working-directory: permission-tools
+        run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: permission-java-artifacts
+          path: ${{ github.workspace }}/permission-temp/permission-build
+      - name: Prepare the digest-pinned contract artifact
+        working-directory: source
+        run: |
+          python3 - <<'PY'
+          import os, urllib.parse
+          url = urllib.parse.urlsplit(os.environ['PERMISSION_CONTRACT_ARTIFACT_URL'])
+          if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+              raise SystemExit('A non-secret HTTPS contract artifact URL is required')
+          PY
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --max-filesize 67108864 "$PERMISSION_CONTRACT_ARTIFACT_URL" --output "$PERMISSION_CONTRACT_ARTIFACT_FILE"
+          python3 scripts/permission-ci.py prepare
+      - name: Validate all independent packaged producers offline
+        working-directory: source
+        run: python3 scripts/permission-ci.py validate
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: permission-offline-validation
+          path: ${{ github.workspace }}/permission-temp/permission-results/
+          if-no-files-found: ignore

@@ -49,7 +49,7 @@ class OAuthProtocolOpenApiContractTest {
         assertThat(page.getOperationId()).isEqualTo("oauthSasConsentPage");
         assertThat(page.getResponses()).containsOnlyKeys("200", "400", "401", "404", "503");
         assertThat(page.getResponses().get("200").getContent()).containsOnlyKeys("text/html");
-        assertThat(page.getSecurity().getFirst()).containsKey("oauthAuthorizationSession");
+        assertThat(page.getSecurity().getFirst()).containsKey("oauthAuthenticationCookie");
         var consent = api.getPaths().get("/tenants/{tenantId}/oauth2/authorize").getPost();
         assertThat(consent.getResponses()).containsKeys("302", "403", "503");
         assertThat(consent.getRequestBody().getContent().get("application/x-www-form-urlencoded")

@@ -37,7 +37,6 @@ import org.springframework.security.oauth2.server.authorization.authentication.O
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2RefreshTokenAuthenticationToken;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
-import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -79,6 +78,9 @@ public final class TransactionalOAuthAuthenticationProvider implements Authentic
                 var trustedRealm = tenantIssuerService.resolveCurrentIssuer();
                 try {
                     return grantTransaction.authenticate(authentication, delegate, trustedRealm, tokenIssueService);
+                } catch (OAuthTokenIssueServiceImpl.RefreshReplayException replay) {
+                    committedDenial.set(replay);
+                    return null;
                 } catch (OAuth2AuthorizationCodeRequestAuthenticationException denied) {
                     if (!grantTransaction.commitsConsentDenial()
                             || !"access_denied".equals(denied.getError().getErrorCode())) {
@@ -154,8 +156,7 @@ public final class TransactionalOAuthAuthenticationProvider implements Authentic
                             && !name.equals("reauthenticationExpiresAt")) { details.put(name, value); }
                 });
                 user.setDetails(details);
-                new HttpSessionSecurityContextRepository().saveContext(SecurityContextHolder.getContext(),
-                        servlet.getRequest(), servlet.getResponse());
+
             }
             return result;
         };
@@ -288,6 +289,8 @@ public final class TransactionalOAuthAuthenticationProvider implements Authentic
                     .tokenType(OAuthTokenTypeEnum.CODE)
                     .verifier(text(code.getAdditionalParameters().get("code_verifier")))
                     .redirectUri(uri(code.getRedirectUri()))
+                    .resource(uri(text(code.getAdditionalParameters().get("resource"))))
+                    .browserBindingDigest(text(code.getAdditionalParameters().get("browser_binding")))
                     .build(), () -> delegate.authenticate(authentication));
         };
     }
@@ -303,6 +306,8 @@ public final class TransactionalOAuthAuthenticationProvider implements Authentic
                     .clientPk(parseClientPk(client))
                     .tokenType(OAuthTokenTypeEnum.REFRESH)
                     .scopes(refresh.getScopes())
+                    .resource(uri(text(refresh.getAdditionalParameters().get("resource"))))
+                    .browserBindingDigest(text(refresh.getAdditionalParameters().get("browser_binding")))
                     .build(), () -> delegate.authenticate(authentication));
         };
     }

@@ -145,7 +145,7 @@ class IdpDevelopmentClientBootstrapTest {
 
         Set<String> serviceClients = Set.of(
                 "tianquan-shoubing-service", "tianquan-jianshen-service", "tianshu-service",
-                "stellar-enclosure-yuheng-admin-service", "stellar-enclosure-yuheng-biz-gateway-service", "stellar-enclosure-yuheng-mcp-gateway-service",
+                "yuheng-admin-service", "yuheng-biz-gateway-service", "yuheng-mcp-gateway-service",
                 "mock-backend-service", "mcp-provider-service");
         for (TrustedRealmBO realm : List.of(tenant(7L), tenant(8L))) {
             for (String clientId : serviceClients) {
@@ -163,10 +163,10 @@ class IdpDevelopmentClientBootstrapTest {
     @Test
     void rejectsMismatchedMcpResourceInsteadOfOverwritingIt() {
         ResourceServerVO mismatch = ResourceServerVO.builder()
-                .resourceServerId("identity-stellar-enclosure-yuheng-test-mcp-provider-local")
+                .resourceServerId("identity-yuheng-test-mcp-provider-local")
                 .resourceUri("https://wrong.example/resource")
                 .bizCode("identity")
-                .appCode("stellar-enclosure-yuheng-test-mcp-provider")
+                .appCode("yuheng-test-mcp-provider")
                 .environment("local")
                 .displayName("incorrect")
                 .managementClientId("mcp-provider-service")
@@ -185,8 +185,8 @@ class IdpDevelopmentClientBootstrapTest {
 
     @Test
     void preservesExistingGatewayIdentitiesAndSecrets() throws Exception {
-        List<String> clientIds = List.of("stellar-enclosure-yuheng-admin-service", "stellar-enclosure-yuheng-biz-gateway-service",
-                "stellar-enclosure-yuheng-mcp-gateway-service");
+        List<String> clientIds = List.of("yuheng-admin-service", "yuheng-biz-gateway-service",
+                "yuheng-mcp-gateway-service");
         when(clients.list(PLATFORM)).thenReturn(clientIds.stream().map(this::serviceClientView).toList());
         Files.createDirectories(secretDirectory);
         for (String clientId : clientIds) {
@@ -234,49 +234,49 @@ class IdpDevelopmentClientBootstrapTest {
 
     @Test
     void doesNotReuseAnOtherClientLegacyMcpTaskGrant() {
-        ClientResourceGrantVO legacy = grant("stellar-enclosure-yuheng-biz-gateway-service",
-                "identity-stellar-enclosure-yuheng-test-mcp-provider-local", "7", Set.of("mcp:operation:invoke"), 0L);
-        when(resources.listGrants(tenant(7L), PLATFORM, "stellar-enclosure-yuheng-biz-gateway-service"))
+        ClientResourceGrantVO legacy = grant("yuheng-biz-gateway-service",
+                "identity-yuheng-test-mcp-provider-local", "7", Set.of("mcp:operation:invoke"), 0L);
+        when(resources.listGrants(tenant(7L), PLATFORM, "yuheng-biz-gateway-service"))
                 .thenReturn(List.of(legacy));
 
         fixture("7").afterSingletonsInstantiated();
 
         var grant = org.mockito.ArgumentCaptor.forClass(UpsertClientResourceGrantDTO.class);
-        verify(resources).putGrant(eq(tenant(7L)), eq(PLATFORM), eq("stellar-enclosure-yuheng-mcp-gateway-service"),
-                eq("identity-stellar-enclosure-yuheng-test-mcp-provider-local"), grant.capture());
+        verify(resources).putGrant(eq(tenant(7L)), eq(PLATFORM), eq("yuheng-mcp-gateway-service"),
+                eq("identity-yuheng-test-mcp-provider-local"), grant.capture());
         assertThat(grant.getValue().getExpectedGrantVersion()).isNull();
         verify(resources, never()).putGrant(eq(tenant(7L)), eq(PLATFORM),
-                eq("stellar-enclosure-yuheng-biz-gateway-service"), eq("identity-stellar-enclosure-yuheng-test-mcp-provider-local"), any());
+                eq("yuheng-biz-gateway-service"), eq("identity-yuheng-test-mcp-provider-local"), any());
     }
 
     @Test
     void reusesExistingMcpGrantsWithoutRewritingTheirVersions() {
         List<ClientResourceGrantVO> existing = List.of(
-                grant("stellar-enclosure-yuheng-mcp-gateway-service", "permission-tianquan-jianshen-local", "7",
+                grant("yuheng-mcp-gateway-service", "permission-tianquan-jianshen-local", "7",
                         Set.of("service:authorization:decide", "service:authorization:snapshot",
                                 "service:identity:resolve"), 0L),
-                grant("stellar-enclosure-yuheng-mcp-gateway-service", "identity-stellar-enclosure-yuheng-test-mcp-provider-local", "7",
+                grant("yuheng-mcp-gateway-service", "identity-yuheng-test-mcp-provider-local", "7",
                         Set.of("mcp:operation:invoke"), 0L));
-        when(resources.listGrants(tenant(7L), PLATFORM, "stellar-enclosure-yuheng-mcp-gateway-service")).thenReturn(existing);
+        when(resources.listGrants(tenant(7L), PLATFORM, "yuheng-mcp-gateway-service")).thenReturn(existing);
 
         fixture("7").afterSingletonsInstantiated();
 
-        verify(resources, never()).putGrant(eq(tenant(7L)), eq(PLATFORM), eq("stellar-enclosure-yuheng-mcp-gateway-service"),
+        verify(resources, never()).putGrant(eq(tenant(7L)), eq(PLATFORM), eq("yuheng-mcp-gateway-service"),
                 eq("permission-tianquan-jianshen-local"), any());
-        verify(resources, never()).putGrant(eq(tenant(7L)), eq(PLATFORM), eq("stellar-enclosure-yuheng-mcp-gateway-service"),
-                eq("identity-stellar-enclosure-yuheng-test-mcp-provider-local"), any());
+        verify(resources, never()).putGrant(eq(tenant(7L)), eq(PLATFORM), eq("yuheng-mcp-gateway-service"),
+                eq("identity-yuheng-test-mcp-provider-local"), any());
     }
 
     @Test
     void addsDdcRegistrationScopeToTheExistingPlatformOpenApiGrant() {
-        ClientResourceGrantVO existing = grant("stellar-enclosure-yuheng-admin-service", "platform-tianshu-local", null,
+        ClientResourceGrantVO existing = grant("yuheng-admin-service", "platform-tianshu-local", null,
                 Set.of("tianshu:registration:write"), 3L);
-        when(resources.listGrants(PLATFORM, PLATFORM, "stellar-enclosure-yuheng-admin-service")).thenReturn(List.of(existing));
+        when(resources.listGrants(PLATFORM, PLATFORM, "yuheng-admin-service")).thenReturn(List.of(existing));
 
         fixture("7").afterSingletonsInstantiated();
 
         var grant = org.mockito.ArgumentCaptor.forClass(UpsertClientResourceGrantDTO.class);
-        verify(resources).putGrant(eq(PLATFORM), eq(PLATFORM), eq("stellar-enclosure-yuheng-admin-service"),
+        verify(resources).putGrant(eq(PLATFORM), eq(PLATFORM), eq("yuheng-admin-service"),
                 eq("platform-tianshu-local"), grant.capture());
         assertThat(grant.getValue().getTenantId()).isNull();
         assertThat(grant.getValue().getAllowedScopes()).containsExactlyInAnyOrder(

@@ -23,7 +23,7 @@ public final class TrustedIssuerRegistry {
         IdpStarterProperties settings = Objects.requireNonNull(properties, "properties");
         this.maximumIssuers = settings.getJwksCache().getMaxIssuers();
         if (!settings.getTrustedIssuers().isEmpty()) {
-            settings.validate();
+            settings.validateJwtVerification();
         }
         replaceConfiguredEntries(settings.getTrustedIssuers());
     }

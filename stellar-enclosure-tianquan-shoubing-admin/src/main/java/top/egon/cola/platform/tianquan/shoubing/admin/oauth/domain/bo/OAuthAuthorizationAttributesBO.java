@@ -57,6 +57,12 @@ public class OAuthAuthorizationAttributesBO {
     @Size(max = 64)
     private String acr;
 
+    @JsonIgnore
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
+    @Pattern(regexp = "[1-9][0-9]{0,18}")
+    private String authenticationJti;
+
     private Instant authTime;
     @JsonIgnore
     @ToString.Exclude

@@ -95,6 +95,18 @@ public class SignedTokenClaimsBO {
     @Size(max = 32)
     private String authorizationId;
 
+    @JsonProperty("authn_jti")
+    @Pattern(regexp = "[1-9][0-9]{0,18}")
+    private String authenticationJti;
+
+    @JsonProperty("authorization_expires_at")
+    @Positive
+    private Long authorizationExpiresAt;
+
+    @JsonProperty("refresh_generation")
+    @Pattern(regexp = "0|[1-9][0-9]{0,18}")
+    private String refreshGeneration;
+
     @JsonProperty("client_registration_id")
     @NotBlank(groups = AccessToken.class)
     @Size(max = 128)

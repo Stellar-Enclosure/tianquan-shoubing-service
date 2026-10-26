@@ -1,6 +1,9 @@
 package top.egon.cola.platform.tianquan.shoubing.starter.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.*;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClient;
+import top.egon.cola.platform.tianquan.shoubing.core.audit.TokenUsageAuditEvent;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
@@ -72,8 +75,7 @@ class IdpSecurityObservationFilterTest {
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private final LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
     private final List<Map<String, String>> events = new java.util.concurrent.CopyOnWriteArrayList<>();
-    private final RedissonClient redis = mock(RedissonClient.class);
-    @SuppressWarnings("unchecked") private final RStream<String, String> stream = mock(RStream.class);
+    private final IdentityAuthorityClient authority = mock(IdentityAuthorityClient.class);
     private TokenUsageAuditComponent producer;
     private IdpObservedVerificationComponent observations;
     private IdpJwtVerifier verifier;
@@ -85,18 +87,12 @@ class IdpSecurityObservationFilterTest {
     @BeforeEach
     void prepare() throws Exception {
         validator.afterPropertiesSet();
-        Path keyFile = temporary.resolve("audit.key");
-        Files.writeString(keyFile, "0123456789abcdef0123456789abcdef");
-        Files.setPosixFilePermissions(keyFile, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-        doReturn(stream).when(redis).getStream(eq(STREAM), eq(StringCodec.INSTANCE));
-        when(stream.add(any(StreamAddArgs.class))).thenAnswer(call -> {
-            StreamAddParams<String, String> fields = call.getArgument(0);
-            events.add(Map.copyOf(fields.getEntries()));
-            return new StreamMessageId(events.size(), 1);
+        when(authority.appendAudit(any())).thenAnswer(call -> {
+            TokenUsageAuditEvent event = call.getArgument(0);
+            if (event == null) { return null; }
+            events.add(eventFields(event)); return receipt(event);
         });
-        producer = new TokenUsageAuditComponent(redis, mapper,
-                new OAuthAuditProperties(STREAM, temporary.resolve("spool"), 1_048_576, keyFile),
-                new AuditDeliveryProperties(), clock, validator);
+        producer = new TokenUsageAuditComponent(issuer -> authority, clock, validator, IdpSecurityMetricsRecorder.NOOP);
         eventConverter = (TokenUsageAuditEventConverter) Class.forName(TokenUsageAuditEventConverter.class.getName() + "Impl")
                 .getConstructor().newInstance();
         usageProperties = new OAuthUsageObservationProperties(true, ISSUER, false);
@@ -141,49 +137,27 @@ class IdpSecurityObservationFilterTest {
     void cleanup() { SecurityContextHolder.clearContext(); org.slf4j.MDC.clear(); validator.close(); }
 
     @Test
-    void concurrentStrictHandoffsWaitForAnInFlightFrameInsteadOfReportingDeliveryUnavailable() throws Exception {
-        var audit = new OAuthAuditProperties(STREAM, temporary.resolve("spool"), 1_048_576,
-                temporary.resolve("audit.key"));
-        var readiness = new top.egon.cola.platform.tianquan.shoubing.starter.observability.IdpSecurityObservationReadinessComponent(
-                audit, validator);
+    void concurrentStrictHandoffsWaitOnlyForTheirOwnSqlReceipt() throws Exception {
         var publishing = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
-        var secondStarted = new java.util.concurrent.CountDownLatch(1);
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        when(stream.add(any(StreamAddArgs.class))).thenAnswer(call -> {
+        when(authority.appendAudit(any())).thenAnswer(call -> {
             if (calls.incrementAndGet() == 1) {
                 publishing.countDown();
-                if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("AUDIT_PUBLISH_TEST_TIMEOUT");
-                }
+                if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) { throw new IllegalStateException("test timeout"); }
             }
-            StreamAddParams<String, String> fields = call.getArgument(0);
-            events.add(Map.copyOf(fields.getEntries()));
-            return new StreamMessageId(events.size(), 1);
+            TokenUsageAuditEvent event = call.getArgument(0);
+            if (event == null) { return null; }
+            events.add(eventFields(event)); return receipt(event);
         });
-        try (var lease = readiness.acquireSpoolLease();
-             var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            var ready = readiness.readiness(lease);
-            var receiver = new IdpObservedVerificationComponent(producer, eventConverter, usageProperties,
-                    IdpSecurityMetricsRecorder.NOOP, clock, validator, RESOURCE, ready);
-            var first = pool.submit(receiver::authenticationFailure);
+        try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = pool.submit(observations::authenticationFailure);
             assertThat(publishing.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            assertThat(ready.getAsBoolean()).isFalse();
-            var second = pool.submit(() -> {
-                secondStarted.countDown();
-                return receiver.authenticationFailure();
-            });
-            assertThat(secondStarted.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            try {
-                org.assertj.core.api.Assertions.assertThatThrownBy(() -> second.get(100,
-                        java.util.concurrent.TimeUnit.MILLISECONDS)).isInstanceOf(java.util.concurrent.TimeoutException.class);
-            } finally {
-                release.countDown();
-            }
+            var second = pool.submit(observations::authenticationFailure);
+            try { assertThat(second.get(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue(); }
+            finally { release.countDown(); }
             assertThat(first.get(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            assertThat(second.get(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             assertThat(events).hasSize(2);
-            assertThat(ready.getAsBoolean()).isTrue();
         }
     }
 
@@ -246,7 +220,7 @@ class IdpSecurityObservationFilterTest {
                 valid.principal(), "", List.of());
         authentication.setDetails(valid.proof());
         SecurityContextHolder.getContext().setAuthentication(authentication);
-        when(stream.add(any(StreamAddArgs.class))).thenThrow(new org.redisson.client.RedisException("controlled unavailable"));
+        when(authority.appendAudit(any())).thenThrow(new IllegalStateException("controlled unavailable"));
         int initial = events.size();
         new IdpSecurityObservationFilter(observations, new IdpEndpointAuthenticationPolicy())
                 .doFilter(request, new MockHttpServletResponse(), (incoming, outgoing) -> {
@@ -258,9 +232,7 @@ class IdpSecurityObservationFilterTest {
                     assertThat(IdpSecurityObservationFilter.authorizationObservationContext(request).isFailed()).isTrue();
                 });
         assertThat(events).hasSize(initial);
-        try (var frames = Files.list(temporary.resolve("spool"))) {
-            assertThat(frames.filter(path -> path.toString().endsWith(".evt")).count()).isEqualTo(2);
-        }
+        assertThat(Files.exists(temporary.resolve("spool"))).isFalse();
     }
 
     @Test
@@ -353,16 +325,16 @@ class IdpSecurityObservationFilterTest {
     }
 
     @Test
-    void referenceUsesTheExistingKeyAndDoesNotExposeItsInput() throws Exception {
-        var mac = javax.crypto.Mac.getInstance("HmacSHA256");
-        mac.init(new javax.crypto.spec.SecretKeySpec("0123456789abcdef0123456789abcdef".getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
-        String expected = java.util.HexFormat.of().formatHex(mac.doFinal((ISSUER + "\n901").getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    void referenceUsesDomainSeparatedDigestAndDoesNotExposeItsInput() throws Exception {
+        var digest = java.security.MessageDigest.getInstance("SHA-256");
+        String expected = java.util.HexFormat.of().formatHex(digest.digest(("oauth-token-reference-v1\n" + ISSUER + "\n901")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         assertThat(producer.reference(ISSUER, "901")).isEqualTo(expected);
     }
 
     @Test
-    void deliveryFailureMapsTo503WithoutCallingBusinessAndKeepsTheDurableFrame() throws Exception {
-        when(stream.add(any(StreamAddArgs.class))).thenThrow(new org.redisson.client.RedisException("broker unavailable"));
+    void deliveryFailureMapsTo503WithoutCallingBusinessOrCreatingLocalState() throws Exception {
+        when(authority.appendAudit(any())).thenThrow(new IllegalStateException("broker unavailable"));
         var request = new MockHttpServletRequest("GET", "/user/orders");
         request.addHeader("Authorization", "Bearer " + token(false));
         var response = new MockHttpServletResponse();
@@ -371,9 +343,7 @@ class IdpSecurityObservationFilterTest {
         assertThat(response.getStatus()).isEqualTo(503);
         assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
         assertThat(response.getContentAsString()).contains("OAUTH_AUDIT_DELIVERY_UNAVAILABLE").doesNotContain("broker unavailable");
-        try (var frames = Files.list(temporary.resolve("spool"))) {
-            assertThat(frames.filter(path -> path.toString().endsWith(".evt")).count()).isEqualTo(1);
-        }
+        assertThat(Files.exists(temporary.resolve("spool"))).isFalse();
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
     }
 
@@ -401,7 +371,7 @@ class IdpSecurityObservationFilterTest {
         var observationFilter = new IdpSecurityObservationFilter(observations, policy);
         var bearer = new IdpBearerAuthenticationFilter(verifier, mapper);
         for (boolean unavailable : List.of(false, true)) {
-            if (unavailable) { when(stream.add(any(StreamAddArgs.class))).thenThrow(new org.redisson.client.RedisException("offline")); }
+            if (unavailable) { when(authority.appendAudit(any())).thenThrow(new IllegalStateException("offline")); }
             var request = new MockHttpServletRequest("GET", "/user/orders");
             request.addHeader("Authorization", "Basic invalid-credential");
             var response = new MockHttpServletResponse();

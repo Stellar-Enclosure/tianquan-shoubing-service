@@ -34,8 +34,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 
 /**
  * Validates Tianquan-Shoubing USER and SERVICE access tokens.
- * USER validation is completely stateless; SERVICE validation keeps its existing
- * Resource/Client runtime checks.
+ * Configured USER and SERVICE validation consult the SQL authority for each locally verified token.
  */
 @Slf4j
 @RequiredArgsConstructor(staticName = "create")
@@ -147,6 +146,23 @@ public final class IdpJwtVerifier {
         }
         return new IdpJwtVerifier(decoder, resourceStates, clientStates, resourceServerId, resourceUri, platformAudience,
                 clock, manager, revocationReader, verifiedPrincipalConverter, legacyIssuerCutoverPolicy, observations);
+    }
+
+    /** Formal resource-server path: no legacy decoder, Redis state, or cutover fallback is reachable. */
+    public static IdpJwtVerifier createDatabaseConfigured(URI resource, Clock clock,
+            TenantIssuerAuthenticationManagerComponent manager, OAuthRevocationReader revocations,
+            VerifiedPrincipalConverter converter, IdpObservedVerificationComponent observations) {
+        validResource(resource);
+        Objects.requireNonNull(clock, "clock");
+        if (manager == null || !manager.isConfigured()) {
+            throw new IllegalStateException("IDENTITY_TRUSTED_ISSUERS_REQUIRED");
+        }
+        if (observations == null || !observations.enabled()) {
+            throw new IllegalStateException("IDENTITY_DURABLE_AUDIT_REQUIRED");
+        }
+        return new IdpJwtVerifier(null, null, null, null, resource, null, clock, manager,
+                Objects.requireNonNull(revocations, "revocations"), Objects.requireNonNull(converter, "converter"),
+                null, observations);
     }
 
     /** Verifies USER credentials, completing the enabled usage handoff before returning. */
@@ -378,7 +394,7 @@ public final class IdpJwtVerifier {
                     throw new InvalidTokenException("SERVICE_AUDIENCE_INVALID");
                 }
                 long serviceResourceVersion = number(jwt, IdpClaimNames.RESOURCE_VERSION);
-                verifyResource(serviceResourceVersion);
+                if (resourceStates != null) { verifyResource(serviceResourceVersion); }
                 principal = verifiedPrincipalConverter.toServicePrincipal(jwt, resourceUri);
             } else {
                 throw new InvalidTokenException("JWT_PRINCIPAL_TYPE_INVALID");
@@ -398,7 +414,7 @@ public final class IdpJwtVerifier {
                 return new AccessTokenVerification.Invalid<>(result.reasonCode());
             }
             capture.accept(verified);
-            return new AccessTokenVerification.Valid<>(principal, verifiedScopes);
+            return new AccessTokenVerification.Valid<>(principal, verifiedScopes, null, verified.getTrustedIssuer().issuer());
         } catch (ExpiredTokenException expired) {
             return new AccessTokenVerification.Expired<>();
         } catch (TenantIssuerAuthenticationManagerComponent.InvalidIssuerException invalid) {
@@ -461,7 +477,7 @@ public final class IdpJwtVerifier {
         if (result instanceof AccessTokenVerification.Valid<IdpPrincipal> valid
                 && principalType.isInstance(valid.principal())) {
             return new AccessTokenVerification.Valid<>(
-                    principalType.cast(valid.principal()), valid.scopes(), valid.proof());
+                    principalType.cast(valid.principal()), valid.scopes(), valid.proof(), valid.verifiedIssuer());
         }
         if (result instanceof AccessTokenVerification.Expired<?>) {
             return new AccessTokenVerification.Expired<>();
@@ -478,7 +494,7 @@ public final class IdpJwtVerifier {
     private static <T extends IdpPrincipal> AccessTokenVerification<IdpPrincipal> copyVerification(
             AccessTokenVerification<T> result) {
         if (result instanceof AccessTokenVerification.Valid<?> valid) {
-            return new AccessTokenVerification.Valid<>((IdpPrincipal) valid.principal(), valid.scopes(), valid.proof());
+            return new AccessTokenVerification.Valid<>((IdpPrincipal) valid.principal(), valid.scopes(), valid.proof(), valid.verifiedIssuer());
         }
         if (result instanceof AccessTokenVerification.Expired<?>) {
             return new AccessTokenVerification.Expired<>();

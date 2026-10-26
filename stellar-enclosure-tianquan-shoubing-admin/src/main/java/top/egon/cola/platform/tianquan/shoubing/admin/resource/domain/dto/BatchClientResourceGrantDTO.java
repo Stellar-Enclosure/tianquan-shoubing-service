@@ -1,5 +1,12 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.dto;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.PermissionManifest;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.FieldPermissions;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionGroup;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -21,21 +28,57 @@ import top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceGrantType;
 @Accessors(chain = true)
 public class BatchClientResourceGrantDTO {
 
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.bizCode", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.bizCode")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.STRING,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     @NotBlank
     private String bizCode;
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.environment", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.environment")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.STRING,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     @NotBlank
     private String environment;
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.appCodes", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.appCodes")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.ARRAY,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     @NotEmpty
     private List<@NotBlank String> appCodes;
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.action", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.action")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.STRING,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     @NotNull
     private Action action;
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.grantType", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.grantType")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.STRING,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     @NotNull
     private ResourceGrantType grantType;
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.tenantId", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.tenantId")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.STRING,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     private String tenantId;
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.allowedScopes", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.allowedScopes")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.ARRAY,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     @NotNull
     private Set<String> allowedScopes;
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.expectedResourceVersions", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.expectedResourceVersions")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.OBJECT,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     @NotNull
     private Map<String, Long> expectedResourceVersions;
+    @PermissionResource(key = "tianquan-shoubing.field.BatchClientResourceGrantDTO.expectedGrantVersions", type = ResourceType.FIELD,
+            labelPage = "identity.permissions", labelKey = "field.expectedGrantVersions")
+    @FieldPermissions(valueType = PermissionManifest.JsonFieldType.OBJECT,
+            write = @PermissionGroup(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT))
     @NotNull
     private Map<String, Long> expectedGrantVersions;
 

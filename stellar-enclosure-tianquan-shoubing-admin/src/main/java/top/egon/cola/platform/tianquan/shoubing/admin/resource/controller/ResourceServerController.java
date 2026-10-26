@@ -1,5 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.resource.controller;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.RequiresPermissions;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -69,6 +74,9 @@ public class ResourceServerController {
     private final OAuthManagementRealmResolver realms;
 
     /** @return 全部 Resource Server；all Resource Servers */
+    @PermissionResource(key = "tianquan-shoubing.api.resourceServer.list", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.resourceServer.list")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_READ)
     @GetMapping
     @Operation(
             operationId = "tianquan-shoubing-resource-server-list-v1",
@@ -91,6 +99,9 @@ public class ResourceServerController {
      *
      * <p>Gets one Resource Server.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.resourceServer.detail", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.resourceServer.detail")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_READ)
     @GetMapping("/{resourceServerId}")
     @Operation(
             operationId = "tianquan-shoubing-resource-server-detail-v1",
@@ -114,6 +125,9 @@ public class ResourceServerController {
      *
      * <p>Creates a Resource Server.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.resourceServer.create", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.resourceServer.create")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_CREATE)
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
@@ -138,6 +152,9 @@ public class ResourceServerController {
      *
      * <p>Enables a Resource Server.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.resourceServer.enable", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.resourceServer.enable")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_STATUS)
     @PostMapping("/{resourceServerId}/enable")
     @Operation(
             operationId = "tianquan-shoubing-resource-server-enable-v1",
@@ -162,6 +179,9 @@ public class ResourceServerController {
      *
      * <p>Disables a Resource Server.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.resourceServer.disable", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.resourceServer.disable")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_STATUS)
     @PostMapping("/{resourceServerId}/disable")
     @Operation(
             operationId = "tianquan-shoubing-resource-server-disable-v1",
@@ -186,6 +206,9 @@ public class ResourceServerController {
      *
      * <p>Batch-changes status for explicitly selected applications.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.resourceServer.batch", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.resourceServer.batch")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_STATUS)
     @PostMapping("/actions/batch")
     @Operation(
             operationId = "tianquan-shoubing-resource-server-batch-v1",

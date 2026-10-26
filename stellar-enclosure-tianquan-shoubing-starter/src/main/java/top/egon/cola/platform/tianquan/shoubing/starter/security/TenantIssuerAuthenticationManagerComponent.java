@@ -44,6 +44,7 @@ import org.springframework.web.client.RestTemplate;
 import top.egon.cola.platform.tianquan.shoubing.contract.IdpClaimNames;
 import top.egon.cola.platform.tianquan.shoubing.contract.OAuthSecurityVersionBO;
 import top.egon.cola.platform.tianquan.shoubing.contract.PrincipalType;
+import top.egon.cola.platform.tianquan.shoubing.contract.state.RefreshContextProof;
 import top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder;
 import top.egon.cola.platform.tianquan.shoubing.core.observability.SecurityMetricObservationBO;
 import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties;
@@ -66,6 +67,7 @@ public final class TenantIssuerAuthenticationManagerComponent {
     @Qualifier("idpSecurityMetricsRecorder")
     private final IdpSecurityMetricsRecorder metrics;
     private final ConcurrentMap<String, CachedIssuerManager> managers = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CachedIssuerManager> refreshProofManagers = new ConcurrentHashMap<>();
     private volatile BoundedJwkSetCache jwksCache;
     private volatile RestOperations jwksRestOperations;
     private volatile AuthenticationManagerResolver<String> trustedManagerResolver;
@@ -92,7 +94,7 @@ public final class TenantIssuerAuthenticationManagerComponent {
             this.servletResolver = new JwtIssuerAuthenticationManagerResolver(trustedManagerResolver);
             return;
         }
-        properties.validate();
+        properties.validateJwtVerification();
         if (trustedIssuerRegistry.activeIssuers().size() > properties.getJwksCache().getMaxIssuers()) {
             throw new IllegalStateException("trusted issuer count exceeds jwks-cache.max-issuers");
         }
@@ -136,6 +138,71 @@ public final class TenantIssuerAuthenticationManagerComponent {
         return verifiedJwt(jwt, trustedIssuer);
     }
 
+    /** Strict API verification for a server-selected resource, without changing the host's receiver configuration. */
+    public VerifiedJwtBO authenticate(String compactToken, URI expectedResource) {
+        VerifiedJwtBO verified = authenticate(compactToken);
+        requireAudience(verified.getJwt(), expectedResource);
+        return verified;
+    }
+
+    /** Verifies only the proof needed to find/close a bound refresh operation; it is not API authentication. */
+    public RefreshContextProof verifyRefreshContextProof(String compactToken, URI expectedResource, String expectedClientId) {
+        ensureInitialized();
+        String compact = required(compactToken, "token");
+        SignedJWT parsed = parseSignedToken(compact);
+        rejectUntrustedHeaders(parsed);
+        String issuer = unverifiedIssuer(parsed);
+        TrustedIssuerVO trusted = trustedIssuerRegistry.findByIssuer(issuer)
+                .orElseThrow(() -> new InvalidIssuerException("JWT_ISSUER_UNTRUSTED"));
+        pruneInactiveManagers();
+        CachedIssuerManager cached = refreshProofManagers.compute(issuer, (key, current) -> {
+            if (current != null && current.trustVersion() == trusted.trustVersion()
+                    && current.jwksUri().equals(trusted.jwksUri())) { return current; }
+            return new CachedIssuerManager(trusted.trustVersion(), trusted.jwksUri(), manager(trusted, true));
+        });
+        var authenticated = cached.authenticationManager().authenticate(new BearerTokenAuthenticationToken(compact));
+        if (!(authenticated instanceof JwtAuthenticationToken result)) { throw new InvalidIssuerException("JWT_PROOF_INVALID"); }
+        Jwt jwt = result.getToken();
+        validateIssuerBinding(jwt, trusted);
+        requireAudience(jwt, expectedResource);
+        if (!"USER".equals(jwt.getClaimAsString("principal_type"))
+                || !required(expectedClientId, "expectedClientId").equals(jwt.getClaimAsString("client_id"))) {
+            throw new InvalidIssuerException("JWT_REFRESH_CLIENT_OR_TYPE_INVALID");
+        }
+        VerifiedJwtBO verified = verifiedJwt(jwt, trusted);
+        String authenticationJti = decimalClaim(jwt, "authn_jti");
+        Object rawGeneration = jwt.getClaims().get("refresh_generation");
+        if (!(rawGeneration instanceof String generation) || !generation.matches("0|[1-9][0-9]{0,18}")) {
+            throw new InvalidIssuerException("JWT_REFRESH_GENERATION_INVALID");
+        }
+        try { Long.parseLong(generation); }
+        catch (NumberFormatException overflow) { throw new InvalidIssuerException("JWT_REFRESH_GENERATION_INVALID", overflow); }
+        java.time.Instant absolute = numericDate(jwt, "authorization_expires_at");
+        java.time.Instant authenticationExpiry = numericDate(jwt, "authn_expires_at");
+        if (!absolute.isAfter(clock.instant()) || jwt.getExpiresAt().isAfter(absolute)) {
+            throw new InvalidIssuerException("JWT_AUTHORIZATION_EXPIRED");
+        }
+        return new RefreshContextProof(trusted.issuer(), verified.getTenantId(), verified.getSubject(), expectedClientId,
+                verified.getAuthorizationId(), authenticationJti, generation, absolute, authenticationExpiry,
+                jwt.getIssuedAt(), jwt.getExpiresAt());
+    }
+
+    private static void requireAudience(Jwt jwt, URI expectedResource) {
+        if (expectedResource == null || !expectedResource.isAbsolute()
+                || !List.of(expectedResource.toASCIIString()).equals(jwt.getAudience())) {
+            throw new InvalidIssuerException("JWT_AUDIENCE_INVALID");
+        }
+    }
+
+    private static java.time.Instant numericDate(Jwt jwt, String claim) {
+        Object raw = jwt.getClaims().get(claim);
+        if (!(raw instanceof Number value) || value.longValue() < 0 || value.doubleValue() != (double) value.longValue()) {
+            throw new InvalidIssuerException("JWT_NUMERIC_DATE_INVALID");
+        }
+        try { return java.time.Instant.ofEpochSecond(value.longValue()); }
+        catch (java.time.DateTimeException invalid) { throw new InvalidIssuerException("JWT_NUMERIC_DATE_INVALID", invalid); }
+    }
+
     private AuthenticationManager resolveTrustedManager(String issuer) {
         pruneInactiveManagers();
         TrustedIssuerVO trusted = trustedIssuerRegistry.findByIssuer(issuer).orElse(null);
@@ -150,7 +217,7 @@ public final class TenantIssuerAuthenticationManagerComponent {
             return new CachedIssuerManager(
                     trusted.trustVersion(),
                     trusted.jwksUri(),
-                    manager(trusted));
+                    manager(trusted, false));
         }).authenticationManager();
     }
 
@@ -159,9 +226,10 @@ public final class TenantIssuerAuthenticationManagerComponent {
                 .map(value -> value.issuer().toASCIIString())
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         managers.keySet().retainAll(active);
+        refreshProofManagers.keySet().retainAll(active);
     }
 
-    private AuthenticationManager manager(TrustedIssuerVO trusted) {
+    private AuthenticationManager manager(TrustedIssuerVO trusted, boolean refreshProofOnly) {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(
                         trusted.jwksUri().toASCIIString())
                 .jwsAlgorithm(SignatureAlgorithm.RS256)
@@ -191,10 +259,11 @@ public final class TenantIssuerAuthenticationManagerComponent {
                 .build();
         JwtTimestampValidator timestamps = new JwtTimestampValidator(properties.getClockSkew());
         timestamps.setClock(clock);
-        OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
-                new JwtIssuerValidator(trusted.issuer().toASCIIString()),
-                timestamps,
-                jwt -> validateJwtHeadersAndTimes(jwt, trusted));
+        List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
+        validators.add(new JwtIssuerValidator(trusted.issuer().toASCIIString()));
+        if (!refreshProofOnly) { validators.add(timestamps); }
+        validators.add(jwt -> validateJwtHeadersAndTimes(jwt, trusted));
+        OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(validators);
         decoder.setJwtValidator(validator);
         return new JwtAuthenticationProvider(decoder)::authenticate;
     }
@@ -214,7 +283,8 @@ public final class TenantIssuerAuthenticationManagerComponent {
                 || jwt.getNotBefore().isBefore(jwt.getIssuedAt())) {
             return failure("JWT_TIME_INVALID");
         }
-        if (jwt.getIssuedAt().isAfter(clock.instant().plus(properties.getClockSkew()))) {
+        if (jwt.getIssuedAt().isAfter(clock.instant().plus(properties.getClockSkew()))
+                || jwt.getNotBefore().isAfter(clock.instant().plus(properties.getClockSkew()))) {
             return failure("JWT_IAT_INVALID");
         }
         Duration maximumLifetime = Duration.ofSeconds(600).plus(properties.getClockSkew());

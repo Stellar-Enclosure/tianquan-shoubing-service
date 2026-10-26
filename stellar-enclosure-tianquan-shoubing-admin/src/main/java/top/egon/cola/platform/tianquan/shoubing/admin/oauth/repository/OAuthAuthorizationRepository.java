@@ -19,6 +19,10 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRea
 @Validated
 public interface OAuthAuthorizationRepository {
 
+    Optional<OAuthAuthorizationBO> findByInteractionId(TrustedRealmBO realm, String interactionId);
+
+    List<OAuthAuthorizationBO> findByAuthentication(TrustedRealmBO realm, String authenticationDigest, long afterId, int limit);
+
     Optional<OAuthAuthorizationBO> findById(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @Positive Long id);
@@ -30,7 +34,7 @@ public interface OAuthAuthorizationRepository {
     List<OAuthAuthorizationBO> findByPrincipalName(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotBlank @Size(max = 128) String principalName,
-            @NotBlank @Pattern(regexp = "ACTIVE|REVOKED|EXPIRED") String status,
+            @NotBlank @Pattern(regexp = "PENDING_CONSENT|ACTIVE|REVOKED|EXPIRED|CANCELLED") String status,
             @PositiveOrZero long afterId,
             @Min(1) @Max(500) int limit);
 

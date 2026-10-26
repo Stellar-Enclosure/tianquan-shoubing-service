@@ -165,6 +165,11 @@ public class OAuthAuditRepositoryImpl extends EgonColaRepository<OAuthAuditMappe
             @PositiveOrZero long expectedVersion) {
         Objects.requireNonNull(audit, "audit");
         validateAudit(trustedRealm, audit);
+        if (audit.getSourceIssuer() == null) { audit.setSourceIssuer(trustedRealm.getIssuer().toASCIIString()); }
+        if (audit.getEventFingerprint() == null) { audit.setEventFingerprint(eventFingerprint(audit)); }
+        if (audit.getRetainUntil() == null) {
+            audit.setRetainUntil(audit.getOccurredAt().plusSeconds(180L * 86_400));
+        }
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
                 OAuthAuditPO current = baseMapper.selectByEventIdForUpdate(tenantId, audit.getEventId());
@@ -190,6 +195,35 @@ public class OAuthAuditRepositoryImpl extends EgonColaRepository<OAuthAuditMappe
                 throw new IllegalStateException("OAUTH_AUDIT_CONFLICT", failure);
             }
         });
+    }
+
+    private static String eventFingerprint(OAuthAuditBO audit) {
+        StringBuilder value = new StringBuilder("oauth-owner-audit/v1;");
+        for (String field : java.util.Arrays.asList(audit.getEventId(), audit.getEventType(), audit.getSubjectRef(),
+                audit.getClientRef(), audit.getTokenRef(), audit.getResourceRef(), audit.getResult(), audit.getReasonCode(),
+                audit.getTraceId(), audit.getOccurredAt().toString(), audit.getAuditKind(), audit.getPublicId(),
+                audit.getActorSub(), audit.getTargetSub(), audit.getIdentityTenantId(), canonicalPayload(audit.getPayload()))) {
+            String item = Objects.toString(field, "");
+            value.append(item.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).append(':').append(item);
+        }
+        return top.egon.cola.component.common.crypto.digest.Digests.sha256Hex(value.toString());
+    }
+
+    private static String canonicalPayload(JsonNode node) {
+        if (node == null || node.isNull()) { return "null"; }
+        if (node.isObject()) {
+            java.util.TreeMap<String, String> fields = new java.util.TreeMap<>();
+            node.properties().forEach(entry -> fields.put(entry.getKey(), canonicalPayload(entry.getValue())));
+            StringBuilder value = new StringBuilder("{");
+            fields.forEach((key, item) -> value.append(key.length()).append(':').append(key).append(item.length()).append(':').append(item));
+            return value.append('}').toString();
+        }
+        if (node.isArray()) {
+            StringBuilder value = new StringBuilder("[");
+            node.forEach(item -> { String encoded = canonicalPayload(item); value.append(encoded.length()).append(':').append(encoded); });
+            return value.append(']').toString();
+        }
+        return node.toString();
     }
 
     private <T> T withTrustedStoragePartition(

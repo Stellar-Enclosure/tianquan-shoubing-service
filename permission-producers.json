@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "producers": [
+    {
+      "producerId": "tianquan-shoubing-java",
+      "module": "stellar-enclosure-tianquan-shoubing-admin",
+      "artifactFile": "stellar-enclosure-tianquan-shoubing-admin-exec.jar"
+    }
+  ]
+}

@@ -66,7 +66,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 class OAuthSigningKeyPersistenceContractTest {
 
     private static final String ADMIN_PREFIX =
-            "stellar-enclosure-platform/stellar-enclosure-tianquan-shoubing/"
+            ""
                     + "stellar-enclosure-tianquan-shoubing-admin/src/main/";
     private static final long TENANT_PARTITION_ID = 1_001L;
 
@@ -253,7 +253,7 @@ class OAuthSigningKeyPersistenceContractTest {
                 "mapper/token/OAuthRevocationMapper.xml",
                 "oauth_revocation",
                 "top.egon.cola.platform.tianquan.shoubing.admin.token.dao.OAuthRevocationMapper",
-                List.of("selectByTarget", "selectByTargetForUpdate", "selectByProjectionStatus", "selectExpired"));
+                List.of("selectByTarget", "selectByTargetForUpdate", "selectByRevisionAfter", "selectExpired"));
         assertMapperContract(
                 "mapper/audit/OAuthAuditMapper.xml",
                 "oauth_audit",
@@ -298,7 +298,7 @@ class OAuthSigningKeyPersistenceContractTest {
                             new OAuthRevocationPO(), EgonColaModelValidationGroups.Update.class).stream()
                     .map(violation -> violation.getPropertyPath().toString()).collect(Collectors.toSet());
             assertTrue(revocationUpdatePaths.containsAll(Set.of("targetType", "targetKey", "reasonCode",
-                    "revokedAt", "revision", "projectionStatus")));
+                    "revokedAt", "revision")));
             Set<String> auditUpdatePaths = validator.validate(
                             new OAuthAuditPO().setPayload(null), EgonColaModelValidationGroups.Update.class).stream()
                     .map(violation -> violation.getPropertyPath().toString()).collect(Collectors.toSet());
@@ -323,14 +323,14 @@ class OAuthSigningKeyPersistenceContractTest {
     }
 
     @Test
-    void expiredRevocationRetentionQueryOnlyReturnsAppliedRows() throws IOException {
+    void expiredRevocationRetentionQueryUsesOnlyTheDatabaseRetentionDeadline() throws IOException {
         Path mapperPath = repositoryRoot().resolve(ADMIN_PREFIX
                 + "resources/mapper/token/OAuthRevocationMapper.xml");
         String xml = Files.readString(mapperPath).toLowerCase();
 
-        assertTrue(xml.contains("projection_status = 'applied'"));
-        assertTrue(xml.contains("expires_at is not null"));
-        assertTrue(xml.contains("expires_at &lt;= #{cutoff}"));
+        assertFalse(xml.contains("projection_status"));
+        assertTrue(xml.contains("retain_until is not null"));
+        assertTrue(xml.contains("retain_until &lt;= #{cutoff}"));
         assertTrue(xml.contains("id &gt; #{afterid}"));
         assertTrue(xml.contains("deleted_at is null"));
         assertTrue(xml.contains("order by id asc"));
@@ -707,7 +707,7 @@ class OAuthSigningKeyPersistenceContractTest {
         Path cursor = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
         while (cursor != null) {
             if (Files.isRegularFile(cursor.resolve("pom.xml"))
-                    && Files.isDirectory(cursor.resolve("stellar-enclosure-platform"))) {
+                    && Files.isDirectory(cursor.resolve("stellar-enclosure-tianquan-shoubing-admin"))) {
                 return cursor;
             }
             cursor = cursor.getParent();

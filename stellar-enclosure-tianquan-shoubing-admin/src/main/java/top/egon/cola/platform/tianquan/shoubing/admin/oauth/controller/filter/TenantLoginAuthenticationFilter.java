@@ -24,9 +24,6 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.User;
-import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
-import org.springframework.security.web.context.SecurityContextRepository;
-import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.security.web.savedrequest.DefaultSavedRequest;
 import org.springframework.security.web.savedrequest.RequestCache;
 import org.springframework.security.web.savedrequest.SavedRequest;
@@ -64,10 +61,9 @@ public class TenantLoginAuthenticationFilter extends OncePerRequestFilter {
     @Qualifier("egonColaMybatisPlusClock")
     @NonNull
     private final Clock clock;
-    @Qualifier("oauthLoginSessionAuthenticationStrategy")
+    @Qualifier("oauthBrowserInteractionComponent")
     @NonNull
-    private final SessionAuthenticationStrategy sessionAuthenticationStrategy;
-    private final SecurityContextRepository securityContextRepository = new HttpSessionSecurityContextRepository();
+    private final top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent interactions;
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -117,7 +113,10 @@ public class TenantLoginAuthenticationFilter extends OncePerRequestFilter {
                 return;
             }
             if (identity.mustChangePassword()) {
-                writeError(response, HttpStatus.FORBIDDEN, "Password change is required");
+                interactions.requirePasswordChange(request, response, identity.identitySub());
+                response.setStatus(HttpServletResponse.SC_SEE_OTHER);
+                response.setHeader(HttpHeaders.LOCATION, trustedRealm.getIssuer().getRawPath() + "/password-change");
+                response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
                 return;
             }
             TenantMembershipPort.TenantMembership membership = tenantMemberships.resolve(
@@ -132,26 +131,11 @@ public class TenantLoginAuthenticationFilter extends OncePerRequestFilter {
                 writeError(response, HttpStatus.NOT_FOUND, "Request rejected");
                 return;
             }
-            request.getSession(true);
-            UsernamePasswordAuthenticationToken authentication = UsernamePasswordAuthenticationToken.authenticated(
-                    User.withUsername(identity.identitySub()).password("").authorities("ROLE_USER").build(),
-                    "",
-                    List.of(() -> "ROLE_USER"));
-            Instant authenticatedAt = clock.instant();
-            Map<String, Object> details = new HashMap<>();
-            details.put("authTime", authenticatedAt);
-            details.put("acr", currentSubjectProof ? "STRONG" : ACR_PASSWORD);
-            if (freshRequest && savedRequest instanceof DefaultSavedRequest saved) {
-                details.put("reauthenticatedRequest", authorizationRequestDigest(trustedRealm.getIssuer(), saved.getParameterMap()));
-                details.put("reauthenticationExpiresAt", authenticatedAt.plusSeconds(300));
-            }
-            authentication.setDetails(details);
-            SecurityContext securityContext = SecurityContextHolder.createEmptyContext();
-            securityContext.setAuthentication(authentication);
-            sessionAuthenticationStrategy.onAuthentication(authentication, request, response);
-            SecurityContextHolder.setContext(securityContext);
-            securityContextRepository.saveContext(securityContext, request, response);
-            requestCache.removeRequest(request, response);
+            var issued = interactions.completeLogin(request, identity.identitySub());
+            top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.setCookie(
+                    request, response,
+                    top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.name("authn", trustedRealm),
+                    issued.token(), java.time.Duration.between(clock.instant(), issued.fact().getExpiresAt()));
             response.setStatus(HttpServletResponse.SC_SEE_OTHER);
             response.setHeader(HttpHeaders.LOCATION,
                     authorizeUri.getRawPath() + (authorizeUri.getRawQuery() == null ? "" : "?" + authorizeUri.getRawQuery()));
@@ -159,8 +143,10 @@ public class TenantLoginAuthenticationFilter extends OncePerRequestFilter {
             response.setHeader("Referrer-Policy", "no-referrer");
         } catch (IdentityException failure) {
             writeError(response, HttpStatus.UNAUTHORIZED, "Sign in failed");
-        } catch (TenantMembershipPort.TenantMembershipException failure) {
+        } catch (TenantMembershipPort.TenantMembershipException | org.springframework.dao.DataAccessException | IllegalStateException failure) {
             writeError(response, HttpStatus.SERVICE_UNAVAILABLE, "Request temporarily unavailable");
+        } catch (org.springframework.security.oauth2.core.OAuth2AuthenticationException failure) {
+            writeError(response, HttpStatus.BAD_REQUEST, "Request rejected");
         } finally {
             Arrays.fill(password, '\0');
         }

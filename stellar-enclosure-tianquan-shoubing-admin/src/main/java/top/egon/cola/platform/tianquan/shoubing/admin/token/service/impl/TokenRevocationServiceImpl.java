@@ -161,7 +161,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         OAuthRevocationBO current = revocationRepository.findByTargetForUpdate(realm, targetType, targetKey)
                 .orElse(null);
         OAuthSecurityChangedEvent event;
-        boolean enqueue = current == null || "PENDING".equals(current.getProjectionStatus());
+        boolean enqueue = current == null;
         if (current == null) {
             long revision = nextRevision(realmState, clientState, subjectState);
             saveRealmRevision(realm, realmState, revision);
@@ -173,7 +173,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                     .revokedAt(now)
                     .expiresAt(expiresAt)
                     .revision(revision)
-                    .projectionStatus("PENDING")
+                    .retainUntil(expiresAt.plusSeconds(86_400))
                     .build();
             current = revocationRepository.save(realm, created, 0L);
             event = event(realm, current.getRevision(), targetType, targetKey, null,
@@ -318,49 +318,11 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
     }
 
     private void registerProjectionAfterCommit(List<ProjectionChange> changes) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+        // The authoritative changes and outbox are already in the surrounding transaction.
+        // No external acknowledgement can change a committed revocation's meaning.
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("OAUTH_REVOCATION_TRANSACTION_REQUIRED");
         }
-        List<ProjectionChange> pending = List.copyOf(changes);
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                RuntimeException failure = null;
-                for (ProjectionChange change : pending) {
-                    try {
-                        projectionComponent.applyProjection(change.realm(), change.event());
-                        if (change.revocationTargetType() != null) {
-                            markRevocationApplied(change);
-                        }
-                    } catch (RuntimeException projectionFailure) {
-                        if (failure == null) {
-                            failure = projectionFailure;
-                        } else {
-                            failure.addSuppressed(projectionFailure);
-                        }
-                    }
-                }
-                if (failure != null) {
-                    throw unavailable("OAUTH_SECURITY_PROJECTION_UNAVAILABLE", failure);
-                }
-            }
-        });
-    }
-
-    private void markRevocationApplied(ProjectionChange change) {
-        TransactionTemplate afterCommitTransaction = new TransactionTemplate(transactionManager);
-        afterCommitTransaction.setName("oauthRevocationProjectionStatus");
-        afterCommitTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        afterCommitTransaction.executeWithoutResult(status -> {
-            OAuthSecurityChangedEvent event = change.event();
-            OAuthSecurityTargetEnum targetType = change.revocationTargetType();
-            OAuthRevocationBO current = revocationRepository.findByTargetForUpdate(
-                    change.realm(), targetType, event.targetKey()).orElse(null);
-            if (current == null || "APPLIED".equals(current.getProjectionStatus())) {
-                return;
-            }
-            revocationRepository.save(change.realm(), applied(current), current.getVersion());
-        });
     }
 
     private void saveAuditIfAbsent(TrustedRealmBO realm, OAuthSecurityChangedEvent event, String eventType) {
@@ -454,19 +416,6 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 .build();
     }
 
-    private OAuthRevocationBO applied(OAuthRevocationBO current) {
-        return OAuthRevocationBO.builder()
-                .id(current.getId())
-                .version(Math.addExact(current.getVersion(), 1L))
-                .targetType(current.getTargetType())
-                .targetKey(current.getTargetKey())
-                .reasonCode(current.getReasonCode())
-                .revokedAt(current.getRevokedAt())
-                .expiresAt(current.getExpiresAt())
-                .revision(current.getRevision())
-                .projectionStatus("APPLIED")
-                .build();
-    }
 
     private OAuthTokenBO revoked(OAuthTokenBO current, Instant now) {
         return OAuthTokenBO.builder()

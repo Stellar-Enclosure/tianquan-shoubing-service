@@ -139,16 +139,19 @@ class LegacyOAuthRetirementTest {
         try {
             var method = top.egon.cola.platform.tianquan.shoubing.admin.support.runtime.IdpPlatformConfiguration.class
                     .getDeclaredMethod("idpRuntimeReadiness", org.springframework.beans.factory.ObjectProvider.class,
-                            top.egon.cola.component.outbox.store.OutboxStore.class, org.redisson.api.RedissonClient.class,
+                            top.egon.cola.component.outbox.store.OutboxStore.class,
                             top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver.class,
                             top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository.class,
                             com.nimbusds.jose.jwk.source.JWKSource.class,
-                            org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings.class);
+                            org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings.class,
+                            org.springframework.beans.factory.ObjectProvider.class);
             method.setAccessible(true);
+            var readinessBeans = new org.springframework.beans.factory.support.StaticListableBeanFactory();
+            readinessBeans.addBean("ready", (java.util.function.BooleanSupplier) () -> true);
             var readiness = (top.egon.cola.platform.tianquan.shoubing.admin.support.runtime.IdpRuntimeReadiness)
                     method.invoke(new top.egon.cola.platform.tianquan.shoubing.admin.support.runtime.IdpPlatformConfiguration(),
                             coordinators, org.mockito.Mockito.mock(top.egon.cola.component.outbox.store.OutboxStore.class),
-                            org.mockito.Mockito.mock(org.redisson.api.RedissonClient.class), realms, repository, keys, settings);
+                            realms, repository, keys, settings, readinessBeans.getBeanProvider(java.util.function.BooleanSupplier.class));
             assertEquals(!unavailable, readiness.status().oauthRuntimeReady());
             assertSame(prior, org.springframework.security.oauth2.server.authorization.context
                     .AuthorizationServerContextHolder.getContext());

@@ -1,5 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.resource.controller;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.RequiresPermissions;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -74,6 +79,9 @@ public class ClientResourceGrantController {
      *
      * <p>Creates the Client Resource Grant administration API.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.clientResourceGrant.list", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.clientResourceGrant.list")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT)
     @GetMapping("/{clientId}/resources")
     @Operation(
             operationId = "tianquan-shoubing-client-resource-grant-list-v1",
@@ -104,6 +112,9 @@ public class ClientResourceGrantController {
      *
      * <p>Creates or updates one application-level Grant.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.clientResourceGrant.put", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.clientResourceGrant.put")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT)
     @PutMapping("/{clientId}/resources/{resourceServerId}")
     @Operation(
             operationId = "tianquan-shoubing-client-resource-grant-put-v1",
@@ -130,6 +141,9 @@ public class ClientResourceGrantController {
      *
      * <p>Deletes one application-level Grant.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.clientResourceGrant.delete", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.clientResourceGrant.delete")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT)
     @DeleteMapping("/{clientId}/resources/{resourceServerId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
@@ -157,6 +171,9 @@ public class ClientResourceGrantController {
      *
      * <p>Batch-adds or deletes Grants for explicitly selected applications.</p>
      */
+    @PermissionResource(key = "tianquan-shoubing.api.clientResourceGrant.batch", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.clientResourceGrant.batch")
+    @RequiresPermissions(codes = IdentityPermissionCodes.RESOURCE_SERVER_GRANT)
     @PostMapping("/{clientId}/resource-grants/actions/batch")
     @Operation(
             operationId = "tianquan-shoubing-client-resource-grant-batch-v1",

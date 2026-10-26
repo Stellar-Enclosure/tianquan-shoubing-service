@@ -69,4 +69,7 @@ public class OAuthConsentPO extends EgonModel<OAuthConsentPO> {
             EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})
     private String status;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "resource_uri", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private String resourceUri;
 }

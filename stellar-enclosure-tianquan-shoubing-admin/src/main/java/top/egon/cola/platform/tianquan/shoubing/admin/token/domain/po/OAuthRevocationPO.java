@@ -67,12 +67,6 @@ public class OAuthRevocationPO extends EgonModel<OAuthRevocationPO> {
             EgonColaModelValidationGroups.Persisted.class})
     private Long revision;
 
-    @TableField("projection_status")
-    @NotBlank(groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
-            EgonColaModelValidationGroups.Persisted.class})
-    @Pattern(regexp = "PENDING|APPLIED", groups = {EgonColaModelValidationGroups.Insert.class,
-            EgonColaModelValidationGroups.Update.class, EgonColaModelValidationGroups.Persisted.class})
-    @Size(max = 16, groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
-            EgonColaModelValidationGroups.Persisted.class})
-    private String projectionStatus;
+    @com.baomidou.mybatisplus.annotation.TableField(value = "retain_until", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private Instant retainUntil;
 }

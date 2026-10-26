@@ -90,6 +90,10 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
     private final Clock clock;
     @Qualifier("tenantMembershipPort")
     private final TenantMembershipPort tenantMemberships;
+    @Qualifier("oAuthAuthenticationRepository")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository authentications;
+    @Qualifier("tokenRevocationService")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService revocations;
     @Value("${egon.tianquan-shoubing.oauth.platform-management-tenant-id}")
     private final long platformManagementTenantId;
 
@@ -133,6 +137,12 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
         if (!Objects.equals(clientCandidate.getId(), lockedClient.getId())) {
             throw invalidGrant();
         }
+        if (input.getResource() != null && !input.getResource().toASCIIString().equals(authorizationCandidate.getResourceUri())
+                || lockedClient.isBrowserBound() && (input.getResource() == null || input.getBrowserBindingDigest() == null
+                    || !input.getBrowserBindingDigest().equals(authorizationCandidate.getClientBrowserBindingDigest()))
+                || !lockedClient.isBrowserBound() && input.getBrowserBindingDigest() != null) {
+            throw invalidGrant();
+        }
         if (authorizationCandidate.getAttributes() == null
                 || authorizationCandidate.getAttributes().getSecuritySnapshot() == null) {
             throw invalidGrant();
@@ -156,8 +166,18 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 .filter(value -> value.getTokenType() == input.getTokenType())
                 .filter(value -> value.getAuthorizationPk().equals(authorization.getId()))
                 .filter(value -> value.getExpiresAt() != null && value.getExpiresAt().isAfter(clock.instant()))
-                .filter(value -> value.getMetadata() != null && !value.getMetadata().isInvalidated())
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
+        if (input.getTokenType() == OAuthTokenTypeEnum.REFRESH
+                && (token.getConsumedAt() != null || token.getRevokedAt() != null
+                    || token.getMetadata() == null || token.getMetadata().isInvalidated()
+                    || !Objects.equals(token.getRefreshGeneration(), authorization.getRefreshGeneration()))) {
+            revocations.revoke(realm, top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.RevokeOAuthTokenCommand.builder()
+                    .clientPk(input.getClientPk()).tokenDigest(input.getTokenDigest()).reasonCode("REFRESH_TOKEN_REPLAY").build());
+            throw new RefreshReplayException();
+        }
+        if (token.getMetadata() == null || token.getMetadata().isInvalidated() || token.getConsumedAt() != null || token.getRevokedAt() != null) {
+            throw invalidGrant();
+        }
         if (!Objects.equals(authorization.getClientPk(), input.getClientPk())
                 || !Objects.equals(authorization.getPrincipalName(), authorizationCandidate.getPrincipalName())
                 || input.getTokenType() == OAuthTokenTypeEnum.CODE
@@ -266,6 +286,16 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
         OAuthSecuritySnapshotBO snapshot = securityProjection.snapshotForAuthorization(
                 realm, value.getClientPk(), "USER", value.getPrincipalName());
+        String authenticationJti = value.getAttributes().getAuthenticationJti();
+        if (authenticationJti == null) { throw invalidGrant(); }
+        authentications.findByJtiDigest(realm, Digests.sha256Hex(authenticationJti))
+                .filter(fact -> !"REVOKED".equals(fact.getStatus()) && fact.getRevokedAt() == null
+                        && fact.getSubject().equals(value.getPrincipalName())
+                        && Objects.equals(fact.getAcr(), value.getAttributes().getAcr())
+                        && Objects.equals(fact.getAuthenticatedAt(), value.getAttributes().getAuthTime())
+                        && Objects.equals(fact.getSubjectGeneration(), snapshot.getSubjectGeneration())
+                        && fact.getRealmGeneration() == snapshot.getRealmGeneration())
+                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
         securityProjection.requireCurrentSnapshot(
                 realm, value.getClientPk(), "USER", value.getPrincipalName(),
                 value.getAttributes().getSecuritySnapshot());
@@ -460,5 +490,10 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
 
     private static OAuth2AuthenticationException invalidGrant() {
         return new OAuth2AuthenticationException(new OAuth2Error(INVALID_GRANT, "Request rejected", null));
+    }
+
+    /** The outer native-grant transaction commits replay revocation before returning invalid_grant. */
+    public static final class RefreshReplayException extends OAuth2AuthenticationException {
+        public RefreshReplayException() { super(new OAuth2Error("invalid_grant", "Request rejected", null)); }
     }
 }

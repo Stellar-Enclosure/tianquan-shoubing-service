@@ -51,20 +51,18 @@ public class ResourceServerConfig {
     }
 
     /**
-     * 创建 Redis 运行态投影服务。
+     * 核对已提交的资源权威事实。
      *
-     * <p>Creates the Redis runtime projection service.</p>
+     * <p>Verifies committed resource authority facts.</p>
      *
-     * @param redisson 身份运行态 Redis 客户端；identity-runtime Redis client
-     * @param objectMapper JSON 编解码器；JSON codec
      * @return Resource Server 投影服务；Resource Server projection service
      */
     @Bean
     ResourceServerProjectionService resourceServerProjectionService(
-            @Qualifier("rbac3RuntimeRedissonClient") RedissonClient redisson,
-            @Qualifier("jacksonObjectMapper") ObjectMapper objectMapper
-    ) {
-        return new ResourceServerProjectionService(redisson, objectMapper);
+            @Qualifier("oAuthResourceRepository") OAuthResourceRepository resources,
+            @Qualifier("oAuthGrantRepository") OAuthGrantRepository grants,
+            @Qualifier("oauthManagementRealmResolver") OAuthManagementRealmResolver realms) {
+        return new ResourceServerProjectionService(resources, grants, realms);
     }
 
     /**
@@ -110,7 +108,7 @@ public class ResourceServerConfig {
         );
     }
 
-    /** Creates the post-commit, authoritative Resource/Grant Redis projection consumer. */
+    /** Creates the post-commit Resource/Grant fact verification consumer. */
     @Bean
     ResourceServerProjectionDeliveryHandler resourceServerProjectionDeliveryHandler(
             @Qualifier("oAuthResourceRepository") OAuthResourceRepository resources,

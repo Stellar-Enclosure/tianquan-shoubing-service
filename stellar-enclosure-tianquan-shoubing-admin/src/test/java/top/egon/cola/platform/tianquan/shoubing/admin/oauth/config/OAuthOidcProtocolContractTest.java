@@ -120,19 +120,11 @@ import static org.mockito.Mockito.when;
 class OAuthOidcProtocolContractTest {
 
     @Test
-    void loginRequestCachePreservesTheExactProtocolQueryWithoutAnInternalContinueParameter() {
-        var cache = new AuthorizationServerConfiguration().oauthAuthorizationRequestCache();
-        var request = new org.springframework.mock.web.MockHttpServletRequest("GET", "/tenants/1001/oauth2/authorize");
-        request.setScheme("https");
-        request.setServerName("issuer.example");
-        request.setServerPort(443);
-        request.setQueryString("response_type=code&client_id=controlled-client&state=controlled-state");
-        var response = new org.springframework.mock.web.MockHttpServletResponse();
-
-        cache.saveRequest(request, response);
-
-        assertEquals("https://issuer.example/tenants/1001/oauth2/authorize?response_type=code&client_id=controlled-client&state=controlled-state",
-                cache.getRequest(request, response).getRedirectUrl());
+    void nativeRequestCacheUsesTheSqlInteractionAdapter() {
+        var interactions = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class);
+        var config = new AuthorizationServerConfiguration();
+        assertTrue(config.oauthAuthorizationRequestCache(interactions) == interactions);
+        assertTrue(config.oauthLoginCsrfTokenRepository(interactions) == interactions);
     }
 
     private static final Instant NOW = Instant.parse("2026-10-08T08:00:00Z");
@@ -255,7 +247,7 @@ class OAuthOidcProtocolContractTest {
         OAuthRevocationBO pending = OAuthRevocationBO.builder()
                 .id(701L).version(4L).targetType(OAuthSecurityTargetEnum.JTI).targetKey("123456")
                 .reasonCode("ADMIN_REVOKE").revokedAt(NOW).expiresAt(NOW.plusSeconds(300))
-                .revision(8L).projectionStatus("PENDING").build();
+                .revision(8L).build();
         when(issuers.resolveExactIssuer(realm.getIssuer())).thenReturn(realm);
         when(revocations.findByTarget(realm, OAuthSecurityTargetEnum.JTI, "123456"))
                 .thenReturn(Optional.of(pending));
@@ -283,10 +275,7 @@ class OAuthOidcProtocolContractTest {
 
         assertEquals(DeliveryResult.Kind.SUCCESS, result.kind());
         verify(projection).applyProjection(eq(realm), any(OAuthSecurityChangedEvent.class));
-        ArgumentCaptor<OAuthRevocationBO> saved = ArgumentCaptor.forClass(OAuthRevocationBO.class);
-        verify(revocations).save(eq(realm), saved.capture(), eq(4L));
-        assertEquals("APPLIED", saved.getValue().getProjectionStatus());
-        assertEquals(5L, saved.getValue().getVersion());
+        verify(revocations, org.mockito.Mockito.never()).save(any(), any(), org.mockito.ArgumentMatchers.anyLong());
     }
 
     @Test
@@ -315,65 +304,6 @@ class OAuthOidcProtocolContractTest {
 
         assertEquals(DeliveryResult.Kind.PERMANENT_FAILURE, handler.deliver(context).kind());
         org.mockito.Mockito.verifyNoInteractions(projection, revocations, issuers);
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    void readsOneSameSlotSecuritySnapshotAndFailsWhenTheReadyFenceIsMissing() {
-        RedissonClient redisson = mock(RedissonClient.class);
-        RScript script = mock(RScript.class);
-        doReturn(script).when(redisson).getScript(StringCodec.INSTANCE);
-        OAuthSecurityStateRepository states = mock(OAuthSecurityStateRepository.class);
-        OAuthRevocationRepository revocations = mock(OAuthRevocationRepository.class);
-        OAuthTokenRepository tokenRecords = mock(OAuthTokenRepository.class);
-        OAuthAuthorizationRepository authorizations = mock(OAuthAuthorizationRepository.class);
-        OAuthClientRepository clients = mock(OAuthClientRepository.class);
-        OAuthRealmRepository realms = mock(OAuthRealmRepository.class);
-        OAuthManagementRealmResolver realmResolver = mock(OAuthManagementRealmResolver.class);
-        OAuthRevocationProperties revocationProperties = OAuthRevocationProperties.builder()
-                .primaryEndpoint(URI.create("rediss://redis.example:6379"))
-                .epoch("epoch-1")
-                .build();
-        TrustedRealmBO trustedRealm = trustedTenant();
-        when(states.findByTarget(eq(trustedRealm), eq(OAuthSecurityTargetEnum.REALM), eq("self")))
-                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 4L)));
-        when(states.findByTarget(eq(trustedRealm), eq(OAuthSecurityTargetEnum.CLIENT), eq("501")))
-                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 4L)));
-        when(states.findByTarget(eq(trustedRealm), eq(OAuthSecurityTargetEnum.SUBJECT), eq("subject-1")))
-                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.SUBJECT, "subject-1", 3L, 4L)));
-        List<Object> observedKeys = new ArrayList<>();
-        org.mockito.Mockito.doAnswer(invocation -> {
-            observedKeys.addAll(invocation.getArgument(3));
-            return List.of("epoch-1", "4", "READY", "1", "true", "4",
-                    "2", "true", "4", "3", "true", "4");
-        }).when(script).<List<Object>>eval(
-                eq(RScript.Mode.READ_ONLY), org.mockito.ArgumentMatchers.anyString(),
-                eq(RScript.ReturnType.LIST), org.mockito.ArgumentMatchers.anyList());
-        OAuthSecurityProjectionComponent projection = new OAuthSecurityProjectionComponent(
-                redisson, states, revocations, tokenRecords, authorizations, clients, realms, realmResolver,
-                revocationProperties,
-                Clock.fixed(Instant.parse("2026-10-08T12:00:00Z"), ZoneOffset.UTC));
-
-        var snapshot = projection.snapshotForAuthorization(trustedRealm, 501L, "USER", "subject-1");
-
-        assertEquals(1L, snapshot.getRealmGeneration());
-        assertEquals(2L, snapshot.getClientGeneration());
-        assertEquals(3L, snapshot.getSubjectGeneration());
-        assertEquals("epoch-1", snapshot.getReadyEpoch());
-        assertEquals(4L, snapshot.getRevision());
-        assertEquals(4, observedKeys.size());
-        String issuerHash = Digests.sha256Hex(trustedRealm.getIssuer().toASCIIString());
-        assertTrue(observedKeys.stream().allMatch(key -> key.toString().contains("{" + issuerHash + "}")));
-        assertFalse(observedKeys.toString().contains("subject-1"));
-
-        org.mockito.Mockito.doAnswer(invocation -> List.of("", "4", "NOT_READY", "1", "true", "4",
-                "2", "true", "4", "3", "true", "4"))
-                .when(script).<List<Object>>eval(
-                        eq(RScript.Mode.READ_ONLY), org.mockito.ArgumentMatchers.anyString(),
-                        eq(RScript.ReturnType.LIST), org.mockito.ArgumentMatchers.anyList());
-        OAuth2AuthenticationException unavailable = assertThrows(OAuth2AuthenticationException.class,
-                () -> projection.snapshotForAuthorization(trustedRealm, 501L, "USER", "subject-1"));
-        assertEquals("temporarily_unavailable", unavailable.getError().getErrorCode());
     }
 
     @Test
@@ -456,72 +386,51 @@ class OAuthOidcProtocolContractTest {
     }
 
     @Test
-    void loginSubmitRotatesSessionAndResumesOnlyTheSavedAuthorizeRequest() throws Exception {
-        HttpSessionRequestCache requestCache = new HttpSessionRequestCache();
-        MockHttpServletRequest savedRequest = authorizeRequest();
-        requestCache.saveRequest(savedRequest, new MockHttpServletResponse());
-        MockHttpSession session = (MockHttpSession) savedRequest.getSession(false);
-        MockHttpServletRequest loginRequest = loginRequest(session);
+    void loginSubmitWritesAuthenticationCookieAndResumesOnlyTheSavedAuthorizeRequest() throws Exception {
+        var cache = mock(org.springframework.security.web.savedrequest.RequestCache.class);
+        var saved = new org.springframework.security.web.savedrequest.DefaultSavedRequest(authorizeRequest());
+        when(cache.getRequest(any(), org.mockito.ArgumentMatchers.nullable(jakarta.servlet.http.HttpServletResponse.class))).thenReturn(saved);
+        MockHttpServletRequest loginRequest = loginRequest(null);
         MockHttpServletResponse response = new MockHttpServletResponse();
         IdentityFacade identities = mock(IdentityFacade.class);
         TenantMembershipPort memberships = mock(TenantMembershipPort.class);
         TenantIssuerService issuers = mock(TenantIssuerService.class);
+        var interactions = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class);
         when(issuers.resolveCurrentIssuer()).thenReturn(trustedTenant());
         when(identities.authenticate(eq("alice"), any(char[].class), eq("SAS_LOGIN"), any(Instant.class)))
                 .thenReturn(new AuthenticatedIdentity("subject-1", "alice", "Alice", false));
-        when(memberships.resolve("subject-1", "1001")).thenReturn(
-                new TenantMembershipPort.TenantMembership("subject-1", "1001", "Tenant 1001",
-                        TenantMembershipPort.MembershipStatus.ACTIVE));
-        SessionAuthenticationStrategy sessionStrategy = mock(SessionAuthenticationStrategy.class);
-        TenantLoginAuthenticationFilter filter = new TenantLoginAuthenticationFilter(
-                identities, memberships, issuers, requestCache,
-                java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC), sessionStrategy);
-
-        try {
-            filter.doFilter(loginRequest, response, (request, result) -> { });
-            assertEquals(303, response.getStatus());
-            assertTrue(response.getHeader("Location").startsWith(
-                    "/tenants/1001/oauth2/authorize?client_id=public-client&state=opaque-state"));
-            assertNotNull(loginRequest.getSession(false).getAttribute(
-                    HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY));
-            ArgumentCaptor<char[]> password = ArgumentCaptor.forClass(char[].class);
-            verify(identities).authenticate(eq("alice"), password.capture(), eq("SAS_LOGIN"), any(Instant.class));
-            assertTrue(Arrays.equals(password.getValue(), new char[password.getValue().length]));
-            verify(sessionStrategy).onAuthentication(any(), eq(loginRequest), eq(response));
-        } finally {
-            org.springframework.security.core.context.SecurityContextHolder.clearContext();
-        }
+        when(memberships.resolve("subject-1", "1001")).thenReturn(new TenantMembershipPort.TenantMembership("subject-1", "1001", "Tenant", TenantMembershipPort.MembershipStatus.ACTIVE));
+        when(interactions.completeLogin(loginRequest, "subject-1")).thenReturn(new top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthAuthenticationJwtService.Issued(
+                "signed-authentication-fixture", top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO.builder().expiresAt(NOW.plusSeconds(28_800)).build()));
+        var filter = new TenantLoginAuthenticationFilter(identities, memberships, issuers, cache, Clock.fixed(NOW, ZoneOffset.UTC), interactions);
+        filter.doFilter(loginRequest, response, (request, result) -> { });
+        assertEquals(303, response.getStatus());
+        assertTrue(response.getHeader("Location").startsWith("/tenants/1001/oauth2/authorize?client_id=public-client&state=opaque-state"));
+        assertNull(loginRequest.getSession(false));
+        assertTrue(response.getHeaders("Set-Cookie").stream().allMatch(value -> value.contains("Secure") && value.contains("HttpOnly")));
+        ArgumentCaptor<char[]> password = ArgumentCaptor.forClass(char[].class);
+        verify(identities).authenticate(eq("alice"), password.capture(), eq("SAS_LOGIN"), any(Instant.class));
+        assertTrue(Arrays.equals(password.getValue(), new char[password.getValue().length]));
     }
 
     @Test
-    void loginSubmitDoesNotCreateSessionWhenPasswordMustBeChanged() throws Exception {
-        HttpSessionRequestCache requestCache = new HttpSessionRequestCache();
-        MockHttpServletRequest savedRequest = authorizeRequest();
-        requestCache.saveRequest(savedRequest, new MockHttpServletResponse());
-        MockHttpSession session = (MockHttpSession) savedRequest.getSession(false);
-        MockHttpServletRequest loginRequest = loginRequest(session);
-        MockHttpServletResponse response = new MockHttpServletResponse();
-        IdentityFacade identities = mock(IdentityFacade.class);
-        TenantMembershipPort memberships = mock(TenantMembershipPort.class);
-        TenantIssuerService issuers = mock(TenantIssuerService.class);
+    void mandatoryPasswordChangeCreatesOnlyTheRestrictedInteraction() throws Exception {
+        var cache = mock(org.springframework.security.web.savedrequest.RequestCache.class);
+        when(cache.getRequest(any(), org.mockito.ArgumentMatchers.nullable(jakarta.servlet.http.HttpServletResponse.class)))
+                .thenReturn(new org.springframework.security.web.savedrequest.DefaultSavedRequest(authorizeRequest()));
+        var loginRequest = loginRequest(null); var response = new MockHttpServletResponse();
+        var identities = mock(IdentityFacade.class); var memberships = mock(TenantMembershipPort.class); var issuers = mock(TenantIssuerService.class);
+        var interactions = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class);
         when(issuers.resolveCurrentIssuer()).thenReturn(trustedTenant());
         when(identities.authenticate(eq("alice"), any(char[].class), eq("SAS_LOGIN"), any(Instant.class)))
                 .thenReturn(new AuthenticatedIdentity("subject-1", "alice", "Alice", true));
-        SessionAuthenticationStrategy sessionStrategy = mock(SessionAuthenticationStrategy.class);
-        TenantLoginAuthenticationFilter filter = new TenantLoginAuthenticationFilter(
-                identities, memberships, issuers, requestCache,
-                java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC), sessionStrategy);
-
-        try {
-            filter.doFilter(loginRequest, response, (request, result) -> { });
-            assertEquals(403, response.getStatus());
-            assertNull(loginRequest.getSession(false).getAttribute(
-                    HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY));
-            org.mockito.Mockito.verifyNoInteractions(memberships);
-            org.mockito.Mockito.verifyNoInteractions(sessionStrategy);
-        } finally {
-            org.springframework.security.core.context.SecurityContextHolder.clearContext();
-        }
+        new TenantLoginAuthenticationFilter(identities, memberships, issuers, cache, Clock.fixed(NOW, ZoneOffset.UTC), interactions)
+                .doFilter(loginRequest, response, (request, result) -> { });
+        assertEquals(303, response.getStatus()); assertEquals("/tenants/1001/password-change", response.getHeader("Location"));
+        assertNull(loginRequest.getSession(false));
+        verify(interactions).requirePasswordChange(loginRequest, response, "subject-1");
+        org.mockito.Mockito.verifyNoInteractions(memberships);
+        verify(interactions, org.mockito.Mockito.never()).completeLogin(any(), any());
     }
 
     @Test
@@ -640,7 +549,7 @@ class OAuthOidcProtocolContractTest {
                 mock(OAuthTokenRepository.class), mock(OAuthAuthorizationRepository.class), clients,
                 grants, mock(OAuthConsentRepository.class), realms, mock(OAuthAuditRepository.class),
                 mock(TransactionalOutbox.class), projection, accessPolicy, resources,
-                Clock.fixed(NOW, ZoneOffset.UTC), mock(TenantMembershipPort.class), 1001L);
+                Clock.fixed(NOW, ZoneOffset.UTC), mock(TenantMembershipPort.class), mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class), mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService.class), 1001L);
 
         OAuthTokenIssueService.ClientCredentialsIssueContext result =
                 service.authorizeClientCredentials(realm, 501L, targetUri, requestedScopes);
@@ -679,7 +588,8 @@ class OAuthOidcProtocolContractTest {
                 mock(ResourceServerStore.class),
                 java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC),
                 mock(top.egon.cola.platform.tianquan.shoubing.core.port.TenantMembershipPort.class),
-                1_001L);
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService.class), 1_001L);
         when(clients.findById(eq(trustedRealm), eq(501L))).thenReturn(
                 Optional.of(OAuthClientBO.builder().id(501L).build()));
         when(outbox.enqueue(any(OutboxMessage.class))).thenAnswer(invocation -> {
@@ -770,54 +680,22 @@ class OAuthOidcProtocolContractTest {
                         .id(801L).version(1L).clientPk(501L).resourceServerId("orders-resource")
                         .grantType(ResourceGrantType.USER_DELEGATION).allowedScopes(List.of())
                         .status(ClientResourceGrant.Status.ACTIVE).resourceVersion(1L).build()));
+        var authentications = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class);
+        authorization.getAttributes().setAuthenticationJti("71");
+        when(authentications.findByJtiDigest(eq(platformRealm), any())).thenReturn(Optional.of(
+                top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO.builder().subject("platform-admin-sub").status("ACTIVE")
+                        .realmGeneration(snapshot.getRealmGeneration()).subjectGeneration(snapshot.getSubjectGeneration()).acr(authorization.getAttributes().getAcr())
+                        .authenticatedAt(authorization.getAttributes().getAuthTime()).build()));
         OAuthTokenIssueServiceImpl service = new OAuthTokenIssueServiceImpl(
                 tokens, authorizations, clients, grants, consents, realms, audits, outbox,
                 projection, accessPolicy, resources, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC),
-                memberships, 9_001L);
+                memberships, authentications, mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService.class), 9_001L);
 
         var issue = service.authorizeUserToken(platformRealm, authorization);
 
         assertEquals(700L, issue.authorizationId());
         assertEquals(Set.of(resourceUri), issue.audiences());
         verify(memberships).resolve("platform-admin-sub", "9001");
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    void deliversOnlyWhitelistedAuditFieldsToTheStreamsQueue() throws Exception {
-        RedissonClient redisson = mock(RedissonClient.class);
-        RStream<String, String> stream = mock(RStream.class);
-        doReturn(stream).when(redisson)
-                .getStream(eq(OAuthAuditOutboxDeliveryHandler.STREAM), eq(StringCodec.INSTANCE));
-        when(stream.add(any(StreamAddArgs.class))).thenReturn(mock(StreamMessageId.class));
-        OAuthAuditOutboxDeliveryHandler handler = new OAuthAuditOutboxDeliveryHandler(
-                redisson, new ObjectMapper().findAndRegisterModules(), OAuthAuditOutboxDeliveryHandler.STREAM);
-        String eventId = "event-1";
-        Map<String, Object> event = Map.of(
-                "eventId", eventId,
-                "schemaVersion", 1,
-                "issuer", "https://idp.example.test/tenants/1001",
-                "resource", "https://api.example.test/orders",
-                "clientRef", "a".repeat(64),
-                "result", "SUCCESS",
-                "reasonCode", "CLIENT_CREDENTIALS_TOKEN_ISSUED",
-                "occurredAt", NOW.toString());
-        DeliveryContext context = new DeliveryContext(
-                eventId, OAuthAuditOutboxDeliveryHandler.CHANNEL, OAuthAuditOutboxDeliveryHandler.DESTINATION,
-                new ObjectMapper().writeValueAsString(event), "application/json", "1", Map.of(), null,
-                1, 5, NOW.plusSeconds(30));
-
-        DeliveryResult result = handler.deliver(context);
-
-        assertEquals(DeliveryResult.Kind.SUCCESS, result.kind());
-        verify(stream).add(any(StreamAddArgs.class));
-        Map<String, Object> invalidEvent = new java.util.LinkedHashMap<>(event);
-        invalidEvent.put("password", "must-not-be-delivered");
-        DeliveryContext invalid = new DeliveryContext(
-                eventId, OAuthAuditOutboxDeliveryHandler.CHANNEL, OAuthAuditOutboxDeliveryHandler.DESTINATION,
-                new ObjectMapper().writeValueAsString(invalidEvent), "application/json", "1", Map.of(), null,
-                1, 5, NOW.plusSeconds(30));
-        assertEquals(DeliveryResult.Kind.PERMANENT_FAILURE, handler.deliver(invalid).kind());
     }
 
     private static TrustedRealmBO trustedTenant() {

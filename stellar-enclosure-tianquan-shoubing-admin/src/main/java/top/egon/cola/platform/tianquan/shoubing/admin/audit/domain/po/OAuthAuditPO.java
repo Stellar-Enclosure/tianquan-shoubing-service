@@ -151,4 +151,16 @@ public class OAuthAuditPO extends EgonModel<OAuthAuditPO> {
     @Size(max = 64, groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})
     private String identityTenantId;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "event_fingerprint", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private String eventFingerprint;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "source_client_pk", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private Long sourceClientPk;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "source_issuer", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private String sourceIssuer;
+
+    @com.baomidou.mybatisplus.annotation.TableField(value = "retain_until", updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private Instant retainUntil;
 }

@@ -10,9 +10,6 @@ import java.util.regex.Pattern;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.redisson.api.RBucket;
-import org.redisson.api.RedissonClient;
-import org.redisson.client.codec.StringCodec;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,7 +29,7 @@ import top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEvent
 import top.egon.cola.platform.tianquan.shoubing.admin.identity.service.IdentityStateProjection;
 import top.egon.cola.platform.tianquan.shoubing.core.port.IdentityUserStatePort;
 
-/** Projects identity state after commit and persists identity audit facts through MP and component Outbox. */
+/** Verifies the database identity fact and persists audit/Outbox in the owner transaction. */
 @Component("identityOutboxPublisher")
 @RequiredArgsConstructor
 @Slf4j
@@ -46,37 +43,19 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
     private final OAuthAuditRepository audits;
     @Qualifier("transactionalOutbox")
     private final TransactionalOutbox outbox;
-    @Qualifier("rbac3RuntimeRedissonClient")
-    private final RedissonClient redisson;
+    @Qualifier("identityUserRepository")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository users;
     @Qualifier("jacksonObjectMapper")
     private final ObjectMapper objectMapper;
     @Qualifier("oauthManagementRealmResolver")
     private final OAuthManagementRealmResolver realmResolver;
-    @Value("${egon.tianquan-shoubing.identity-state-key-prefix:identity:v1:user:}")
-    private final String stateKeyPrefix;
     @Qualifier("idpClock")
     private final Clock clock;
 
-    @PostConstruct
-    void validateConfiguration() {
-        validPrefix(stateKeyPrefix);
-    }
-
     @Override
-    @Transactional
+    @Transactional(readOnly = true)
     public void publish(IdentityUserState state) {
-        IdentityUserState value = Objects.requireNonNull(state, "state");
-        String subject = subject(value.subject());
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    project(subject, value);
-                }
-            });
-        } else {
-            project(subject, value);
-        }
+        project(state);
     }
 
     @Override
@@ -146,15 +125,10 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
     }
 
     private void project(String subject, IdentityUserState state) {
-        Map<String, String> payload = Map.of(
-                "subject", subject,
-                "status", state.status().name(),
-                "updatedAt", state.updatedAt().toString());
-        RBucket<String> bucket = redisson.getBucket(stateKeyPrefix + subject, StringCodec.INSTANCE);
-        try {
-            bucket.set(objectMapper.writeValueAsString(payload));
-        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
-            throw new IllegalStateException("IDENTITY_STATE_SERIALIZATION_FAILED", failure);
+        var stored = users.findByIdentitySub(subject)
+                .orElseThrow(() -> new IllegalStateException("IDENTITY_DATABASE_FACT_MISSING"));
+        if (!stored.status().name().equals(state.status().name())) {
+            throw new IllegalStateException("IDENTITY_DATABASE_STATE_MISMATCH");
         }
     }
 
@@ -177,10 +151,4 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
         return value;
     }
 
-    private static String validPrefix(String value) {
-        if (value == null || value.isBlank() || !value.endsWith(":") || value.contains(" ")) {
-            throw new IllegalArgumentException("invalid state key prefix");
-        }
-        return value;
-    }
 }

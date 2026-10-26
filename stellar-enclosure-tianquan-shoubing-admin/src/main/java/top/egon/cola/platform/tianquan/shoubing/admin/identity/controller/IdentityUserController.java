@@ -1,5 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.identity.controller;
 
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.ResourceType;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.PermissionResource;
+import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.RequiresPermissions;
+import top.egon.cola.platform.tianquan.shoubing.admin.permission.IdentityPermissionCodes;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -54,6 +59,9 @@ public class IdentityUserController {
         );
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.identityUser.list", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.identityUser.list")
+    @RequiresPermissions(codes = IdentityPermissionCodes.IDENTITY_USER_READ)
     @GetMapping
     @Operation(
             operationId = "tianquan-shoubing-identity-user-list-v1",
@@ -70,6 +78,9 @@ public class IdentityUserController {
         return users.list();
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.identityUser.create", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.identityUser.create")
+    @RequiresPermissions(codes = IdentityPermissionCodes.IDENTITY_USER_CREATE)
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
@@ -88,6 +99,9 @@ public class IdentityUserController {
         return users.create(request);
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.identityUser.update", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.identityUser.update")
+    @RequiresPermissions(codes = IdentityPermissionCodes.IDENTITY_USER_UPDATE)
     @PatchMapping("/{subject}")
     @Operation(
             operationId = "tianquan-shoubing-identity-user-update-v1",
@@ -106,6 +120,9 @@ public class IdentityUserController {
         return users.update(subject, request);
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.identityUser.resetPassword", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.identityUser.resetPassword")
+    @RequiresPermissions(codes = IdentityPermissionCodes.IDENTITY_USER_PASSWORD_RESET)
     @PostMapping("/{subject}/password-reset")
     @Operation(
             operationId = "tianquan-shoubing-identity-user-password-reset-v1",
@@ -123,6 +140,9 @@ public class IdentityUserController {
         return users.resetPassword(subject);
     }
 
+    @PermissionResource(key = "tianquan-shoubing.api.identityUser.revokeAll", type = ResourceType.API,
+            labelPage = "identity.permissions", labelKey = "api.identityUser.revokeAll")
+    @RequiresPermissions(codes = IdentityPermissionCodes.IDENTITY_USER_REVOKE_ALL)
     @PostMapping("/{subject}/revoke-all")
     @Operation(
             operationId = "tianquan-shoubing-identity-user-revoke-all-v1",

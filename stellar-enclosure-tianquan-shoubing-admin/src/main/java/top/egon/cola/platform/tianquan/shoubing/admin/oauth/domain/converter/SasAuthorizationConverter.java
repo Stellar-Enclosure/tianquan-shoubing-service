@@ -46,6 +46,7 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
     String ABSOLUTE_EXPIRES_AT_ATTRIBUTE = "oauthAbsoluteExpiresAt";
     String REVOKED_AT_ATTRIBUTE = "oauthRevokedAt";
     String REQUESTED_AUDIENCES_ATTRIBUTE = "oauthRequestedAudiences";
+    String REFRESH_GENERATION_ATTRIBUTE = "oauthRefreshGeneration";
 
     String PENDING_ISSUED_AT_ATTRIBUTE = "egon.pendingIssuedAt";
     String PENDING_EXPIRES_AT_ATTRIBUTE = "egon.pendingExpiresAt";
@@ -82,7 +83,11 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
                 .attribute(PRINCIPAL_TYPE_ATTRIBUTE, authorization.getPrincipalType())
                 .attribute(AUTHORIZATION_STATUS_ATTRIBUTE, authorization.getStatus())
                 .attribute(ABSOLUTE_EXPIRES_AT_ATTRIBUTE, authorization.getAbsoluteExpiresAt())
-                .attribute(REQUESTED_AUDIENCES_ATTRIBUTE, List.copyOf(authorization.getAudiences()));
+                .attribute(REQUESTED_AUDIENCES_ATTRIBUTE, List.copyOf(authorization.getAudiences()))
+                .attribute(REFRESH_GENERATION_ATTRIBUTE, authorization.getRefreshGeneration());
+        if (authorization.getAttributes() != null && authorization.getAttributes().getPendingConsent() != null) {
+            builder.attribute("state", authorization.getAttributes().getPendingConsent().getConsentState());
+        }
         if (authorization.getRevokedAt() != null) {
             builder.attribute(REVOKED_AT_ATTRIBUTE, authorization.getRevokedAt());
         }
@@ -131,8 +136,14 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
                 .state(attributes.getPendingConsent() == null ? null : attributes.getPendingConsent().getClientState())
                 .additionalParameters(parameters)
                 .build();
+        List<org.springframework.security.core.GrantedAuthority> authorities = new ArrayList<>(AuthorityUtils.createAuthorityList("ROLE_USER"));
+        if (attributes.getAuthTime() != null) {
+            authorities.add(org.springframework.security.core.authority.FactorGrantedAuthority.withAuthority(
+                    org.springframework.security.core.authority.FactorGrantedAuthority.PASSWORD_AUTHORITY)
+                    .issuedAt(attributes.getAuthTime()).build());
+        }
         UsernamePasswordAuthenticationToken principal = UsernamePasswordAuthenticationToken.authenticated(
-                source.getPrincipalName(), "", AuthorityUtils.createAuthorityList("ROLE_USER"));
+                source.getPrincipalName(), "", authorities);
         Map<String, Object> details = new HashMap<>();
         if (attributes.getAuthTime() != null) {
             details.put("authTime", attributes.getAuthTime());
@@ -238,6 +249,13 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
                 .tokens(tokens)
                 .absoluteExpiresAt(absoluteExpiresAt)
                 .revokedAt(revokedAt)
+                .requestedScopes(persisted == null ? List.of() : persisted.getRequestedScopes())
+                .resourceUri(persisted == null ? null : persisted.getResourceUri())
+                .authenticationJtiDigest(persisted == null ? null : persisted.getAuthenticationJtiDigest())
+                .clientBrowserBindingDigest(persisted == null ? null : persisted.getClientBrowserBindingDigest())
+                .interactionId(persisted == null ? null : persisted.getInteractionId())
+                .refreshGeneration(persisted == null ? 0 : persisted.getRefreshGeneration())
+                .retainUntil(persisted == null ? null : persisted.getRetainUntil())
                 .build();
     }
 
@@ -266,9 +284,12 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
         if (consentState != null) {
             Object requestContext = RequestContextHolder.getRequestAttributes();
             if (!(requestContext instanceof ServletRequestAttributes servlet)
-                    || servlet.getRequest().getSession(false) == null) {
-                throw new IllegalArgumentException("OAUTH_CONSENT_SESSION_REQUIRED");
+                    || !(servlet.getRequest().getAttribute(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.INTERACTION_ATTRIBUTE)
+                        instanceof top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO)) {
+                throw new IllegalArgumentException("OAUTH_CONSENT_INTERACTION_REQUIRED");
             }
+            var interaction = (top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO) servlet.getRequest()
+                    .getAttribute(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.INTERACTION_ATTRIBUTE);
             Instant pendingIssuedAt = authorization.getAttribute(PENDING_ISSUED_AT_ATTRIBUTE);
             Instant pendingExpiresAt = authorization.getAttribute(PENDING_EXPIRES_AT_ATTRIBUTE);
             if (pendingIssuedAt == null || pendingExpiresAt == null) {
@@ -276,7 +297,7 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
             }
             pending = OAuthPendingConsentBO.builder().clientState(state).consentState(consentState)
                     .requestedScopes(new ArrayList<>(authorizationRequest.getScopes()))
-                    .sessionBindingDigest(Digests.sha256Hex(servlet.getRequest().getSession(false).getId()))
+                    .browserBindingDigest(interaction.getBrowserBindingDigest())
                     .issuedAt(pendingIssuedAt).expiresAt(pendingExpiresAt).build();
         }
         return OAuthAuthorizationAttributesBO.builder()
@@ -289,6 +310,7 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
                         ? null : java.net.URI.create(authorizationRequest.getRedirectUri()))
                 .stateDigest(state == null ? null : Digests.sha256Hex(state))
                 .authTime(authTime)
+                .authenticationJti(principal != null && principal.getDetails() instanceof Map<?, ?> details ? text(details.get("authenticationJti")) : null)
                 .acr(acr)
                 .build();
     }
@@ -393,16 +415,6 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
         if (id != null) {
             tokens.add(toToken(id, OAuthTokenTypeEnum.ID, objectMapper));
         }
-        String consentState = authorization.getAttribute("state");
-        if (consentState != null) {
-            OAuthPendingConsentBO pending = attributes.getPendingConsent();
-            if (pending == null || !consentState.equals(pending.getConsentState())) {
-                throw new IllegalArgumentException("OAUTH_CONSENT_STATE_PAYLOAD_MISMATCH");
-            }
-            tokens.add(OAuthTokenBO.builder().tokenType(OAuthTokenTypeEnum.CONSENT_STATE)
-                    .tokenValue(consentState).issuedAt(pending.getIssuedAt()).expiresAt(pending.getExpiresAt())
-                    .metadata(OAuthTokenMetadataBO.builder().schemaVersion(1).build()).build());
-        }
         if (tokens.size() > 5) {
             throw new IllegalArgumentException("OAUTH_AUTHORIZATION_TOKEN_COUNT_INVALID");
         }
@@ -504,7 +516,7 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
                 || authorization.getAttributes().getSecuritySnapshot() == null
                 || authorization.getAbsoluteExpiresAt() == null
                 || authorization.getStatus() == null
-                || !Set.of("ACTIVE", "REVOKED", "EXPIRED").contains(authorization.getStatus())) {
+                || !Set.of("PENDING_CONSENT", "ACTIVE", "REVOKED", "EXPIRED", "CANCELLED").contains(authorization.getStatus())) {
             throw new IllegalArgumentException("OAUTH_AUTHORIZATION_PROJECTION_INVALID");
         }
         grantType(authorization.getGrantType());

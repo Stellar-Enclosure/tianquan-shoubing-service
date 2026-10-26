@@ -92,4 +92,12 @@ public class OAuthAuditBO {
     @EqualsAndHashCode.Exclude
     @Size(max = 64)
     private String identityTenantId;
+
+    private String eventFingerprint;
+
+    private Long sourceClientPk;
+
+    private String sourceIssuer;
+
+    private Instant retainUntil;
 }

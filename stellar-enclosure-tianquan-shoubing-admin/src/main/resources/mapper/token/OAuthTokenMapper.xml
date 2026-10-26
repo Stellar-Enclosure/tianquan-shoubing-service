@@ -21,12 +21,15 @@
         <result property="consumedAt" column="consumed_at"/>
         <result property="revokedAt" column="revoked_at"/>
         <result property="metadataCiphertext" column="metadata_ciphertext"/>
+        <result property="refreshGeneration" column="refresh_generation"/>
+        <result property="retainUntil" column="retain_until"/>
     </resultMap>
 
     <sql id="Columns">
         id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
         authorization_pk, token_type, token_digest, token_ciphertext, jti, issued_at, expires_at,
-        consumed_at, revoked_at, metadata_ciphertext
+        consumed_at, revoked_at, metadata_ciphertext,
+        refresh_generation, retain_until
     </sql>
 
     <select id="selectByTokenDigest" resultMap="OAuthTokenPOResultMap">
@@ -54,7 +57,7 @@
     <select id="selectExpired" resultMap="OAuthTokenPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_token
-        WHERE tenant_id = #{tenantId} AND expires_at &lt;= #{expiresBefore}
+        WHERE tenant_id = #{tenantId} AND retain_until &lt;= #{expiresBefore}
           AND id &gt; #{afterId} AND deleted_at IS NULL
         ORDER BY id ASC
         LIMIT #{limit}

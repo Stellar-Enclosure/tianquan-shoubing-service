@@ -199,7 +199,8 @@ class OAuthClientServiceImplTest {
 
     @Test
     void updatePreservesRegisteredScopesWhenOptionalScopesAreOmitted() {
-        OAuthClientBO current = userBO("orders-web", 2L, List.of("openid", "profile"));
+        OAuthClientBO current = userBO("orders-web", 2L, List.of("openid", "profile"))
+                .setBrowserBound(true).setPostLogoutRedirectUris(List.of("https://client.example/signed-out"));
         when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
         when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
         OAuthClientVO expected = OAuthClientVO.builder().clientId("orders-web").issuer(tenantA.getIssuer().toASCIIString())
@@ -213,7 +214,30 @@ class OAuthClientServiceImplTest {
         var captor = org.mockito.ArgumentCaptor.forClass(OAuthClientBO.class);
         verify(clients).save(eq(tenantA), captor.capture(), eq(2L));
         assertThat(captor.getValue().getAllowedScopes()).containsExactly("openid", "profile");
+        assertThat(captor.getValue().isBrowserBound()).isTrue();
+        assertThat(captor.getValue().getPostLogoutRedirectUris()).containsExactly("https://client.example/signed-out");
         verify(revocations, never()).revokeClient(eq(tenantA), any(OAuthClientRevokeCommand.class));
+    }
+
+    @Test
+    void browserBindingChangeAdvancesTheClientSecurityGeneration() {
+        OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
+        when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
+        service.update(tenantA, "orders-web", UpdateOAuthClientDTO.builder().clientName("Orders Web")
+                .status(OAuthClient.Status.ACTIVE).accessTokenTtlSeconds(600).refreshTokenTtlSeconds(0).expectedVersion(2L)
+                .browserBound(true).postLogoutRedirectUris(List.of("https://client.example/signed-out")).build());
+        verify(revocations).revokeClient(eq(tenantA), argThat(command -> command.getClientPk() == 44L
+                && "CLIENT_CONFIGURATION_CHANGED".equals(command.getReasonCode())));
+    }
+
+    @Test
+    void serviceClientsCannotRegisterBrowserBindingOrLogoutRedirects() {
+        assertThatThrownBy(() -> service.create(platform, platform, serviceClient().setBrowserBound(true), "admin"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.create(platform, platform, serviceClient().setPostLogoutRedirectUris(
+                List.of("https://client.example/signed-out")), "admin")).isInstanceOf(IllegalArgumentException.class);
+        verify(clients, never()).save(any(), any(), anyLong());
     }
 
     @Test

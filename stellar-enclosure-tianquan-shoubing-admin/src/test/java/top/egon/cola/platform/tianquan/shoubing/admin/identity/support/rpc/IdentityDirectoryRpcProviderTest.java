@@ -1,6 +1,8 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.identity.support.rpc;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import top.egon.cola.platform.tianquan.shoubing.admin.identity.repo.IdentityUserDirectory;
 import top.egon.cola.platform.tianquan.shoubing.admin.tenant.service.TenantMembershipService;
 import top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUser;
@@ -22,6 +24,54 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class IdentityDirectoryRpcProviderTest {
+    private static final java.net.URI RESOURCE=java.net.URI.create("https://api.example/identity");
+    private io.grpc.Context current;
+    private io.grpc.Context previous;
+    @BeforeEach void verifiedService(){attach(service("10001",java.util.Set.of("identity:read")),true);}
+    @AfterEach void clear(){if(current!=null)current.detach(previous);org.springframework.security.core.context.SecurityContextHolder.clearContext();}
+
+    private top.egon.cola.platform.tianquan.shoubing.contract.ServiceIdentityPrincipal service(String tenant,java.util.Set<String> scopes) {
+        var now=java.time.Instant.now();
+        return new top.egon.cola.platform.tianquan.shoubing.contract.ServiceIdentityPrincipal("rbac",tenant,"rbac","401",RESOURCE,0,scopes,
+                "xingyuan","tianquan-jianshen","test","credential",now.minusSeconds(10),now.plusSeconds(3600),"rbac-app",top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext.TENANT);
+    }
+    private void attach(top.egon.cola.platform.tianquan.shoubing.contract.IdpPrincipal principal,boolean verified) {
+        if(current!=null)current.detach(previous);
+        var proof=verified?new top.egon.cola.platform.tianquan.shoubing.starter.security.domain.TokenAuditProofBO(
+                java.net.URI.create("https://idp.example/tenants/10001"),RESOURCE,"a".repeat(64),"b".repeat(64),"c".repeat(64)):null;
+        current=top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcSecurityContext.with(principal,"verified-fixture",proof,null);
+        previous=current.attach();
+        var auth=new top.egon.cola.platform.tianquan.shoubing.starter.security.IdpAuthenticationToken(principal);auth.setDetails(proof);
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(auth);
+    }
+
+    @Test void missingProofUserIdentityWrongScopeAndForeignTenantFailBeforeDirectoryReads() {
+        var directory=mock(IdentityUserDirectory.class);var memberships=mock(TenantMembershipService.class);
+        var provider=new IdentityDirectoryRpcProvider(directory,memberships);
+        var request=GetTenantMembershipRequest.newBuilder().setTenantId("10002").setIdentitySub("user").build();
+        assertThatThrownBy(()->provider.getTenantMembership(request)).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        attach(service("10001",java.util.Set.of("identity:read")),false);
+        assertThatThrownBy(()->provider.batchGetIdentityProfiles(BatchGetIdentityProfilesRequest.newBuilder().addSubjects("user").build()))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        attach(service("10001",java.util.Set.of("other:read")),true);
+        assertThatThrownBy(()->provider.getTenantMembership(request.toBuilder().setTenantId("10001").build()))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        var now=java.time.Instant.now();
+        attach(new top.egon.cola.platform.tianquan.shoubing.contract.IdentityPrincipal("user","10001","41",java.util.Set.of(RESOURCE.toString()),now.minusSeconds(10),now.plusSeconds(100),top.egon.cola.platform.tianquan.shoubing.contract.AuthenticationContext.password()),true);
+        assertThatThrownBy(()->provider.getTenantMembership(request.toBuilder().setTenantId("10001").build()))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        org.mockito.Mockito.verifyNoInteractions(directory,memberships);
+    }
+
+    @Test void strictNativeDenialNeedsASqlAuditReceipt() {
+        var observations=mock(top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent.class);
+        when(observations.enabled()).thenReturn(true);
+        var provider=new IdentityDirectoryRpcProvider(mock(IdentityUserDirectory.class),mock(TenantMembershipService.class),java.time.Clock.systemUTC(),observations);
+        assertThatThrownBy(()->provider.getTenantMembership(GetTenantMembershipRequest.newBuilder().setTenantId("10002").setIdentitySub("user").build()))
+                .isInstanceOf(org.springframework.security.authentication.AuthenticationServiceException.class).hasMessage("OAUTH_AUDIT_DELIVERY_UNAVAILABLE");
+        org.mockito.Mockito.verify(observations).authorizationDenied(org.mockito.ArgumentMatchers.any());
+    }
+
 
     @Test
     void returnsMinimalProfilesAndMissingSubjects() {

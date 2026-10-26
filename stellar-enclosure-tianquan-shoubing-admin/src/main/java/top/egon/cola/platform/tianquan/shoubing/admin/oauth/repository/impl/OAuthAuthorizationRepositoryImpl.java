@@ -69,6 +69,30 @@ public class OAuthAuthorizationRepositoryImpl extends EgonColaRepository<OAuthAu
 
     @Override
     @Transactional(readOnly = true)
+    public Optional<OAuthAuthorizationBO> findByInteractionId(TrustedRealmBO realm, String interactionId) {
+        if (interactionId == null || !interactionId.matches("[A-Za-z0-9_-]{43}")) {
+            throw new IllegalArgumentException("OAUTH_INTERACTION_ID_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> {
+            var values = baseMapper.selectByInteractionId(tenant, interactionId);
+            if (values.size() > 1) { throw new IllegalStateException("OAUTH_INTERACTION_AUTHORIZATION_CONFLICT"); }
+            return values.stream().findFirst().map(value -> toTarget(realm, value));
+        });
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<OAuthAuthorizationBO> findByAuthentication(TrustedRealmBO realm, String authenticationDigest, long afterId, int limit) {
+        if (authenticationDigest == null || !authenticationDigest.matches("[0-9a-f]{64}") || afterId < 0L) {
+            throw new IllegalArgumentException("OAUTH_AUTHENTICATION_QUERY_INVALID");
+        }
+        requireLimit(limit);
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.selectByAuthentication(tenant, authenticationDigest, afterId, limit)
+                .stream().map(value -> toTarget(realm, value)).toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<OAuthAuthorizationBO> findById(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @Positive Long id) {
@@ -94,7 +118,7 @@ public class OAuthAuthorizationRepositoryImpl extends EgonColaRepository<OAuthAu
     public List<OAuthAuthorizationBO> findByPrincipalName(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotBlank @Size(max = 128) String principalName,
-            @NotBlank @Pattern(regexp = "ACTIVE|REVOKED|EXPIRED") String status,
+            @NotBlank @Pattern(regexp = "PENDING_CONSENT|ACTIVE|REVOKED|EXPIRED|CANCELLED") String status,
             @PositiveOrZero long afterId,
             @Min(1) @Max(500) int limit) {
         String principal = required(principalName, "principalName");
@@ -151,10 +175,7 @@ public class OAuthAuthorizationRepositoryImpl extends EgonColaRepository<OAuthAu
                         throw stale(expectedVersion, current == null ? -1L : current.getVersion());
                     } else {
                         requireImmutableIdentity(current, authorization);
-                        if (!Objects.equals(toTarget(trustedRealm, current).getAttributes(),
-                                authorization.getAttributes())) {
-                            throw new IllegalArgumentException("OAUTH_AUTHORIZATION_ATTRIBUTES_IMMUTABLE");
-                        }
+                        requireProtocolTransition(toTarget(trustedRealm, current), authorization);
                     }
                 }
 
@@ -239,13 +260,54 @@ public class OAuthAuthorizationRepositoryImpl extends EgonColaRepository<OAuthAu
                 && Objects.equals(current.getPrincipalName(), requested.getPrincipalName())
                 && Objects.equals(current.getPrincipalType(), requested.getPrincipalType())
                 && Objects.equals(current.getGrantType(), requested.getGrantType())
-                && Objects.equals(current.getAuthorizedScopes(), requested.getAuthorizedScopes())
                 && Objects.equals(current.getAudiences(), requested.getAudiences())
                 && Objects.equals(current.getAuthTime(), requested.getAuthTime())
                 && Objects.equals(current.getAcr(), requested.getAcr())
-                && Objects.equals(current.getAbsoluteExpiresAt(), requested.getAbsoluteExpiresAt());
+                && Objects.equals(current.getAbsoluteExpiresAt(), requested.getAbsoluteExpiresAt())
+                && Objects.equals(current.getRequestedScopes(), requested.getRequestedScopes())
+                && Objects.equals(current.getResourceUri(), requested.getResourceUri())
+                && Objects.equals(current.getAuthenticationJtiDigest(), requested.getAuthenticationJtiDigest())
+                && Objects.equals(current.getClientBrowserBindingDigest(), requested.getClientBrowserBindingDigest())
+                && Objects.equals(current.getInteractionId(), requested.getInteractionId());
         if (!matches) {
             throw new IllegalArgumentException("OAUTH_AUTHORIZATION_IDENTITY_IMMUTABLE");
+        }
+    }
+
+    static void requireProtocolTransition(OAuthAuthorizationBO current, OAuthAuthorizationBO requested) {
+        if (requested.getRequestedScopes() == null || requested.getAuthorizedScopes() == null
+                || !requested.getRequestedScopes().containsAll(requested.getAuthorizedScopes())) {
+            throw new IllegalArgumentException("OAUTH_AUTHORIZATION_SCOPE_EXPANSION");
+        }
+        if (!"PENDING_CONSENT".equals(current.getStatus())
+                && !current.getAuthorizedScopes().containsAll(requested.getAuthorizedScopes())) {
+            throw new IllegalArgumentException("OAUTH_AUTHORIZATION_SCOPE_EXPANSION");
+        }
+        if (List.of("REVOKED", "EXPIRED", "CANCELLED").contains(current.getStatus())
+                && !Objects.equals(current.getStatus(), requested.getStatus())
+                || "ACTIVE".equals(current.getStatus()) && "PENDING_CONSENT".equals(requested.getStatus())) {
+            throw new IllegalArgumentException("OAUTH_AUTHORIZATION_TERMINAL");
+        }
+        if (requested.getRefreshGeneration() < current.getRefreshGeneration()
+                || requested.getRefreshGeneration() > Math.addExact(current.getRefreshGeneration(), 1L)
+                || requested.getRetainUntil() == null || current.getRetainUntil() == null
+                || requested.getRetainUntil().isBefore(current.getRetainUntil())) {
+            throw new IllegalArgumentException("OAUTH_AUTHORIZATION_VERSION_OR_RETENTION_INVALID");
+        }
+        var before = current.getAttributes();
+        var after = requested.getAttributes();
+        if (before == null || after == null
+                || !Objects.equals(before.getNonce(), after.getNonce())
+                || !Objects.equals(before.getCodeChallenge(), after.getCodeChallenge())
+                || !Objects.equals(before.getCodeChallengeMethod(), after.getCodeChallengeMethod())
+                || !Objects.equals(before.getRedirectUri(), after.getRedirectUri())
+                || !Objects.equals(before.getStateDigest(), after.getStateDigest())
+                || !Objects.equals(before.getSecuritySnapshot(), after.getSecuritySnapshot())
+                || !Objects.equals(before.getAcr(), after.getAcr())
+                || !Objects.equals(before.getAuthTime(), after.getAuthTime())
+                || !Objects.equals(before.getAuthenticationJti(), after.getAuthenticationJti())
+                || before.getPendingConsent() == null && after.getPendingConsent() != null) {
+            throw new IllegalArgumentException("OAUTH_AUTHORIZATION_BINDING_IMMUTABLE");
         }
     }
 

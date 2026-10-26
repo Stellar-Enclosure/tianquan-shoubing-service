@@ -26,11 +26,11 @@ import java.util.Set;
 
 /**
  * 在 Gateway 安全链中执行仅身份级的 Tianquan-Shoubing 认证。
- * JWT 解码和 Redis 状态读取可能阻塞，因此验证工作调度到有界弹性线程池；
+ * JWT 解码、SQL 权威查询和审计确认可能阻塞，因此验证工作调度到有界弹性线程池；
  * 任意验证异常都收敛为拒绝结果，不向下游泄露内部失败细节。
  *
  * <p>Performs identity-only Tianquan-Shoubing authentication in the Gateway security chain. JWT decoding and
- * Redis state access may block, so verification runs on the bounded-elastic scheduler. Any
+ * SQL authority access and audit confirmation may block, so verification runs on the bounded-elastic scheduler. Any
  * verification exception is converted into a denial without exposing internal failure details
  * downstream.</p>
  */

@@ -29,6 +29,9 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Arrays;
+import java.util.Objects;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthKeyStatusEnum;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -171,8 +174,16 @@ class OAuthConsentRoundTripTest {
         top.egon.cola.component.common.id.snowflake.SnowflakeIdGenerator.initialize(0L, Duration.ofMillis(5));
         lastFixture = fixture;
         fixture.reset();
+        TokenRevocationService revocationTarget = org.springframework.test.util.AopTestUtils.getUltimateTargetObject(
+                context.getBean("tokenRevocationService", TokenRevocationService.class));
+        org.mockito.Mockito.reset(revocationTarget);
         AuthorizationServerContextHolder.resetContext();
         mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+        var endpoint = context.getBean("authorizationServerSecurityFilterChain", SecurityFilterChain.class).getFilters().stream()
+                .filter(value -> value instanceof org.springframework.security.oauth2.server.authorization.web.OAuth2AuthorizationEndpointFilter)
+                .map(value -> (org.springframework.security.oauth2.server.authorization.web.OAuth2AuthorizationEndpointFilter) value).findFirst().orElseThrow();
+        var delegate = (org.springframework.security.web.authentication.AuthenticationFailureHandler) org.springframework.test.util.ReflectionTestUtils.getField(endpoint, "authenticationFailureHandler");
+        endpoint.setAuthenticationFailureHandler((request, response, failure) -> { fixture.lastAuthorizationFailure = failure; delegate.onAuthenticationFailure(request, response, failure); });
     }
 
     @AfterAll
@@ -185,7 +196,7 @@ class OAuthConsentRoundTripTest {
     @Test
     void nativeLoginConsentCodeOidcUserinfoAndRefreshRoundTrip() throws Exception {
         Pending pending = assertDoesNotThrow(() -> startThroughRealLogin(1001L));
-        MvcResult page = mvc.perform(request(get(URI.create(pending.consentLocation()))).session(pending.session()))
+        MvcResult page = mvc.perform(request(get(URI.create(pending.consentLocation()))).cookie(pending.cookies()))
                 .andExpect(header().string("Cache-Control", "no-store"))
                 .andReturn();
         assertEquals(200, page.getResponse().getStatus(), "Consent handler=" + page.getHandler()
@@ -198,6 +209,8 @@ class OAuthConsentRoundTripTest {
         String csrf = hidden(html, "_csrf");
         MvcResult approved = mvc.perform(consent(pending).param("_csrf", csrf).param("scope", "orders.read"))
                 .andExpect(status().is3xxRedirection()).andReturn();
+        assertNull(approved.getRequest().getSession(false));
+        assertTrue(approved.getResponse().getHeaders("Set-Cookie").stream().noneMatch(value -> value.startsWith("JSESSIONID=") || value.startsWith("SESSION=")));
         String callback = approved.getResponse().getHeader("Location");
         assertEquals(CLIENT_STATE, query(callback, "state"));
         String code = query(callback, "code");
@@ -220,6 +233,7 @@ class OAuthConsentRoundTripTest {
         assertFalse(id.hasClaim("security_version"));
         assertFalse(id.hasClaim("token_use"));
         assertFalse(id.hasClaim("_token_use"));
+        assertFalse(id.hasClaim("sid"));
         assertEquals("user-1001", id.getSubject());
         TrustedRealmBO realm = fixture.realm(ORIGIN.resolve("/tenants/1001"));
         OAuthAuthorizationBO loaded = fixture.readAuthorization(realm,
@@ -276,12 +290,12 @@ class OAuthConsentRoundTripTest {
     }
 
     @Test
-    void nativeConsentPageRejectsMissingSessionAndWrongClientWithoutWrites() throws Exception {
+    void nativeConsentPageRejectsMissingAuthenticationAndWrongClientWithoutWrites() throws Exception {
         Pending pending = startThroughRealLogin(1001L);
         Map<String, OAuthAuthorizationPO> initial = new LinkedHashMap<>(fixture.authorizations);
         Map<String, OAuthTokenPO> initialTokens = new LinkedHashMap<>(fixture.tokens);
         mvc.perform(request(get(URI.create(pending.consentLocation())))).andExpect(status().isUnauthorized());
-        mvc.perform(request(get("/tenants/1001/consent")).session(pending.session())
+        mvc.perform(request(get("/tenants/1001/consent")).cookie(pending.cookies())
                         .queryParam("state", pending.state()).queryParam("client_id", "another-client"))
                 .andExpect(status().isNotFound());
         assertEquals(initial, fixture.authorizations);
@@ -291,27 +305,26 @@ class OAuthConsentRoundTripTest {
     }
 
     @Test
-    void nativePendingStateCannotCrossRealmSubjectOrSession() throws Exception {
+    void nativePendingStateCannotCrossRealmBrowserOrAuthenticationPurpose() throws Exception {
         Pending pending = startThroughRealLogin(1001L);
         mvc.perform(request(get(URI.create(pending.consentLocation().replace("/tenants/1001/", "/tenants/1002/"))))
-                        .session(pending.session())).andExpect(status().isNotFound());
-        mvc.perform(request(get(URI.create(pending.consentLocation()))).session(new MockHttpSession())
-                        .with(user("user-1001"))).andExpect(status().isNotFound());
-        mvc.perform(request(get(URI.create(pending.consentLocation()))).session(pending.session())
-                        .with(user("different-subject"))).andExpect(status().isNotFound());
-        assertEquals(1, fixture.authorizations.size());
-        assertEquals(1, fixture.tokens.size());
-        assertTrue(fixture.consents.isEmpty());
+                .cookie(pending.cookies())).andExpect(status().isUnauthorized());
+        mvc.perform(request(get(URI.create(pending.consentLocation()))).session(new MockHttpSession()).with(user("user-1001")))
+                .andExpect(status().isUnauthorized());
+        var wrong = Arrays.stream(pending.cookies()).map(cookie -> new jakarta.servlet.http.Cookie(cookie.getName(),
+                cookie.getName().contains("-authn-") ? "invalid-authentication-fixture" : cookie.getValue())).toArray(jakarta.servlet.http.Cookie[]::new);
+        mvc.perform(request(get(URI.create(pending.consentLocation()))).cookie(wrong)).andExpect(status().isUnauthorized());
+        assertEquals(1, fixture.authorizations.size()); assertTrue(fixture.tokens.isEmpty()); assertTrue(fixture.consents.isEmpty());
     }
 
     @Test
     void nativeConsentQueryAndFormRejectUnknownDuplicateAndOvergrant() throws Exception {
         Pending pending = startThroughRealLogin(1001L);
         String csrf = consentCsrf(pending);
-        mvc.perform(request(get(URI.create(pending.consentLocation()))).session(pending.session())
+        mvc.perform(request(get(URI.create(pending.consentLocation()))).cookie(pending.cookies())
                         .queryParam("unknown", "<script>"))
                 .andExpect(status().isBadRequest());
-        mvc.perform(request(get(URI.create(pending.consentLocation()))).session(pending.session())
+        mvc.perform(request(get(URI.create(pending.consentLocation()))).cookie(pending.cookies())
                         .queryParam("state", pending.state()))
                 .andExpect(status().isBadRequest());
         mvc.perform(consent(pending).param("_csrf", csrf).param("scope", "orders.read").param("unknown", "x"))
@@ -335,8 +348,8 @@ class OAuthConsentRoundTripTest {
         mvc.perform(consent(pending).param("_csrf", "wrong-csrf").param("scope", "orders.read"))
                 .andExpect(status().isForbidden());
         fixture.clock.now = fixture.clock.now.plusSeconds(300);
-        mvc.perform(request(get(URI.create(pending.consentLocation()))).session(pending.session()))
-                .andExpect(status().isNotFound());
+        mvc.perform(request(get(URI.create(pending.consentLocation()))).cookie(pending.cookies()))
+                .andExpect(status().isBadRequest());
         mvc.perform(consent(pending).param("_csrf", csrf).param("scope", "orders.read"))
                 .andExpect(status().isBadRequest());
         assertTrue(fixture.consents.isEmpty());
@@ -347,7 +360,7 @@ class OAuthConsentRoundTripTest {
     @Test
     void hostSpoofCannotChooseConsentIssuerOrRegisteredCallback() throws Exception {
         Pending pending = startThroughRealLogin(1001L);
-        MvcResult page = mvc.perform(request(get(URI.create(pending.consentLocation()))).session(pending.session())
+        MvcResult page = mvc.perform(request(get(URI.create(pending.consentLocation()))).cookie(pending.cookies())
                         .header("Host", "attacker.example.test").with(request -> {
                             request.setServerName("attacker.example.test"); return request;
                         })).andExpect(status().isOk()).andReturn();
@@ -379,14 +392,14 @@ class OAuthConsentRoundTripTest {
                 .andExpect(status().is3xxRedirection()).andReturn();
         assertEquals("access_denied", query(cancelled.getResponse().getHeader("Location"), "error"));
         assertEquals(CLIENT_STATE, query(cancelled.getResponse().getHeader("Location"), "state"));
-        assertTrue(fixture.authorizations.isEmpty());
+        assertTrue(fixture.authorizations.values().stream().allMatch(value -> "CANCELLED".equals(value.getStatus())));
         assertEquals(existing, fixture.consents.get(Fixture.consentKey(realm, 501L, "user-1001")));
         assertTrue(fixture.tokens.values().stream().allMatch(row -> row.getConsumedAt() != null));
         assertTrue(fixture.events.isEmpty());
         mvc.perform(consent(pending).param("_csrf", csrf).param("consent_action", "deny"))
                 .andExpect(status().isBadRequest());
-        mvc.perform(request(get(URI.create(pending.consentLocation()))).session(pending.session()))
-                .andExpect(status().isNotFound());
+        mvc.perform(request(get(URI.create(pending.consentLocation()))).cookie(pending.cookies()))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -499,7 +512,7 @@ class OAuthConsentRoundTripTest {
         assertEquals("login_required", query(anonymous.getResponse().getHeader("Location"), "error"));
         assertTrue(fixture.authorizations.isEmpty());
         Pending pending = startThroughRealLogin(1001L);
-        MvcResult noConsent = mvc.perform(authorize(1001L).session(pending.session()).queryParam("prompt", "none"))
+        MvcResult noConsent = mvc.perform(authorize(1001L).cookie(pending.cookies()).queryParam("prompt", "none"))
                 .andExpect(status().is3xxRedirection()).andReturn();
         assertEquals("consent_required", query(noConsent.getResponse().getHeader("Location"), "error"));
         assertEquals(1, fixture.authorizations.size());
@@ -512,36 +525,146 @@ class OAuthConsentRoundTripTest {
         Instant originalAuthTime = fixture.clock.instant();
         fixture.clock.now = originalAuthTime.plusSeconds(60);
         int before = fixture.authorizations.size();
-        MvcResult freshLogin = mvc.perform(authorize(1001L).session(initial.session())
+        MvcResult freshLogin = mvc.perform(authorize(1001L).cookie(initial.cookies())
                         .queryParam("prompt", "login").queryParam("max_age", "0"))
                 .andExpect(status().is3xxRedirection()).andReturn();
         assertEquals("/tenants/1001/login", URI.create(freshLogin.getResponse().getHeader("Location")).getRawPath());
         assertEquals(before, fixture.authorizations.size(), "Freshness intent cannot create a pending/code fact before password proof");
-        MvcResult loginPage = mvc.perform(request(get("/tenants/1001/login")).session(initial.session()))
+        initial.browser().accept(freshLogin);
+        MvcResult loginPage = mvc.perform(request(get("/tenants/1001/login")).cookie(initial.cookies()))
                 .andExpect(status().isOk()).andReturn();
-        mvc.perform(request(post("/tenants/1001/login")).session(initial.session())
+        MvcResult reauthenticated = mvc.perform(request(post("/tenants/1001/login")).cookie(initial.cookies())
                         .contentType("application/x-www-form-urlencoded").param("username", "ignored-stepup-username")
                         .param("password", "fixture-password").param("_csrf", hidden(loginPage.getResponse().getContentAsString(), "_csrf")))
-                .andExpect(status().isSeeOther());
+                .andExpect(status().isSeeOther()).andReturn();
+        initial.browser().accept(reauthenticated);
         verify(fixture.identities).authenticateCurrent(eq("user-1001"), any(char[].class), eq(fixture.clock.instant()));
-        MvcResult consentRedirect = mvc.perform(authorize(1001L).session(initial.session())
+        MvcResult consentRedirect = mvc.perform(authorize(1001L).cookie(initial.cookies())
                         .queryParam("prompt", "login").queryParam("max_age", "0"))
                 .andExpect(status().is3xxRedirection()).andReturn();
         String location = consentRedirect.getResponse().getHeader("Location");
         assertEquals("/tenants/1001/consent", URI.create(location).getRawPath());
-        Pending stepUp = new Pending(1001L, initial.session(), location, query(location, "state"));
+        Pending stepUp = new Pending(1001L, initial.browser(), location, query(location, "state"));
         JsonNode tokens = token(approve(stepUp, consentCsrf(stepUp)), VERIFIER);
         Jwt access = decoded(tokens.path("access_token").asText());
-        assertEquals("STRONG", access.getClaimAsString("acr"));
+        assertEquals("PASSWORD", access.getClaimAsString("acr"));
         long authenticatedAt = ((Number) access.getClaims().get("auth_time")).longValue();
         assertEquals(fixture.clock.instant().getEpochSecond(), authenticatedAt);
         assertTrue(authenticatedAt > originalAuthTime.getEpochSecond());
         int after = fixture.authorizations.size();
-        MvcResult repeated = mvc.perform(authorize(1001L).session(initial.session())
+        MvcResult repeated = mvc.perform(authorize(1001L).cookie(initial.cookies())
                         .queryParam("prompt", "login").queryParam("max_age", "0"))
                 .andExpect(status().is3xxRedirection()).andReturn();
         assertEquals("/tenants/1001/login", URI.create(repeated.getResponse().getHeader("Location")).getRawPath());
         assertEquals(after, fixture.authorizations.size(), "Consumed password proof cannot be replayed for another issuance");
+    }
+
+    @Test
+    void codeAndRefreshCannotSwapTheClientBrowserBinding() throws Exception {
+        fixture.browserBound = true;
+        Pending pending = startThroughRealLogin(1001L);
+        String code = approve(pending, consentCsrf(pending));
+        mvc.perform(tokenRequest(code, VERIFIER).with(request -> { request.setParameter("browser_binding", "c".repeat(64)); return request; }))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_grant"));
+        var issued = token(code, VERIFIER);
+        String refresh = issued.path("refresh_token").asText();
+        mvc.perform(request(post("/tenants/1001/oauth2/token")).header("Authorization", basic()).contentType("application/x-www-form-urlencoded")
+                .param("grant_type", "refresh_token").param("refresh_token", refresh).param("resource", RESOURCE.toASCIIString()).param("browser_binding", "c".repeat(64)))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_grant"));
+        mvc.perform(request(post("/tenants/1001/oauth2/token")).header("Authorization", basic()).contentType("application/x-www-form-urlencoded")
+                .param("grant_type", "refresh_token").param("refresh_token", refresh).param("resource", RESOURCE.toASCIIString()).param("browser_binding", "b".repeat(64)))
+                .andExpect(status().isOk());
+        assertEquals(1L, fixture.authorizations.values().iterator().next().getRefreshGeneration());
+    }
+
+    @Test
+    void spentRefreshReplayCommitsFamilyClosureBeforeReturningInvalidGrant() throws Exception {
+        Pending pending = startThroughRealLogin(1001L);
+        var issued = token(approve(pending, consentCsrf(pending)), VERIFIER);
+        String original = issued.path("refresh_token").asText();
+        TokenRevocationService revocations = org.springframework.test.util.AopTestUtils.getUltimateTargetObject(
+                context.getBean("tokenRevocationService", TokenRevocationService.class));
+        doAnswer(call -> {
+            TrustedRealmBO realm = call.getArgument(0);
+            top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.RevokeOAuthTokenCommand command = call.getArgument(1);
+            assertEquals("REFRESH_TOKEN_REPLAY", command.getReasonCode());
+            var token = fixture.readToken(realm, command.getTokenDigest()).orElseThrow();
+            var grant = fixture.readAuthorization(realm, token.getAuthorizationPk()).orElseThrow();
+            long version = grant.getVersion(); grant.setVersion(version + 1).setStatus("REVOKED").setRevokedAt(fixture.clock.instant());
+            fixture.authorizationRepository.save(realm, grant, version);
+            return null;
+        }).when(revocations).revoke(any(), any());
+        MvcResult rotation = mvc.perform(request(post("/tenants/1001/oauth2/token")).header("Authorization", basic())
+                .contentType("application/x-www-form-urlencoded").param("grant_type", "refresh_token").param("refresh_token", original))
+                .andExpect(status().isOk()).andReturn();
+        String next = fixture.mapper.readTree(rotation.getResponse().getContentAsString()).path("refresh_token").asText();
+        mvc.perform(request(post("/tenants/1001/oauth2/token")).header("Authorization", basic())
+                .contentType("application/x-www-form-urlencoded").param("grant_type", "refresh_token").param("refresh_token", original))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_grant"));
+        assertEquals("REVOKED", fixture.authorizations.values().iterator().next().getStatus(), "Replay revocation must survive invalid_grant");
+        mvc.perform(request(post("/tenants/1001/oauth2/token")).header("Authorization", basic())
+                .contentType("application/x-www-form-urlencoded").param("grant_type", "refresh_token").param("refresh_token", next))
+                .andExpect(status().isBadRequest());
+        org.mockito.Mockito.reset(revocations);
+    }
+
+    @Test
+    void mandatoryPasswordChangeHasOnlyRestrictedInteractionUntilAnotherSignIn() throws Exception {
+        fixture.mustChangePassword = true;
+        BrowserCookies browser = new BrowserCookies();
+        MvcResult start = mvc.perform(authorize(1001L)).andExpect(status().isSeeOther()).andReturn(); browser.accept(start);
+        MvcResult page = mvc.perform(request(get("/tenants/1001/login")).cookie(browser.cookies())).andExpect(status().isOk()).andReturn(); browser.accept(page);
+        MvcResult restricted = mvc.perform(request(post("/tenants/1001/login")).cookie(browser.cookies()).contentType("application/x-www-form-urlencoded")
+                .param("username", "fixture-user").param("password", "fixture-password").param("_csrf", hidden(page.getResponse().getContentAsString(), "_csrf")))
+                .andExpect(status().isSeeOther()).andReturn(); browser.accept(restricted);
+        assertEquals("/tenants/1001/password-change", restricted.getResponse().getHeader("Location"));
+        assertTrue(fixture.authenticationFacts.isEmpty()); assertTrue(fixture.authorizations.isEmpty()); assertTrue(fixture.tokens.isEmpty());
+        MvcResult form = mvc.perform(request(get("/tenants/1001/password-change")).cookie(browser.cookies())).andExpect(status().isOk()).andReturn(); browser.accept(form);
+        mvc.perform(request(post("/tenants/1001/password-change")).cookie(browser.cookies()).contentType("application/x-www-form-urlencoded")
+                .param("old_password", "fixture-password").param("new_password", "fixture-new-password"))
+                .andExpect(status().isForbidden());
+        MvcResult changed = mvc.perform(request(post("/tenants/1001/password-change")).cookie(browser.cookies()).contentType("application/x-www-form-urlencoded")
+                .param("old_password", "fixture-password").param("new_password", "fixture-new-password")
+                .param("_csrf", hidden(form.getResponse().getContentAsString(), "_csrf")))
+                .andExpect(status().isSeeOther()).andReturn(); browser.accept(changed);
+        assertTrue(fixture.authenticationFacts.isEmpty()); assertTrue(fixture.authorizations.isEmpty()); assertTrue(fixture.tokens.isEmpty());
+        assertTrue(fixture.interactionFacts.values().stream().anyMatch(value -> "PASSWORD_CHANGE".equals(value.getPurpose()) && "CONSUMED".equals(value.getState())));
+        mvc.perform(request(get("/tenants/1001/password-change")).cookie(browser.cookies())).andExpect(status().isBadRequest());
+        assertNull(changed.getRequest().getSession(false));
+    }
+
+    @Test
+    void nativeSsoLogoutRequiresCsrfAndRevokesOnlyCurrentAuthentication() throws Exception {
+        Pending pending = startThroughRealLogin(1001L);
+        token(approve(pending, consentCsrf(pending)), VERIFIER);
+        var active = fixture.authenticationFacts.values().iterator().next();
+        fixture.authenticationFacts.put("tenant:1001:other", active.toBuilder().id(9999L).jtiDigest("9".repeat(64)).browserBindingDigest("8".repeat(64)).build());
+        MvcResult form = mvc.perform(request(get("/tenants/1001/logout")).cookie(pending.cookies())).andExpect(status().isOk()).andReturn(); pending.browser().accept(form);
+        mvc.perform(request(post("/tenants/1001/logout")).cookie(pending.cookies()).contentType("application/x-www-form-urlencoded"))
+                .andExpect(status().isForbidden());
+        MvcResult ended = mvc.perform(request(post("/tenants/1001/logout")).cookie(pending.cookies()).contentType("application/x-www-form-urlencoded")
+                .param("_csrf", hidden(form.getResponse().getContentAsString(), "_csrf")))
+                .andExpect(status().isNoContent()).andReturn();
+        assertEquals("ACTIVE", fixture.authenticationFacts.get("tenant:1001:other").getStatus());
+        assertEquals("REVOKED", fixture.authenticationFacts.entrySet().stream().filter(entry -> !entry.getKey().endsWith(":other")).findFirst().orElseThrow().getValue().getStatus());
+        assertTrue(fixture.authorizations.values().stream().allMatch(value -> "REVOKED".equals(value.getStatus())));
+        assertEquals(1, fixture.identityEvents.size());
+        pending.browser().accept(ended);
+        mvc.perform(request(get("/tenants/1001/logout")).cookie(pending.cookies())).andExpect(status().isUnauthorized());
+        assertNull(ended.getRequest().getSession(false));
+    }
+
+    @Test
+    void discoveryAdvertisesSqlLogoutAndTheSessionEndpointIsRetired() throws Exception {
+        mvc.perform(request(get("/tenants/1001/.well-known/openid-configuration")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.end_session_endpoint").doesNotExist())
+                .andExpect(jsonPath("$.egon_sso_logout_endpoint").value(ORIGIN + "/tenants/1001/logout"));
+        Pending pending = startThroughRealLogin(1001L);
+        MvcResult retired = mvc.perform(request(get("/tenants/1001/connect/logout")).cookie(pending.cookies()))
+                .andExpect(status().isGone()).andReturn();
+        assertTrue(fixture.authenticationFacts.values().stream().allMatch(value -> "ACTIVE".equals(value.getStatus())));
+        assertTrue(fixture.identityEvents.isEmpty());
+        assertNull(retired.getRequest().getSession(false));
     }
 
     @Test
@@ -576,7 +699,7 @@ class OAuthConsentRoundTripTest {
         assertEquals("access_denied", query(denied.getResponse().getHeader("Location"), "error"));
         assertNull(query(denied.getResponse().getHeader("Location"), "code"));
         assertEquals(existing, fixture.consents.get(Fixture.consentKey(realm, 501L, "user-1001")));
-        assertTrue(fixture.authorizations.isEmpty());
+        assertTrue(fixture.authorizations.values().stream().allMatch(value -> "CANCELLED".equals(value.getStatus())));
         assertTrue(fixture.tokens.values().stream().noneMatch(row -> row.getTokenType() == OAuthTokenTypeEnum.CODE));
     }
 
@@ -604,20 +727,20 @@ class OAuthConsentRoundTripTest {
         Pending pending = startThroughRealLogin(1001L);
         Map<String, OAuthAuthorizationPO> original = new LinkedHashMap<>(fixture.authorizations);
         for (String missing : List.of("state", "nonce", "resource")) {
-            MvcResult rejected = mvc.perform(authorize(1001L).session(pending.session()).with(value -> {
+            MvcResult rejected = mvc.perform(authorize(1001L).cookie(pending.cookies()).with(value -> {
                 value.removeParameter(missing); return value;
             })).andReturn();
             assertTrue(rejected.getResponse().getStatus() >= 400 || query(rejected.getResponse().getHeader("Location"), "error") != null,
                     "Missing native transaction field must reject: " + missing);
             assertEquals(original, fixture.authorizations);
         }
-        mvc.perform(authorize(1001L).session(pending.session()).queryParam("client_id", CLIENT))
+        mvc.perform(authorize(1001L).cookie(pending.cookies()).queryParam("client_id", CLIENT))
                 .andExpect(status().isBadRequest());
-        mvc.perform(authorize(1001L).session(pending.session()).queryParam("unrecognized", "x"))
+        mvc.perform(authorize(1001L).cookie(pending.cookies()).queryParam("unrecognized", "x"))
                 .andExpect(status().isBadRequest());
-        mvc.perform(authorize(1001L).session(pending.session()).queryParam("max_age", "86401"))
+        mvc.perform(authorize(1001L).cookie(pending.cookies()).queryParam("max_age", "86401"))
                 .andExpect(status().isBadRequest());
-        MvcResult wrongTarget = mvc.perform(authorize(1001L).session(pending.session()).with(value -> {
+        MvcResult wrongTarget = mvc.perform(authorize(1001L).cookie(pending.cookies()).with(value -> {
             value.setParameter("resource", "https://unregistered.example.test/resource"); return value;
         })).andReturn();
         assertTrue(wrongTarget.getResponse().getStatus() >= 400 || query(wrongTarget.getResponse().getHeader("Location"), "error") != null);
@@ -629,11 +752,11 @@ class OAuthConsentRoundTripTest {
         Pending pending = startThroughRealLogin(1001L);
         fixture.clock.now = fixture.clock.now.plusSeconds(600);
         int initial = fixture.authorizations.size();
-        MvcResult silent = mvc.perform(authorize(1001L).session(pending.session()).queryParam("max_age", "600")
+        MvcResult silent = mvc.perform(authorize(1001L).cookie(pending.cookies()).queryParam("max_age", "600")
                         .queryParam("prompt", "none")).andExpect(status().is3xxRedirection()).andReturn();
         assertEquals("login_required", query(silent.getResponse().getHeader("Location"), "error"));
         assertEquals(initial, fixture.authorizations.size());
-        MvcResult login = mvc.perform(authorize(1001L).session(pending.session()).queryParam("max_age", "600"))
+        MvcResult login = mvc.perform(authorize(1001L).cookie(pending.cookies()).queryParam("max_age", "600"))
                 .andExpect(status().is3xxRedirection()).andReturn();
         assertEquals("/tenants/1001/login", URI.create(login.getResponse().getHeader("Location")).getRawPath());
         assertEquals(initial, fixture.authorizations.size());
@@ -725,12 +848,13 @@ class OAuthConsentRoundTripTest {
     void explicitScopeSelectionDoesNotRegrantUncheckedPreviouslyConsentedScope() throws Exception {
         Pending initial = startThroughRealLogin(1001L);
         approve(initial, consentCsrf(initial));
-        MvcResult redirect = mvc.perform(authorize(1001L).session(initial.session()).with(value -> {
+        MvcResult redirect = mvc.perform(authorize(1001L).cookie(initial.cookies()).with(value -> {
             value.setParameter("scope", "openid orders.read orders.write"); return value;
         })).andExpect(status().is3xxRedirection()).andReturn();
+        initial.browser().accept(redirect);
         String location = redirect.getResponse().getHeader("Location");
         assertEquals("/tenants/1001/consent", URI.create(location).getRawPath());
-        Pending pending = new Pending(1001L, initial.session(), location, query(location, "state"));
+        Pending pending = new Pending(1001L, initial.browser(), location, query(location, "state"));
         MvcResult allowed = mvc.perform(consent(pending).param("_csrf", consentCsrf(pending)).param("scope", "orders.write"))
                 .andExpect(status().is3xxRedirection()).andReturn();
         String code = query(allowed.getResponse().getHeader("Location"), "code");
@@ -742,7 +866,7 @@ class OAuthConsentRoundTripTest {
     }
 
     private String consentCsrf(Pending pending) throws Exception {
-        MvcResult result = mvc.perform(request(get(URI.create(pending.consentLocation()))).session(pending.session()))
+        MvcResult result = mvc.perform(request(get(URI.create(pending.consentLocation()))).cookie(pending.cookies()))
                 .andExpect(status().isOk()).andReturn();
         return hidden(result.getResponse().getContentAsString(), "_csrf");
     }
@@ -756,66 +880,67 @@ class OAuthConsentRoundTripTest {
     }
 
     private Pending startThroughRealLogin(long tenant) throws Exception {
-        MvcResult loginRedirect = mvc.perform(authorize(tenant)).andExpect(status().is3xxRedirection()).andReturn();
-        MockHttpSession session = (MockHttpSession) loginRedirect.getRequest().getSession(false);
-        assertNotNull(session);
-        assertEquals("/tenants/" + tenant + "/login", loginRedirect.getResponse().getHeader("Location"));
-        RequestCache cache = context.getBean("oauthAuthorizationRequestCache", RequestCache.class);
-        var saved = cache.getRequest(loginRedirect.getRequest(), loginRedirect.getResponse());
-        assertNotNull(saved, "Native login entry must retain the authorize request");
-        assertTrue(context.containsBean("tenantLoginController"));
-        MvcResult loginPage = mvc.perform(request(get("/tenants/" + tenant + "/login")).session(session)).andReturn();
-        assertEquals(200, loginPage.getResponse().getStatus(), () -> "Login handler=" + loginPage.getHandler()
-                + "; saved method=" + (saved instanceof org.springframework.security.web.savedrequest.DefaultSavedRequest value
-                        ? value.getMethod() : "unknown"));
-        MvcResult resumed = mvc.perform(request(post("/tenants/" + tenant + "/login")).session(session)
-                        .contentType("application/x-www-form-urlencoded")
-                        .param("username", "fixture-user").param("password", "fixture-password")
-                        .param("_csrf", hidden(loginPage.getResponse().getContentAsString(), "_csrf")))
+        BrowserCookies browser = new BrowserCookies();
+        MvcResult start = mvc.perform(authorize(tenant)).andExpect(status().isSeeOther()).andReturn();
+        browser.accept(start);
+        assertNull(start.getRequest().getSession(false));
+        assertEquals("/tenants/" + tenant + "/login", start.getResponse().getHeader("Location"));
+        MvcResult loginPage = mvc.perform(request(get("/tenants/" + tenant + "/login")).cookie(browser.cookies()))
+                .andExpect(status().isOk()).andReturn();
+        browser.accept(loginPage);
+        MvcResult login = mvc.perform(request(post("/tenants/" + tenant + "/login")).cookie(browser.cookies())
+                .contentType("application/x-www-form-urlencoded").param("username", "fixture-user").param("password", "fixture-password")
+                .param("_csrf", hidden(loginPage.getResponse().getContentAsString(), "_csrf")))
                 .andExpect(status().isSeeOther()).andReturn();
-        assertNotNull(resumed.getResponse().getHeader("Location"));
-        MvcResult consentRedirect = mvc.perform(authorize(tenant).session(session))
-                .andExpect(status().is3xxRedirection()).andReturn();
-        String location = consentRedirect.getResponse().getHeader("Location");
-        TrustedRealmBO realm = fixture.realm(ORIGIN.resolve("/tenants/" + tenant));
-        OAuthAuthorizationBO stored = fixture.readAuthorization(realm,
-                fixture.authorizations.values().iterator().next().getId()).orElseThrow();
-        assertNotNull(stored.getAttributes().getPendingConsent(), "Encrypted pending payload must survive native save/load");
-        assertEquals(query(location, "state"), stored.getAttributes().getPendingConsent().getConsentState());
-        assertEquals(Digests.sha256Hex(session.getId()), stored.getAttributes().getPendingConsent().getSessionBindingDigest(),
-                "Pending state must bind the session used for the consent redirect");
-        assertEquals("/tenants/" + tenant + "/consent", URI.create(location).getRawPath());
-        assertEquals(ORIGIN.getHost(), URI.create(location).isAbsolute() ? URI.create(location).getHost() : ORIGIN.getHost());
-        return new Pending(tenant, session, location, query(location, "state"));
+        browser.accept(login);
+        assertNull(login.getRequest().getSession(false));
+        MvcResult consent = mvc.perform(authorize(tenant).cookie(browser.cookies())).andReturn();
+        String authorizationResponse = consent.getResponse().getContentAsString();
+        assertTrue(consent.getResponse().getStatus() >= 300 && consent.getResponse().getStatus() < 400,
+                () -> "Authorization status=" + consent.getResponse().getStatus() + "; failure=" + fixture.lastAuthorizationFailure
+                        + "; cause=" + (fixture.lastAuthorizationFailure == null ? null : fixture.lastAuthorizationFailure.getCause())
+                        + "; response=" + authorizationResponse);
+        browser.accept(consent);
+        String location = consent.getResponse().getHeader("Location");
+        assertEquals("/tenants/" + tenant + "/consent", URI.create(location).getRawPath(),
+                "Native authorization error=" + query(location, "error") + "; description=" + query(location, "error_description"));
+        assertNull(consent.getRequest().getSession(false));
+        assertFalse(browser.values.keySet().contains("JSESSIONID"));
+        return new Pending(tenant, browser, location, query(location, "state"));
     }
 
     private MockHttpServletRequestBuilder authorize(long tenant) throws Exception {
         String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(
                 MessageDigest.getInstance("SHA-256").digest(VERIFIER.getBytes(StandardCharsets.US_ASCII)));
-        return request(get("/tenants/" + tenant + "/oauth2/authorize"))
+        var builder = request(get("/tenants/" + tenant + "/oauth2/authorize"))
                 .queryParam("response_type", "code").queryParam("client_id", CLIENT)
                 .queryParam("redirect_uri", CALLBACK).queryParam("scope", "openid orders.read")
                 .queryParam("state", CLIENT_STATE).queryParam("nonce", NONCE)
                 .queryParam("resource", RESOURCE.toASCIIString())
                 .queryParam("code_challenge", challenge).queryParam("code_challenge_method", "S256");
+        if (fixture.browserBound) { builder.queryParam("browser_binding", "b".repeat(64)); }
+        return builder;
     }
 
     private MockHttpServletRequestBuilder consent(Pending pending) {
         return request(post("/tenants/" + pending.tenant() + "/oauth2/authorize"))
-                .session(pending.session()).contentType("application/x-www-form-urlencoded")
+                .cookie(pending.cookies()).contentType("application/x-www-form-urlencoded")
                 .param("client_id", CLIENT).param("state", pending.state());
     }
 
     private JsonNode token(String code, String verifier) throws Exception {
         MvcResult result = mvc.perform(tokenRequest(code, verifier))
                 .andExpect(status().isOk()).andReturn();
+        assertNull(result.getRequest().getSession(false));
         return fixture.mapper.readTree(result.getResponse().getContentAsString());
     }
 
     private MockHttpServletRequestBuilder tokenRequest(String code, String verifier) {
-        return request(post("/tenants/1001/oauth2/token")).header("Authorization", basic())
+        var builder = request(post("/tenants/1001/oauth2/token")).header("Authorization", basic())
                 .contentType("application/x-www-form-urlencoded").param("grant_type", "authorization_code")
                 .param("code", code).param("redirect_uri", CALLBACK).param("code_verifier", verifier);
+        if (fixture.browserBound) { builder.param("browser_binding", "b".repeat(64)).param("resource", RESOURCE.toASCIIString()); }
+        return builder;
     }
 
     private void tokenRejected(String code, String verifier) throws Exception {
@@ -864,7 +989,22 @@ class OAuthConsentRoundTripTest {
         return null;
     }
 
-    private record Pending(long tenant, MockHttpSession session, String consentLocation, String state) { }
+    private record Pending(long tenant, BrowserCookies browser, String consentLocation, String state) {
+        jakarta.servlet.http.Cookie[] cookies() { return browser.cookies(); }
+    }
+
+    static final class BrowserCookies {
+        final Map<String, jakarta.servlet.http.Cookie> values = new LinkedHashMap<>();
+        jakarta.servlet.http.Cookie[] cookies() { return values.values().toArray(jakarta.servlet.http.Cookie[]::new); }
+        void accept(MvcResult result) {
+            for (String header : result.getResponse().getHeaders("Set-Cookie")) {
+                for (var cookie : java.net.HttpCookie.parse(header)) {
+                    if (cookie.getMaxAge() == 0) { values.remove(cookie.getName()); }
+                    else { values.put(cookie.getName(), new jakarta.servlet.http.Cookie(cookie.getName(), cookie.getValue())); }
+                }
+            }
+        }
+    }
 
     @Configuration(proxyBeanMethods = false)
     @EnableWebMvc
@@ -873,14 +1013,21 @@ class OAuthConsentRoundTripTest {
     @Import({AuthorizationServerConfiguration.class, ValidationAutoConfiguration.class,
             TenantRegisteredClientRepository.class, TenantAuthorizationServiceImpl.class,
             TenantConsentServiceImpl.class, OAuthTokenIssueServiceImpl.class, TenantJwkSourceComponent.class,
-            OAuthKeyCipherComponent.class})
+            OAuthKeyCipherComponent.class,
+            top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthAuthenticationJwtService.class,
+            top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class,
+            top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthBrowserAuthenticationFilter.class,
+            top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthSsoLifecycleService.class})
     @ComponentScan(basePackages = "top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller",
             useDefaultFilters = false, includeFilters = @ComponentScan.Filter(type = FilterType.REGEX,
-                    pattern = "top[.]egon[.]cola[.]platform[.]tianquan[.]shoubing[.]admin[.]oauth[.]controller[.](TenantLoginController|OAuthConsentController)"))
+                    pattern = "top[.]egon[.]cola[.]platform[.]tianquan[.]shoubing[.]admin[.]oauth[.]controller[.](TenantLoginController|OAuthConsentController|OAuthPasswordChangeController|OAuthLogoutController)"))
     @ComponentScan(basePackageClasses = SasConsentConverter.class, useDefaultFilters = false,
             includeFilters = @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE,
                     classes = {SasConsentConverter.class, SasAuthorizationConverter.class, SasRegisteredClientConverter.class}))
     static class NativeConfiguration {
+        @Bean static org.springframework.boot.convert.ApplicationConversionService conversionService() {
+            return new org.springframework.boot.convert.ApplicationConversionService();
+        }
         @Bean("fixture") Fixture fixture() throws Exception { return new Fixture(); }
         @Bean("jacksonObjectMapper") ObjectMapper mapper(Fixture f) { return f.mapper; }
         @Bean("tenantIssuerService") TenantIssuerService issuers(Fixture f) { return f.issuers; }
@@ -904,9 +1051,15 @@ class OAuthConsentRoundTripTest {
         @Bean("transactionManager") PlatformTransactionManager transactions(Fixture f) { return new FixtureTransactionManager(f); }
         @Bean("tenantLoginAuthenticationFilter") TenantLoginAuthenticationFilter login(
                 Fixture f, @Qualifier("oauthAuthorizationRequestCache") RequestCache cache,
-                @Qualifier("oauthLoginSessionAuthenticationStrategy") SessionAuthenticationStrategy strategy) {
-            return new TenantLoginAuthenticationFilter(f.identities, f.memberships, f.issuers, cache, f.clock, strategy);
+                @Qualifier("oauthBrowserInteractionComponent") top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent interactions) {
+            return new TenantLoginAuthenticationFilter(f.identities, f.memberships, f.issuers, cache, f.clock, interactions);
         }
+        @Bean("oAuthAuthenticationRepository") top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository authentications(Fixture f) { return f.authenticationRepository; }
+        @Bean("oAuthInteractionRepository") top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository interactions(Fixture f) { return f.interactionRepository; }
+        @Bean("oAuthSecurityStateRepository") top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository states(Fixture f) { return f.securityStateRepository; }
+        @Bean("identityOutboxPublisher") top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEventPort identityEvents(Fixture f) { return f.identityEvents::add; }
+        @Bean top.egon.cola.platform.tianquan.shoubing.admin.identity.dao.IdentityUserDAO identityUserDAO() { return mock(top.egon.cola.platform.tianquan.shoubing.admin.identity.dao.IdentityUserDAO.class); }
+        @Bean("identityUserRepository") top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository users(Fixture f) { return f.userRepository; }
         @Bean("fixtureFallbackSecurity") @Order(10)
         SecurityFilterChain fallback(HttpSecurity http) throws Exception {
             return http.authorizeHttpRequests(a -> a.anyRequest().permitAll()).csrf(c -> c.disable()).build();
@@ -937,11 +1090,19 @@ class OAuthConsentRoundTripTest {
         final ResourceServerStore resources = mock(ResourceServerStore.class);
         final TenantMembershipPort memberships = mock(TenantMembershipPort.class);
         final IdentityFacade identities = mock(IdentityFacade.class);
+        final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository authenticationRepository = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class);
+        final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository interactionRepository = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository.class);
+        final top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository securityStateRepository = mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class);
+        final top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository userRepository = mock(top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository.class);
+        final Map<String, top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO> authenticationFacts = new LinkedHashMap<>();
+        final Map<String, top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO> interactionFacts = new LinkedHashMap<>();
         final Map<String, OAuthAuthorizationPO> authorizations = new LinkedHashMap<>();
         final Map<String, OAuthTokenPO> tokens = new LinkedHashMap<>();
         final Map<String, OAuthConsentBO> consents = new LinkedHashMap<>();
         final List<OutboxMessage> events = new ArrayList<>();
         final List<OAuthAuditBO> audits = new ArrayList<>();
+        final List<top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEvent> identityEvents = new ArrayList<>();
+        boolean mustChangePassword;
         final OAuthAuthorizationConverter authorizationConverter = Mappers.getMapper(OAuthAuthorizationConverter.class);
         final OAuthTokenConverter tokenConverter = Mappers.getMapper(OAuthTokenConverter.class);
         final AtomicLong ids = new AtomicLong(2000L);
@@ -949,11 +1110,13 @@ class OAuthConsentRoundTripTest {
         final Path keyFile;
         final OAuthPayloadCipherComponent cipher;
         final RSAKey key;
+        org.springframework.security.core.AuthenticationException lastAuthorizationFailure;
         boolean failCodeSave;
         boolean failEnqueue;
         boolean failConsentSave;
         boolean failSigning;
         boolean publicClient;
+        boolean browserBound;
         boolean failTokenLookup;
         List<String> userGrantScopes = List.of("orders.read", "orders.write");
         long grantResourceVersion;
@@ -978,8 +1141,9 @@ class OAuthConsentRoundTripTest {
         }
 
         void reset() {
-            authorizations.clear(); tokens.clear(); consents.clear(); events.clear(); audits.clear();
-            failCodeSave = false; failEnqueue = false; failConsentSave = false; failSigning = false; publicClient = false;
+            authorizations.clear(); tokens.clear(); consents.clear(); events.clear(); audits.clear(); authenticationFacts.clear(); interactionFacts.clear(); identityEvents.clear();
+            mustChangePassword = false;
+            failCodeSave = false; failEnqueue = false; failConsentSave = false; failSigning = false; publicClient = false; browserBound = false;
             failTokenLookup = false;
             userGrantScopes = List.of("orders.read", "orders.write"); grantResourceVersion = 0L;
             userGrantVersion = 0L; userGrantStatus = ClientResourceGrant.Status.ACTIVE;
@@ -1003,12 +1167,44 @@ class OAuthConsentRoundTripTest {
                     .status(OAuthClient.Status.ACTIVE).secretHash(SECRET_HASH).credentialVersion(0L)
                     .redirectUris(List.of(CALLBACK)).resourceUris(List.of(RESOURCE.toASCIIString()))
                     .allowedScopes(List.of("openid", "orders.read", "orders.write"))
-                    .accessTtlSeconds(300).refreshTtlSeconds(3600).build();
+                    .accessTtlSeconds(300).refreshTtlSeconds(3600).browserBound(browserBound).build();
         }
         private static final String SECRET_HASH = new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder(12)
                 .encode("fixture-secret");
 
         void configurePorts() {
+            doAnswer(i -> { mustChangePassword = false; return null; }).when(identities).changePassword(anyString(), any(char[].class), any(char[].class), any());
+            when(authorizationRepository.findByAuthentication(any(), anyString(), anyLong(), anyInt())).thenAnswer(i -> authorizations.values().stream()
+                    .filter(value -> Objects.equals(value.getAuthenticationJtiDigest(), i.getArgument(1)) && value.getId() > (long) i.getArgument(2)
+                            && Set.of("ACTIVE", "PENDING_CONSENT").contains(value.getStatus())).sorted(Comparator.comparing(OAuthAuthorizationPO::getId))
+                    .limit((int) i.getArgument(3)).flatMap(value -> readAuthorization(i.getArgument(0), value.getId()).stream()).toList());
+            when(interactionRepository.findByInteractionId(any(), anyString())).thenAnswer(i -> Optional.ofNullable(interactionFacts.get(key(i.getArgument(0), i.getArgument(1)))).map(value -> value.toBuilder().build()));
+            when(interactionRepository.findByInteractionIdForUpdate(any(), anyString())).thenAnswer(i -> interactionRepository.findByInteractionId(i.getArgument(0), i.getArgument(1)));
+            when(interactionRepository.save(any(), any(), anyLong())).thenAnswer(i -> {
+                top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO value = i.getArgument(1);
+                validate(value);
+                if (value.getId() == null) { value.setId(ids.incrementAndGet()); }
+                interactionFacts.put(key(i.getArgument(0), value.getInteractionId()), value.toBuilder().build());
+                return value.toBuilder().build();
+            });
+            when(authenticationRepository.findByJtiDigest(any(), anyString())).thenAnswer(i -> Optional.ofNullable(authenticationFacts.get(key(i.getArgument(0), i.getArgument(1)))).map(value -> value.toBuilder().build()));
+            when(authenticationRepository.findByJtiDigestForUpdate(any(), anyString())).thenAnswer(i -> authenticationRepository.findByJtiDigest(i.getArgument(0), i.getArgument(1)));
+            when(authenticationRepository.save(any(), any(), anyLong())).thenAnswer(i -> {
+                top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO value = i.getArgument(1);
+                validate(value);
+                if (value.getId() == null) { value.setId(ids.incrementAndGet()); }
+                authenticationFacts.put(key(i.getArgument(0), value.getJtiDigest()), value.toBuilder().build());
+                return value.toBuilder().build();
+            });
+            when(userRepository.findByIdentitySub(anyString())).thenAnswer(i -> Optional.of(new top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUser(
+                    i.getArgument(0), "fixture-user", "fixture-user", "Fixture user", top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.ACTIVE, 0, null, null, 0L)));
+            when(securityStateRepository.findByTarget(any(), any(), anyString())).thenAnswer(i -> Optional.of(top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO.builder()
+                    .targetType(i.getArgument(1)).targetKey(i.getArgument(2)).generation(0L).enabled(true).revision(0L).reasonCode("TEST").build()));
+            when(signingKeyRepository.findByKid(any(), anyString())).thenAnswer(i -> signingKeyRepository.findByStatuses(i.getArgument(0), Set.of(OAuthKeyStatusEnum.ACTIVE), 0L, 8).stream().filter(value -> value.getKid().equals(i.getArgument(1))).findFirst());
+            when(authorizationRepository.findByInteractionId(any(), anyString())).thenAnswer(i -> authorizations.values().stream()
+                    .filter(value -> Objects.equals(value.getInteractionId(), i.getArgument(1)))
+                    .findFirst().flatMap(value -> readAuthorization(i.getArgument(0), value.getId())));
+
             when(issuers.resolveExactIssuer(any(URI.class))).thenAnswer(i -> realm(i.getArgument(0)));
             when(issuers.resolveCurrentIssuer()).thenAnswer(i -> realm(URI.create(
                     AuthorizationServerContextHolder.getContext().getIssuer())));
@@ -1037,9 +1233,9 @@ class OAuthConsentRoundTripTest {
             when(memberships.resolve(anyString(), anyString())).thenAnswer(i -> new TenantMembershipPort.TenantMembership(
                     i.getArgument(0), i.getArgument(1), "Fixture tenant", TenantMembershipPort.MembershipStatus.ACTIVE));
             when(identities.authenticate(anyString(), any(char[].class), anyString(), any(Instant.class))).thenAnswer(i ->
-                    new AuthenticatedIdentity("user-" + issuers.resolveCurrentIssuer().getBusinessTenantId(), "fixture-user", "Fixture User", false));
+                    new AuthenticatedIdentity("user-" + issuers.resolveCurrentIssuer().getBusinessTenantId(), "fixture-user", "Fixture User", mustChangePassword));
             when(identities.authenticateCurrent(anyString(), any(char[].class), any(Instant.class))).thenAnswer(i ->
-                    new AuthenticatedIdentity(i.getArgument(0), "fixture-user", "Fixture User", false));
+                    new AuthenticatedIdentity(i.getArgument(0), "fixture-user", "Fixture User", mustChangePassword));
             ResourceServer resource = new ResourceServer("orders", RESOURCE, "orders", "orders", "test", "manager-client",
                     "orders", "orders:enter", Duration.ofSeconds(300), ResourceServerStatus.ACTIVE, 0L);
             when(resources.findByUri(RESOURCE)).thenReturn(Optional.of(resource));
@@ -1144,14 +1340,19 @@ class OAuthConsentRoundTripTest {
         @Override protected void doBegin(Object transaction, org.springframework.transaction.TransactionDefinition definition) {
             FixtureTransaction state = (FixtureTransaction) transaction; state.active = true;
             state.authorizations = new LinkedHashMap<>(fixture.authorizations); state.tokens = new LinkedHashMap<>(fixture.tokens);
-            state.consents = new LinkedHashMap<>(fixture.consents); state.auditCount = fixture.audits.size(); state.eventCount = fixture.events.size();
+            state.consents = new LinkedHashMap<>(fixture.consents);
+            state.authenticationFacts = new LinkedHashMap<>(fixture.authenticationFacts); state.interactionFacts = new LinkedHashMap<>(fixture.interactionFacts);
+            state.auditCount = fixture.audits.size(); state.eventCount = fixture.events.size(); state.identityEventCount = fixture.identityEvents.size();
             current.set(state);
         }
         @Override protected void doCommit(DefaultTransactionStatus status) { }
         @Override protected void doRollback(DefaultTransactionStatus status) {
             FixtureTransaction state = (FixtureTransaction) status.getTransaction();
             fixture.authorizations.clear(); fixture.authorizations.putAll(state.authorizations);
+            fixture.authenticationFacts.clear(); fixture.authenticationFacts.putAll(state.authenticationFacts);
+            fixture.interactionFacts.clear(); fixture.interactionFacts.putAll(state.interactionFacts);
             fixture.tokens.clear(); fixture.tokens.putAll(state.tokens); fixture.consents.clear(); fixture.consents.putAll(state.consents);
+            fixture.identityEvents.subList(state.identityEventCount, fixture.identityEvents.size()).clear();
             fixture.audits.subList(state.auditCount, fixture.audits.size()).clear(); fixture.events.subList(state.eventCount, fixture.events.size()).clear();
         }
         @Override protected void doSetRollbackOnly(DefaultTransactionStatus status) { ((FixtureTransaction) status.getTransaction()).rollbackOnly = true; }
@@ -1159,8 +1360,10 @@ class OAuthConsentRoundTripTest {
     }
 
     static final class FixtureTransaction implements SmartTransactionObject {
-        boolean active; boolean rollbackOnly; int auditCount; int eventCount;
+        boolean active; boolean rollbackOnly; int auditCount; int eventCount; int identityEventCount;
         Map<String, OAuthAuthorizationPO> authorizations; Map<String, OAuthTokenPO> tokens; Map<String, OAuthConsentBO> consents;
+        Map<String, top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO> authenticationFacts;
+        Map<String, top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO> interactionFacts;
         @Override public boolean isRollbackOnly() { return rollbackOnly; }
         @Override public void flush() { }
     }

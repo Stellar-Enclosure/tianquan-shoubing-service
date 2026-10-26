@@ -384,6 +384,14 @@ public class IdpStarterProperties {
      *                               setting is missing or the Resource URI is invalid
      */
     public void validate() {
+        validateJwtVerification();
+        required(resourceServerId, "resourceServerId");
+        resource(resourceUri, "resourceUri");
+        required(platformAudience, "platformAudience");
+    }
+
+    /** Validates local signature verification independently of any authority transport or receiver resource. */
+    public void validateJwtVerification() {
         if (clockSkew == null || clockSkew.isNegative()
                 || clockSkew.compareTo(Duration.ofSeconds(60)) > 0) {
             throw invalid("clock-skew must be between 0 and 60 seconds");
@@ -400,14 +408,8 @@ public class IdpStarterProperties {
                 required(key, "trusted-issuers map key");
                 Objects.requireNonNull(value, "trusted issuer entry").validate(key);
             });
-            revocation.validate();
             jwksCache.validate();
         }
-        required(resourceServerId, "resourceServerId");
-        resource(resourceUri, "resourceUri");
-        required(platformAudience, "platformAudience");
-        required(resourceStateKeyPrefix, "resourceStateKeyPrefix");
-        required(oauthClientStateKeyPrefix, "oauthClientStateKeyPrefix");
     }
 
     /**

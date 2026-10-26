@@ -206,6 +206,8 @@ class TenantIssuerIsolationTest {
                 .apply(springSecurity())
                 .build();
         reset(requestIssuerService, requestClientRepository, requestAuthorizationService, requestConsentService);
+        when(requestIssuerService.resolveCurrentIssuer()).thenAnswer(invocation -> requestIssuerService.resolveExactIssuer(
+                URI.create(AuthorizationServerContextHolder.getContext().getIssuer())));
         when(requestIssuerService.resolveExactIssuer(any(URI.class))).thenAnswer(invocation -> {
             URI issuer = invocation.getArgument(0);
             return switch (issuer.getRawPath()) {
@@ -244,8 +246,8 @@ class TenantIssuerIsolationTest {
         assertEquals(PUBLIC_ORIGIN_PLACEHOLDER, localOrigin);
         assertEquals(PLATFORM_MANAGEMENT_TENANT_PLACEHOLDER, baseManagementTenant);
         assertEquals(PLATFORM_MANAGEMENT_TENANT_PLACEHOLDER, localManagementTenant);
-        assertEquals(REVOCATION_EPOCH_PLACEHOLDER, baseEpoch);
-        assertEquals(REVOCATION_EPOCH_PLACEHOLDER, localEpoch);
+        assertNull(baseEpoch);
+        assertNull(localEpoch);
         assertTrue(authorizationServerSettings.isMultipleIssuersAllowed());
         assertNull(authorizationServerSettings.getIssuer());
     }
@@ -331,7 +333,7 @@ class TenantIssuerIsolationTest {
     }
 
     @Test
-    void tenantLoginSubmitRemainsInsideTheIssuerSessionCsrfChain() throws Exception {
+    void tenantLoginSubmitRemainsInsideTheIssuerCsrfChain() throws Exception {
         mockMvc.perform(tenantRequest(post("/tenants/1001/login")
                         .contentType("application/x-www-form-urlencoded")
                         .param("username", "alice")
@@ -472,7 +474,7 @@ class TenantIssuerIsolationTest {
                 OBJECT_MAPPER,
                 Clock.fixed(NOW, ZoneOffset.UTC),
                 mock(OAuthSecurityProjectionComponent.class),
-                mock(OAuthTokenIssueService.class));
+                mock(OAuthTokenIssueService.class), mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class));
         OAuth2Authorization tenantOneAuthorization = withIssuer("https://idp.example.test/tenants/1001",
                 () -> authorizationService.findByToken("issuer-bound-token", OAuth2TokenType.ACCESS_TOKEN));
         OAuth2Authorization tenantTwoAuthorization = withIssuer("https://idp.example.test/tenants/1002",
@@ -906,6 +908,28 @@ class TenantIssuerIsolationTest {
     @EnableConfigurationProperties(SpringDocConfigProperties.class)
     @Import({SpringDocConfiguration.class, SpringDocWebMvcConfiguration.class})
     static class TestWebConfiguration {
+        @Bean("oauthBrowserInteractionComponent")
+        top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent interactions() {
+            var value = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class);
+            when(value.loadDeferredToken(any(), any())).thenAnswer(i -> new org.springframework.security.web.csrf.DeferredCsrfToken() {
+                @Override public org.springframework.security.web.csrf.CsrfToken get() { return new org.springframework.security.web.csrf.DefaultCsrfToken("X-CSRF-TOKEN", "_csrf", "fixture-csrf"); }
+                @Override public boolean isGenerated() { return false; }
+            });
+            return value;
+        }
+        @Bean("oauthBrowserAuthenticationFilter")
+        top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthBrowserAuthenticationFilter browserFilter() throws Exception {
+            var filter = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthBrowserAuthenticationFilter.class);
+            org.mockito.Mockito.doAnswer(i -> { ((jakarta.servlet.FilterChain) i.getArgument(2)).doFilter(i.getArgument(0), i.getArgument(1)); return null; })
+                    .when(filter).doFilter(any(), any(), any()); return filter;
+        }
+        @Bean("tenantLoginAuthenticationFilter")
+        top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.TenantLoginAuthenticationFilter loginFilter() throws Exception {
+            var filter = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.TenantLoginAuthenticationFilter.class);
+            org.mockito.Mockito.doAnswer(i -> { ((jakarta.servlet.FilterChain) i.getArgument(2)).doFilter(i.getArgument(0), i.getArgument(1)); return null; })
+                    .when(filter).doFilter(any(), any(), any()); return filter;
+        }
+
 
         @Bean("jacksonObjectMapper")
         ObjectMapper objectMapper() {

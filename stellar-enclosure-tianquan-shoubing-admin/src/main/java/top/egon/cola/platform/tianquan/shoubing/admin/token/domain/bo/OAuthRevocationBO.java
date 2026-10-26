@@ -44,7 +44,6 @@ public class OAuthRevocationBO {
     private Instant expiresAt;
     @Min(0)
     private long revision;
-    @NotBlank
-    @Size(max = 16)
-    private String projectionStatus;
+
+    private Instant retainUntil;
 }
