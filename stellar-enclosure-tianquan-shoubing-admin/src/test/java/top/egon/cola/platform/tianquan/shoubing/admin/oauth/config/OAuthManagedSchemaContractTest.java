@@ -67,7 +67,7 @@ class OAuthManagedSchemaContractTest {
             "oauth_security_state",
             "oauth_revocation",
             "oauth_audit",
-            "oauth_resource", "oauth_authentication", "oauth_interaction", "oauth_audit_inbox", "oauth_audit_receipt", "oauth_audit_dead_letter"
+            "oauth_resource", "oauth_device_session", "oauth_authentication", "oauth_interaction", "oauth_audit_inbox", "oauth_audit_receipt", "oauth_audit_dead_letter"
     );
     private static final List<String> LEGACY_PUBLIC_TABLES = List.of(
             "identity_user", "identity_user_credential", "identity_tenant",
@@ -100,7 +100,7 @@ class OAuthManagedSchemaContractTest {
         JsonNode manifest = objectMapper.readTree(requiredResource(MANIFEST_RESOURCE));
 
         assertEquals("tianquan-oauth", manifest.path("family").asText());
-        assertEquals(3, manifest.path("scripts").size());
+        assertEquals(4, manifest.path("scripts").size());
         JsonNode script = manifest.path("scripts").get(0);
         assertEquals("20261008_001", script.path("version").asText());
         assertEquals(SQL_RESOURCE, script.path("path").asText());
@@ -115,7 +115,12 @@ class OAuthManagedSchemaContractTest {
         assertEquals("db/egon-mp/V20261023_001__stateless_oauth_state.sql", stateless.path("path").asText());
         byte[] statelessBytes = requiredResource(stateless.path("path").asText());
         assertEquals(sha256(statelessBytes), stateless.path("sha256").asText());
-        String sql = new String(sqlBytes, StandardCharsets.UTF_8) + new String(statelessBytes, StandardCharsets.UTF_8);
+        JsonNode devices = manifest.path("scripts").get(3);
+        assertEquals("20261027_001", devices.path("version").asText());
+        byte[] deviceBytes = requiredResource(devices.path("path").asText());
+        assertEquals(sha256(deviceBytes), devices.path("sha256").asText());
+        String sql = new String(sqlBytes, StandardCharsets.UTF_8) + new String(statelessBytes, StandardCharsets.UTF_8)
+                + new String(deviceBytes, StandardCharsets.UTF_8);
         Matcher tableMatcher = Pattern.compile(
                 "(?im)^\\s*CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([a-z0-9_]+)\\b"
         ).matcher(sql);

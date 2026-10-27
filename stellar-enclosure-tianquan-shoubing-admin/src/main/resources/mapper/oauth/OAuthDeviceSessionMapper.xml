@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthDeviceSessionMapper">
+    <resultMap id="Session" type="top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthDeviceSessionPO">
+        <result property="id" column="id"/>
+        <result property="tenantId" column="tenant_id"/>
+        <result property="version" column="version"/>
+        <result property="clientPk" column="client_pk"/>
+        <result property="subject" column="subject"/>
+        <result property="authenticationJtiDigest" column="authentication_jti_digest"/>
+        <result property="authenticatedAt" column="authenticated_at"/>
+        <result property="expiresAt" column="expires_at"/>
+        <result property="userAgent" column="user_agent"/>
+        <result property="ipAddress" column="ip_address"/>
+        <result property="status" column="status"/>
+        <result property="revokedAt" column="revoked_at"/>
+        <result property="reasonCode" column="reason_code"/>
+    </resultMap>
+    <select id="selectSession" resultMap="Session">
+        SELECT * FROM tianquan_oauth.oauth_device_session
+        WHERE tenant_id = #{tenantId} AND id = #{id} AND deleted_at IS NULL
+    </select>
+    <select id="selectByAuthentication" resultMap="Session">
+        SELECT * FROM tianquan_oauth.oauth_device_session
+        WHERE tenant_id = #{tenantId} AND authentication_jti_digest = #{digest}
+          AND client_pk = #{clientPk} AND deleted_at IS NULL
+    </select>
+    <select id="selectLiveBySubject" resultMap="Session">
+        SELECT s.* FROM tianquan_oauth.oauth_device_session s
+        JOIN tianquan_oauth.oauth_authentication a ON a.tenant_id = s.tenant_id AND a.jti_digest = s.authentication_jti_digest
+        JOIN tianquan_oauth.oauth_security_state u ON u.tenant_id = s.tenant_id AND u.target_type = 'SUBJECT' AND u.target_key = s.subject
+        JOIN tianquan_oauth.oauth_security_state r ON r.tenant_id = s.tenant_id AND r.target_type = 'REALM' AND r.target_key = 'self'
+        WHERE s.tenant_id = #{tenantId} AND s.subject = #{subject} AND s.status = 'ACTIVE' AND s.expires_at &gt; #{now}
+          AND s.deleted_at IS NULL AND a.deleted_at IS NULL AND a.status &lt;&gt; 'REVOKED'
+          AND u.deleted_at IS NULL AND r.deleted_at IS NULL AND u.enabled AND r.enabled
+          AND a.subject_generation = u.generation AND a.realm_generation = r.generation
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization g
+                      WHERE g.tenant_id = s.tenant_id AND g.device_session_id = s.id AND g.status = 'ACTIVE'
+                        AND g.absolute_expires_at &gt; #{now} AND g.deleted_at IS NULL)
+        ORDER BY s.authenticated_at, s.id
+    </select>
+    <update id="updateExpectedVersion">
+        UPDATE tianquan_oauth.oauth_device_session
+        SET status = #{po.status}, expires_at = #{po.expiresAt}, revoked_at = #{po.revokedAt}, reason_code = #{po.reasonCode},
+            version = #{po.version}, update_user_id = #{po.updateUserId}, update_time = #{po.updateTime}
+        WHERE tenant_id = #{tenantId} AND id = #{po.id} AND version = #{expectedVersion} AND deleted_at IS NULL
+    </update>
+    <update id="deleteRetained">
+        UPDATE tianquan_oauth.oauth_device_session
+        SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,
+            update_time = #{now}, update_user_id = #{actor}
+        WHERE tenant_id = #{tenantId} AND id IN (
+            SELECT s.id FROM tianquan_oauth.oauth_device_session s
+            JOIN tianquan_oauth.oauth_authentication a ON a.tenant_id = s.tenant_id AND a.jti_digest = s.authentication_jti_digest
+            WHERE s.tenant_id = #{tenantId} AND s.deleted_at IS NULL
+              AND s.expires_at &lt;= #{now} - INTERVAL '24 hours' AND a.expires_at &lt;= #{now} - INTERVAL '24 hours'
+              AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization g
+                              WHERE g.tenant_id = s.tenant_id AND g.device_session_id = s.id AND g.deleted_at IS NULL)
+            ORDER BY s.id LIMIT #{limit} FOR UPDATE OF s SKIP LOCKED
+        )
+    </update>
+</mapper>

@@ -69,6 +69,15 @@ public class OAuthAuthorizationRepositoryImpl extends EgonColaRepository<OAuthAu
 
     @Override
     @Transactional(readOnly = true)
+    public List<OAuthAuthorizationBO> findByDeviceSession(TrustedRealmBO realm, long sessionId, long afterId, int limit) {
+        requireLimit(limit);
+        if (sessionId <= 0 || afterId < 0) { throw new IllegalArgumentException("OAUTH_DEVICE_SESSION_QUERY_INVALID"); }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.selectByDeviceSession(tenant, sessionId, afterId, limit)
+                .stream().map(value -> toTarget(realm, value)).toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<OAuthAuthorizationBO> findByInteractionId(TrustedRealmBO realm, String interactionId) {
         if (interactionId == null || !interactionId.matches("[A-Za-z0-9_-]{43}")) {
             throw new IllegalArgumentException("OAUTH_INTERACTION_ID_INVALID");
@@ -268,7 +277,8 @@ public class OAuthAuthorizationRepositoryImpl extends EgonColaRepository<OAuthAu
                 && Objects.equals(current.getResourceUri(), requested.getResourceUri())
                 && Objects.equals(current.getAuthenticationJtiDigest(), requested.getAuthenticationJtiDigest())
                 && Objects.equals(current.getClientBrowserBindingDigest(), requested.getClientBrowserBindingDigest())
-                && Objects.equals(current.getInteractionId(), requested.getInteractionId());
+                && Objects.equals(current.getInteractionId(), requested.getInteractionId())
+                && (current.getDeviceSessionId() == null || Objects.equals(current.getDeviceSessionId(), requested.getDeviceSessionId()));
         if (!matches) {
             throw new IllegalArgumentException("OAUTH_AUTHORIZATION_IDENTITY_IMMUTABLE");
         }

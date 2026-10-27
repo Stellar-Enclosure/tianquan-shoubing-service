@@ -24,6 +24,7 @@ import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.*
 @PermissionDefinition(code = IdentityPermissionCodes.SIGNING_KEY_RETIRE, meaning = "Signing key retire", labelPage = "identity.permissions", labelKey = "permission.signing.key.retire")
 @PermissionDefinition(code = IdentityPermissionCodes.TENANT_MANAGE, meaning = "Tenant manage", labelPage = "identity.permissions", labelKey = "permission.tenant.manage")
 @PermissionDefinition(code = IdentityPermissionCodes.TENANT_READ, meaning = "Tenant read", labelPage = "identity.permissions", labelKey = "permission.tenant.read")
+@PermissionDefinition(code = IdentityPermissionCodes.IDENTITY_SELF_SESSION_REVOKE, meaning = "Revoke own device session", labelPage = "identity.permissions", labelKey = "permission.identity.self.session.revoke")
 public final class IdentityPermissionCodes {
     public static final String AUDIT_READ = "tianquan-shoubing:audit:read";
     public static final String BOOTSTRAP_READ = "tianquan-shoubing:bootstrap:read";
@@ -32,6 +33,7 @@ public final class IdentityPermissionCodes {
     public static final String IDENTITY_USER_READ = "tianquan-shoubing:identity-user:read";
     public static final String IDENTITY_USER_REVOKE_ALL = "tianquan-shoubing:identity-user:revoke-all";
     public static final String IDENTITY_USER_UPDATE = "tianquan-shoubing:identity-user:update";
+    public static final String IDENTITY_SELF_SESSION_REVOKE = "tianquan-shoubing:identity:self:session-revoke";
     public static final String IDENTITY_SELF_READ = "tianquan-shoubing:identity:self:read";
     public static final String OAUTH_CLIENT_CREATE = "tianquan-shoubing:oauth-client:create";
     public static final String OAUTH_CLIENT_READ = "tianquan-shoubing:oauth-client:read";

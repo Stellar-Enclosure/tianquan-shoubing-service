@@ -149,6 +149,8 @@ public class OAuthAuthorizationPO extends EgonModel<OAuthAuthorizationPO> {
     private String interactionId;
 
     @com.baomidou.mybatisplus.annotation.TableField(value = "refresh_generation")
+    private Long deviceSessionId;
+
     private long refreshGeneration;
 
     @com.baomidou.mybatisplus.annotation.TableField(value = "retain_until")

@@ -254,6 +254,7 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
                 .authenticationJtiDigest(persisted == null ? null : persisted.getAuthenticationJtiDigest())
                 .clientBrowserBindingDigest(persisted == null ? null : persisted.getClientBrowserBindingDigest())
                 .interactionId(persisted == null ? null : persisted.getInteractionId())
+                .deviceSessionId(persisted == null ? null : persisted.getDeviceSessionId())
                 .refreshGeneration(persisted == null ? 0 : persisted.getRefreshGeneration())
                 .retainUntil(persisted == null ? null : persisted.getRetainUntil())
                 .build();

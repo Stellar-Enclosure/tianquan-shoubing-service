@@ -79,7 +79,8 @@ class OAuthRetentionServiceTest {
         when(outboxStore.countBacklog()).thenReturn(0L);
         service = new OAuthRetentionServiceImpl(auditRepository, revocationRepository, tokenRepository,
                 authorizationRepository, realmRepository, managementRealmResolver, outboxStore, interactions, authentications, receipts, deadLetters, inboxes, clock,
-                java.time.Duration.ofSeconds(30), transactionManager);
+                java.time.Duration.ofSeconds(30), transactionManager,
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthDeviceSessionRepository.class));
     }
 
     @Test

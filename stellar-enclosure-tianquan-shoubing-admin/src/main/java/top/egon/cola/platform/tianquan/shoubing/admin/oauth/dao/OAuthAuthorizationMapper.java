@@ -22,6 +22,9 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthAutho
 @Validated
 public interface OAuthAuthorizationMapper extends EgonColaMapper<OAuthAuthorizationPO> {
 
+    List<OAuthAuthorizationPO> selectByDeviceSession(@Param("tenantId") Long tenantId,
+            @Param("sessionId") long sessionId, @Param("afterId") long afterId, @Param("limit") int limit);
+
     List<OAuthAuthorizationPO> selectByInteractionId(@Param("tenantId") Long tenantId, @Param("interactionId") String interactionId);
 
     List<OAuthAuthorizationPO> selectByAuthentication(@Param("tenantId") Long tenantId,

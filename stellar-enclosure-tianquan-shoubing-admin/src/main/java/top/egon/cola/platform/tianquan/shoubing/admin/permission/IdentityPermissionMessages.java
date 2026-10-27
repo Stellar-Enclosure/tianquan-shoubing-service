@@ -3,6 +3,16 @@ package top.egon.cola.platform.tianquan.shoubing.admin.permission;
 import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.*;
 
 /** Source defaults exported with the identity producer manifest. */
+@PermissionMessage(pageCode="identity.permissions", key="field.expiresAt", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="expiresAt"))
+@PermissionMessage(pageCode="identity.permissions", key="field.authenticatedAt", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="authenticatedAt"))
+@PermissionMessage(pageCode="identity.permissions", key="field.ipAddress", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="ipAddress"))
+@PermissionMessage(pageCode="identity.permissions", key="field.userAgent", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="userAgent"))
+@PermissionMessage(pageCode="identity.permissions", key="field.platform", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="platform"))
+@PermissionMessage(pageCode="identity.permissions", key="field.channel", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="channel"))
+@PermissionMessage(pageCode="identity.permissions", key="field.sessionId", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="sessionId"))
+@PermissionMessage(pageCode="identity.permissions", key="api.identitySession.list", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Read my device sessions"))
+@PermissionMessage(pageCode="identity.permissions", key="api.identitySession.revoke", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Revoke my device session"))
+@PermissionMessage(pageCode="identity.permissions", key="permission.identity.self.session.revoke", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Revoke own device session"))
 @PermissionMessage(pageCode="identity.permissions", key="api.authorization.current", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Read my current effective permissions"))
 @PermissionMessage(pageCode="identity.permissions", key="api.authorization.fields", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Read field policies and input bindings"))
 @PermissionMessage(pageCode="identity.permissions", key="api.clientResourceGrant.batch", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="clientResourceGrant: batch"))

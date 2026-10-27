@@ -59,6 +59,8 @@ class OAuthConfigTest {
         try (var context = new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {
             org.springframework.test.context.support.TestPropertySourceUtils.addInlinedPropertiesToEnvironment(context,
                     "egon.tianquan-shoubing.oauth.public-origin=https://idp.example");
+            context.registerBean("oauthDeviceSessionService", top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthDeviceSessionService.class,
+                    () -> org.mockito.Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthDeviceSessionService.class));
             context.registerBean("oauthBrowserInteractionComponent", top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class,
                     () -> org.mockito.Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class));
             context.registerBean("tenantIssuerService", top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.TenantIssuerService.class,

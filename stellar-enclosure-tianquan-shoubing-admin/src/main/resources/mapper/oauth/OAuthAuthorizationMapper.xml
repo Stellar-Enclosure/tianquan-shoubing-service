@@ -28,6 +28,7 @@
         <result property="authenticationJtiDigest" column="authentication_jti_digest"/>
         <result property="clientBrowserBindingDigest" column="client_browser_binding_digest"/>
         <result property="interactionId" column="interaction_id"/>
+        <result property="deviceSessionId" column="device_session_id"/>
         <result property="refreshGeneration" column="refresh_generation"/>
         <result property="retainUntil" column="retain_until"/>
     </resultMap>
@@ -36,7 +37,7 @@
         id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
         client_pk, principal_name, principal_type, grant_type, authorized_scopes, audiences, status,
         auth_time, acr, attributes_ciphertext, absolute_expires_at, revoked_at,
-        requested_scopes, resource_uri, authentication_jti_digest, client_browser_binding_digest, interaction_id, refresh_generation, retain_until
+        requested_scopes, resource_uri, authentication_jti_digest, client_browser_binding_digest, interaction_id, device_session_id, refresh_generation, retain_until
     </sql>
 
     <select id="selectActiveById" resultMap="OAuthAuthorizationPOResultMap">
@@ -82,7 +83,7 @@
 
     <update id="updateExpectedVersion">
         UPDATE tianquan_oauth.oauth_authorization
-        SET authorized_scopes = #{po.authorizedScopes,typeHandler=top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler},
+        SET device_session_id = #{po.deviceSessionId}, authorized_scopes = #{po.authorizedScopes,typeHandler=top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler},
             attributes_ciphertext = #{po.attributesCiphertext}, refresh_generation = #{po.refreshGeneration}, retain_until = #{po.retainUntil}, status = #{po.status}, revoked_at = #{po.revokedAt}, version = #{po.version},
             update_user_id = #{po.updateUserId}, update_time = #{po.updateTime}
         WHERE tenant_id = #{tenantId} AND id = #{po.id} AND client_pk = #{po.clientPk}
@@ -105,6 +106,12 @@
     <select id="selectByAuthentication" resultMap="OAuthAuthorizationPOResultMap">
         SELECT <include refid="Columns"/> FROM tianquan_oauth.oauth_authorization
         WHERE tenant_id = #{tenantId} AND authentication_jti_digest = #{authenticationDigest}
+          AND status IN ('ACTIVE', 'PENDING_CONSENT') AND id &gt; #{afterId} AND deleted_at IS NULL
+        ORDER BY id LIMIT #{limit}
+    </select>
+    <select id="selectByDeviceSession" resultMap="OAuthAuthorizationPOResultMap">
+        SELECT <include refid="Columns"/> FROM tianquan_oauth.oauth_authorization
+        WHERE tenant_id = #{tenantId} AND device_session_id = #{sessionId}
           AND status IN ('ACTIVE', 'PENDING_CONSENT') AND id &gt; #{afterId} AND deleted_at IS NULL
         ORDER BY id LIMIT #{limit}
     </select>

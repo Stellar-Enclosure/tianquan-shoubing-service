@@ -68,6 +68,7 @@ springdoc:
     - group: tianquan-shoubing-profile
       paths-to-match:
         - /api/v1/tianquan-shoubing/me
+        - /api/v1/tianquan-shoubing/me/sessions/**
         - /oauth2/userinfo
     - group: tianquan-shoubing-oauth
       paths-to-match:
@@ -162,6 +163,7 @@ egon.cola.platform:
           "[tianquan-shoubing:identity-user:revoke-all]": ["tianquan-shoubing:identity-user:revoke-all"]
           "[tianquan-shoubing:identity-user:update]": ["tianquan-shoubing:identity-user:update"]
           "[tianquan-shoubing:identity:self:read]": ["tianquan-shoubing:identity:self:read"]
+          "[tianquan-shoubing:identity:self:session-revoke]": ["tianquan-shoubing:identity:self:session-revoke"]
           "[tianquan-shoubing:oauth-client:create]": ["tianquan-shoubing:oauth-client:create"]
           "[tianquan-shoubing:oauth-client:read]": ["tianquan-shoubing:oauth-client:read"]
           "[tianquan-shoubing:oauth-client:update]": ["tianquan-shoubing:oauth-client:update"]

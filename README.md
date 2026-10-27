@@ -78,3 +78,13 @@ The `permission-producer` profile exports and verifies each final executable ind
 `egon.tianquan-shoubing.oauth.authentication-ttl` controls the SSO lifetime (1 minute to 8 hours, default `PT8H`).
 `oauth.key-rotation.period`, `prepublish`, and `schedule` control automatic rotation and the same publication delay is enforced for manual activation.
 `oauth.key-rotation.verification-overlap` is optional. When omitted, retiring keys remain verifiable for the SSO lifetime plus `egon.tianquan-shoubing.clock-skew` (at least the existing 690-second access-token grace). An explicit overlap must be at least this long; invalid lifecycle settings fail at startup. Existing key expiry timestamps are preserved.
+
+## Device sessions
+
+`GET /api/v1/tianquan-shoubing/me/sessions` returns the current tenant account's client, platform, login time, expiry and peer address. `POST /api/v1/tianquan-shoubing/me/sessions/{sessionId}/revoke` revokes only that owner's selected session and its authorization families, including existing access and refresh tokens. Both endpoints use the verified principal's subject and tenant; callers cannot select another owner.
+
+An SSO authentication may serve both a browser and an App. Each client receives an independent device session, and multiple resource grants from the same SSO/client share that session. Admission uses the existing realm database lock and transaction; the sixth session evicts the oldest active session. Expired/revoked sessions and stale subject/realm generations do not occupy a slot. Revoked sessions require fresh password authentication before the same client can sign in again. Account active-role selections remain in Jianshen and are shared by every device.
+
+The single new managed migration is `db/egon-mp/V20261027_001__add_device_sessions.sql`; preceding migrations remain unchanged. It backfills existing USER grants without replacing credentials or deleting data, and revokes older excess sessions for accounts already above the five-session limit. Session metadata follows the existing retention job after linked families expire and their retention ends. Peer addresses use the servlet's resolved remote address; forwarded headers are not trusted by this feature.
+
+Session listing uses `tianquan-shoubing:identity:self:read`. Revocation uses the new `tianquan-shoubing:identity:self:session-revoke` permission and matching OAuth scope. Deploy the updated API/web manifests and grant these through the existing role/client-resource workflow; declaring a permission does not grant it at runtime. No database, application or browser acceptance is implied by the unit tests and artifact builds.

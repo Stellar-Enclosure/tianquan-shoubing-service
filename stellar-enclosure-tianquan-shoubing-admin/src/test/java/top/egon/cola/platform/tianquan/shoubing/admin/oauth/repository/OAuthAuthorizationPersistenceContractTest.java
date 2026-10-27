@@ -151,7 +151,7 @@ class OAuthAuthorizationPersistenceContractTest {
         }
         assertFalse(sql.contains("ck_oauth_token_jti"));
         JsonNode manifest = new ObjectMapper().readTree(Files.readString(directory.resolve("repository-manifest.json")));
-        assertEquals(3, manifest.path("scripts").size());
+        assertEquals(4, manifest.path("scripts").size());
         assertEquals("20261008_001", manifest.path("scripts").get(0).path("version").asText());
         assertEquals("238adf24fc3025f27ac5da91528b6110962977762f3ce751467a970a7c6acc23",
                 manifest.path("scripts").get(0).path("sha256").asText());

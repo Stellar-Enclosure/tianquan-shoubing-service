@@ -86,6 +86,9 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
     @Qualifier("oauthBrowserInteractionComponent")
     private final OAuthBrowserInteractionComponent interactions;
 
+    @Qualifier("oauthDeviceSessionService")
+    private final OAuthDeviceSessionService deviceSessions;
+
     @Override
     @Transactional
     public void save(OAuth2Authorization source) {
@@ -174,6 +177,12 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
                     throw new IllegalArgumentException("OAUTH_AUTHORIZATION_INTERACTION_MISMATCH");
                 }
             }
+        }
+        if ("USER".equals(principalType) && "ACTIVE".equals(value.getStatus()) && value.getDeviceSessionId() == null) {
+            if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes browser)) {
+                throw new IllegalArgumentException("OAUTH_DEVICE_SESSION_REQUEST_REQUIRED");
+            }
+            value.setDeviceSessionId(deviceSessions.register(trustedRealm, client, value, browser.getRequest()));
         }
         List<OAuthTokenBO> tokenSnapshot = value.getTokens() == null
                 ? List.of() : new ArrayList<>(value.getTokens());

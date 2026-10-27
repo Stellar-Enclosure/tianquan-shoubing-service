@@ -43,7 +43,7 @@ class PermissionProducerCoverageTest {
         for(Method method:NativeProtocolPermissionMetadata.class.getDeclaredMethods()) {
             match(mappings.mapping(method,NativeProtocolPermissionMetadata.class),method.getAnnotation(PermissionResource.class),resources,apis,false);
         }
-        assertThat(managed).isEqualTo(37);assertThat(apis).hasSize(60);assertThat(fields).hasSize(193);
+        assertThat(managed).isEqualTo(39);assertThat(apis).hasSize(62);assertThat(fields).hasSize(202);
         assertThat(resources.values().stream().filter(r->r.type()==ResourceType.API).map(PermissionManifest.ResourceDefinition::key).toList()).containsExactlyInAnyOrderElementsOf(apis);
         assertThat(resources.values().stream().filter(r->r.type()==ResourceType.FIELD).map(PermissionManifest.ResourceDefinition::key).toList()).containsExactlyInAnyOrderElementsOf(fields);
         assertThat(external).containsExactlyInAnyOrder("top.egon.cola.component.common.core.pojo.ResultRecord",
@@ -57,7 +57,7 @@ class PermissionProducerCoverageTest {
         manifest.messages().forEach(m->assertThat(messages.put(m.pageCode()+":"+m.key(),m)).isNull());
         manifest.resources().forEach(r->assertThat(messages).containsKey(r.i18n().pageCode()+":"+r.i18n().labelKey()));
         manifest.permissionDefinitions().forEach(p->assertThat(messages).containsKey(p.i18n().pageCode()+":"+p.i18n().labelKey()));
-        assertThat(manifest.permissionDefinitions()).hasSize(21);assertThat(manifest.permissionReferences()).isEmpty();
+        assertThat(manifest.permissionDefinitions()).hasSize(22);assertThat(manifest.permissionReferences()).isEmpty();
         var status=manifest.resources().stream().filter(r->r.key().equals("tianquan-shoubing.field.UpdateIdentityUserDTO.status")).findFirst().orElseThrow();
         assertThat(status.fieldPolicy().valueType()).isEqualTo(PermissionManifest.JsonFieldType.STRING);
     }

@@ -93,6 +93,8 @@ public class OAuthAuthorizationBO {
     @lombok.EqualsAndHashCode.Exclude
     private String interactionId;
 
+    private Long deviceSessionId;
+
     private long refreshGeneration;
 
     private Instant retainUntil;

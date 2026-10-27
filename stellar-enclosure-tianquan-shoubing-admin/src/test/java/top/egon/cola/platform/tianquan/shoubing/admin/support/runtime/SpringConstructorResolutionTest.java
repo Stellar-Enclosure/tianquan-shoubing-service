@@ -135,6 +135,9 @@ class SpringConstructorResolutionTest {
             registerNamedMock(context, "signingKeyViewConverterImpl", SigningKeyViewConverter.class);
             registerNamedMock(context, "jacksonObjectMapper", ObjectMapper.class);
             context.registerBean("idpClock", Clock.class, Clock::systemUTC);
+            context.registerBean("oauthKeyRotationProperties", top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyRotationProperties.class,
+                    top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyRotationProperties::new);
+            context.getBeanFactory().setConversionService(new org.springframework.boot.convert.ApplicationConversionService());
             context.registerBean(SigningKeyServiceImpl.class);
             context.refresh();
 

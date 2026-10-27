@@ -73,6 +73,9 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
     @Qualifier("transactionManager")
     private final PlatformTransactionManager transactionManager;
 
+    @Qualifier("oAuthDeviceSessionRepository")
+    private final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthDeviceSessionRepository deviceSessions;
+
     @PostConstruct
     void validateClockSkew() {
         if (clockSkew.isNegative() || clockSkew.compareTo(Duration.ofSeconds(60)) > 0) {
@@ -156,6 +159,7 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
             if (deadlineReached(deadline)) { return deleted; }
             if (interactions.deleteRetained(realm, interaction.getId(), interaction.getVersion(), now)) { deleted++; }
         }
+        if (!deadlineReached(deadline)) { deleted += deviceSessions.deleteRetained(realm, now, BATCH_SIZE); }
         for (var authentication : authentications.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
             if (deadlineReached(deadline)) { return deleted; }
             if (authentications.deleteRetained(realm, authentication.getId(), authentication.getVersion(), now)) { deleted++; }

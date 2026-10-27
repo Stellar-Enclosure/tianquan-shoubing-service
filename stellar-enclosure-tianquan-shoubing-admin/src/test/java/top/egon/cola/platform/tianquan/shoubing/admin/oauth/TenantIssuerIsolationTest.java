@@ -474,7 +474,8 @@ class TenantIssuerIsolationTest {
                 OBJECT_MAPPER,
                 Clock.fixed(NOW, ZoneOffset.UTC),
                 mock(OAuthSecurityProjectionComponent.class),
-                mock(OAuthTokenIssueService.class), mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class));
+                mock(OAuthTokenIssueService.class), mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthDeviceSessionService.class));
         OAuth2Authorization tenantOneAuthorization = withIssuer("https://idp.example.test/tenants/1001",
                 () -> authorizationService.findByToken("issuer-bound-token", OAuth2TokenType.ACCESS_TOKEN));
         OAuth2Authorization tenantTwoAuthorization = withIssuer("https://idp.example.test/tenants/1002",

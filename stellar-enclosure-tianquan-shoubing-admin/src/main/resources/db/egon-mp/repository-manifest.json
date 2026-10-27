@@ -15,6 +15,11 @@
       "version": "20261023_001",
       "path": "db/egon-mp/V20261023_001__stateless_oauth_state.sql",
       "sha256": "21134dca1334ff8af42ac455fd3b2b584f06c29f92846a7bf565a1625115ea13"
+    },
+    {
+      "version": "20261027_001",
+      "path": "db/egon-mp/V20261027_001__add_device_sessions.sql",
+      "sha256": "560c3293eb5ed128294b82289500d9395d3bfdb5c7a2ed137a3f4f5ddcbfb948"
     }
   ]
 }

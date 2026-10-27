@@ -21,6 +21,8 @@ public interface OAuthAuthorizationRepository {
 
     Optional<OAuthAuthorizationBO> findByInteractionId(TrustedRealmBO realm, String interactionId);
 
+    List<OAuthAuthorizationBO> findByDeviceSession(TrustedRealmBO realm, long sessionId, long afterId, int limit);
+
     List<OAuthAuthorizationBO> findByAuthentication(TrustedRealmBO realm, String authenticationDigest, long afterId, int limit);
 
     Optional<OAuthAuthorizationBO> findById(

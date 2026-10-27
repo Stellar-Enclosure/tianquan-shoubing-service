@@ -17,6 +17,7 @@ rules:
       - oauth_primary.tianquan_oauth.oauth_revocation
       - oauth_primary.tianquan_oauth.oauth_audit
       - oauth_primary.tianquan_oauth.oauth_resource
+      - oauth_primary.tianquan_oauth.oauth_device_session
       - oauth_primary.tianquan_oauth.oauth_authentication
       - oauth_primary.tianquan_oauth.oauth_interaction
       - oauth_primary.tianquan_oauth.oauth_audit_inbox

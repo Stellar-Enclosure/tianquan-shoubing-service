@@ -105,6 +105,9 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.TenantReg
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.TenantIssuerService;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthTokenIssueServiceImpl;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.TenantAuthorizationServiceImpl;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthDeviceSessionService;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthDeviceSessionRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthDeviceSessionBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.TenantConsentServiceImpl;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthResourceBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.converter.ClientResourceGrantViewConverter;
@@ -191,6 +194,24 @@ class OAuthConsentRoundTripTest {
         if (lastFixture != null) {
             lastFixture.close();
         }
+    }
+
+    @Test
+    void kickingOneDeviceSessionRejectsItsAccessAndRefreshWithoutRevokingSso() throws Exception {
+        Pending pending = startThroughRealLogin(1001L);
+        JsonNode issued = token(approve(pending, consentCsrf(pending)), VERIFIER);
+        var stored = fixture.authorizations.values().iterator().next();
+        assertNotNull(stored.getDeviceSessionId());
+        context.getBean(OAuthDeviceSessionService.class).revoke(fixture.realm(ORIGIN.resolve("/tenants/1001")),
+                stored.getPrincipalName(), stored.getDeviceSessionId());
+        mvc.perform(request(get("/tenants/1001/userinfo")).header("Authorization", "Bearer " + issued.path("access_token").asText()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(request(post("/tenants/1001/oauth2/token")).header("Authorization", basic())
+                        .contentType("application/x-www-form-urlencoded").param("grant_type", "refresh_token")
+                        .param("refresh_token", issued.path("refresh_token").asText()))
+                .andExpect(status().is4xxClientError());
+        assertTrue(fixture.authenticationFacts.values().stream().allMatch(value -> "ACTIVE".equals(value.getStatus())));
+        assertTrue(fixture.deviceSessions.values().stream().allMatch(value -> "REVOKED".equals(value.getStatus())));
     }
 
     @Test
@@ -648,7 +669,7 @@ class OAuthConsentRoundTripTest {
         assertEquals("ACTIVE", fixture.authenticationFacts.get("tenant:1001:other").getStatus());
         assertEquals("REVOKED", fixture.authenticationFacts.entrySet().stream().filter(entry -> !entry.getKey().endsWith(":other")).findFirst().orElseThrow().getValue().getStatus());
         assertTrue(fixture.authorizations.values().stream().allMatch(value -> "REVOKED".equals(value.getStatus())));
-        assertEquals(1, fixture.identityEvents.size());
+        assertEquals(1, fixture.identityEvents.stream().filter(event -> "IDENTITY_SSO_REVOKED".equals(event.eventType())).count());
         pending.browser().accept(ended);
         mvc.perform(request(get("/tenants/1001/logout")).cookie(pending.cookies())).andExpect(status().isUnauthorized());
         assertNull(ended.getRequest().getSession(false));
@@ -1011,7 +1032,7 @@ class OAuthConsentRoundTripTest {
     @EnableWebSecurity
     @EnableTransactionManagement(proxyTargetClass = true)
     @Import({AuthorizationServerConfiguration.class, ValidationAutoConfiguration.class,
-            TenantRegisteredClientRepository.class, TenantAuthorizationServiceImpl.class,
+            TenantRegisteredClientRepository.class, TenantAuthorizationServiceImpl.class, OAuthDeviceSessionService.class,
             TenantConsentServiceImpl.class, OAuthTokenIssueServiceImpl.class, TenantJwkSourceComponent.class,
             OAuthKeyCipherComponent.class,
             top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthAuthenticationJwtService.class,
@@ -1054,6 +1075,7 @@ class OAuthConsentRoundTripTest {
                 @Qualifier("oauthBrowserInteractionComponent") top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent interactions) {
             return new TenantLoginAuthenticationFilter(f.identities, f.memberships, f.issuers, cache, f.clock, interactions);
         }
+        @Bean("oAuthDeviceSessionRepository") OAuthDeviceSessionRepository deviceSessions(Fixture f) { return f.deviceSessionRepository; }
         @Bean("oAuthAuthenticationRepository") top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository authentications(Fixture f) { return f.authenticationRepository; }
         @Bean("oAuthInteractionRepository") top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository interactions(Fixture f) { return f.interactionRepository; }
         @Bean("oAuthSecurityStateRepository") top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository states(Fixture f) { return f.securityStateRepository; }
@@ -1096,6 +1118,8 @@ class OAuthConsentRoundTripTest {
         final top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository userRepository = mock(top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository.class);
         final Map<String, top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO> authenticationFacts = new LinkedHashMap<>();
         final Map<String, top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO> interactionFacts = new LinkedHashMap<>();
+        final OAuthDeviceSessionRepository deviceSessionRepository = mock(OAuthDeviceSessionRepository.class);
+        final Map<String, OAuthDeviceSessionBO> deviceSessions = new LinkedHashMap<>();
         final Map<String, OAuthAuthorizationPO> authorizations = new LinkedHashMap<>();
         final Map<String, OAuthTokenPO> tokens = new LinkedHashMap<>();
         final Map<String, OAuthConsentBO> consents = new LinkedHashMap<>();
@@ -1141,7 +1165,7 @@ class OAuthConsentRoundTripTest {
         }
 
         void reset() {
-            authorizations.clear(); tokens.clear(); consents.clear(); events.clear(); audits.clear(); authenticationFacts.clear(); interactionFacts.clear(); identityEvents.clear();
+            deviceSessions.clear(); authorizations.clear(); tokens.clear(); consents.clear(); events.clear(); audits.clear(); authenticationFacts.clear(); interactionFacts.clear(); identityEvents.clear();
             mustChangePassword = false;
             failCodeSave = false; failEnqueue = false; failConsentSave = false; failSigning = false; publicClient = false; browserBound = false;
             failTokenLookup = false;
@@ -1173,6 +1197,28 @@ class OAuthConsentRoundTripTest {
                 .encode("fixture-secret");
 
         void configurePorts() {
+            when(deviceSessionRepository.findByAuthentication(any(), anyString(), anyLong())).thenAnswer(i -> deviceSessions.entrySet().stream()
+                    .filter(entry -> entry.getKey().startsWith(((TrustedRealmBO) i.getArgument(0)).getRealmKey() + ":"))
+                    .map(Map.Entry::getValue).filter(value -> value.getAuthenticationJtiDigest().equals(i.getArgument(1))
+                            && value.getClientPk().equals(i.getArgument(2))).findFirst().map(value -> value.toBuilder().build()));
+            when(deviceSessionRepository.findById(any(), anyLong())).thenAnswer(i -> Optional.ofNullable(deviceSessions.get(key(i.getArgument(0), Long.toString(i.getArgument(1))))));
+            when(deviceSessionRepository.findLiveBySubject(any(), anyString(), any())).thenAnswer(i -> deviceSessions.entrySet().stream()
+                    .filter(entry -> entry.getKey().startsWith(((TrustedRealmBO) i.getArgument(0)).getRealmKey() + ":"))
+                    .map(Map.Entry::getValue).filter(value -> value.getSubject().equals(i.getArgument(1)) && "ACTIVE".equals(value.getStatus())
+                            && value.getExpiresAt().isAfter(i.getArgument(2)))
+                    .sorted(Comparator.comparing(OAuthDeviceSessionBO::getAuthenticatedAt).thenComparing(OAuthDeviceSessionBO::getId))
+                    .map(value -> value.toBuilder().build()).toList());
+            when(deviceSessionRepository.save(any(), any(), anyLong())).thenAnswer(i -> {
+                OAuthDeviceSessionBO value = i.getArgument(1);
+                if (value.getId() == null) { value.setId(ids.incrementAndGet()); }
+                deviceSessions.put(key(i.getArgument(0), value.getId().toString()), value.toBuilder().build());
+                return value.toBuilder().build();
+            });
+            when(authorizationRepository.findByDeviceSession(any(), anyLong(), anyLong(), anyInt())).thenAnswer(i -> authorizations.values().stream()
+                    .filter(value -> Objects.equals(value.getDeviceSessionId(), i.getArgument(1)) && value.getId() > (long) i.getArgument(2)
+                            && Set.of("ACTIVE", "PENDING_CONSENT").contains(value.getStatus()))
+                    .sorted(Comparator.comparing(OAuthAuthorizationPO::getId)).limit((int) i.getArgument(3))
+                    .flatMap(value -> readAuthorization(i.getArgument(0), value.getId()).stream()).toList());
             doAnswer(i -> { mustChangePassword = false; return null; }).when(identities).changePassword(anyString(), any(char[].class), any(char[].class), any());
             when(authorizationRepository.findByAuthentication(any(), anyString(), anyLong(), anyInt())).thenAnswer(i -> authorizations.values().stream()
                     .filter(value -> Objects.equals(value.getAuthenticationJtiDigest(), i.getArgument(1)) && value.getId() > (long) i.getArgument(2)
@@ -1341,6 +1387,7 @@ class OAuthConsentRoundTripTest {
             FixtureTransaction state = (FixtureTransaction) transaction; state.active = true;
             state.authorizations = new LinkedHashMap<>(fixture.authorizations); state.tokens = new LinkedHashMap<>(fixture.tokens);
             state.consents = new LinkedHashMap<>(fixture.consents);
+            state.deviceSessions = new LinkedHashMap<>(fixture.deviceSessions);
             state.authenticationFacts = new LinkedHashMap<>(fixture.authenticationFacts); state.interactionFacts = new LinkedHashMap<>(fixture.interactionFacts);
             state.auditCount = fixture.audits.size(); state.eventCount = fixture.events.size(); state.identityEventCount = fixture.identityEvents.size();
             current.set(state);
@@ -1349,6 +1396,7 @@ class OAuthConsentRoundTripTest {
         @Override protected void doRollback(DefaultTransactionStatus status) {
             FixtureTransaction state = (FixtureTransaction) status.getTransaction();
             fixture.authorizations.clear(); fixture.authorizations.putAll(state.authorizations);
+            fixture.deviceSessions.clear(); fixture.deviceSessions.putAll(state.deviceSessions);
             fixture.authenticationFacts.clear(); fixture.authenticationFacts.putAll(state.authenticationFacts);
             fixture.interactionFacts.clear(); fixture.interactionFacts.putAll(state.interactionFacts);
             fixture.tokens.clear(); fixture.tokens.putAll(state.tokens); fixture.consents.clear(); fixture.consents.putAll(state.consents);
@@ -1361,6 +1409,7 @@ class OAuthConsentRoundTripTest {
 
     static final class FixtureTransaction implements SmartTransactionObject {
         boolean active; boolean rollbackOnly; int auditCount; int eventCount; int identityEventCount;
+        Map<String, OAuthDeviceSessionBO> deviceSessions;
         Map<String, OAuthAuthorizationPO> authorizations; Map<String, OAuthTokenPO> tokens; Map<String, OAuthConsentBO> consents;
         Map<String, top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO> authenticationFacts;
         Map<String, top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO> interactionFacts;

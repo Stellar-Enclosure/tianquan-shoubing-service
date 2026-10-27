@@ -61,7 +61,7 @@ class IdentityManagedEntryPointTest {
                         .hasCauseInstanceOf(org.springframework.security.authentication.AuthenticationCredentialsNotFoundException.class);count++;
             }
         }
-        assertThat(count).isEqualTo(37);verifyNoInteractions(fixture.loader);
+        assertThat(count).isEqualTo(39);verifyNoInteractions(fixture.loader);
     }
 
     @Test void actualHttpInputRejectsMissingWriteUnknownAndExplicitNullBeforeBusinessState()throws Exception {
