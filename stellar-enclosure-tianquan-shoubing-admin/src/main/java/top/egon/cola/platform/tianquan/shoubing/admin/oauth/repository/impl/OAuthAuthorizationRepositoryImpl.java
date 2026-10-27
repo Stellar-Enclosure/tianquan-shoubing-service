@@ -174,7 +174,7 @@ public class OAuthAuthorizationRepositoryImpl extends EgonColaRepository<OAuthAu
                     }
                 } else {
                     id = authorization.getId();
-                    current = baseMapper.selectByIdForUpdate(tenantId, id);
+                    current = baseMapper.selectActiveById(tenantId, id);
                     if (current == null) {
                         if (expectedVersion != 0L || authorization.getVersion() != 0L) {
                             throw stale(expectedVersion, -1L);

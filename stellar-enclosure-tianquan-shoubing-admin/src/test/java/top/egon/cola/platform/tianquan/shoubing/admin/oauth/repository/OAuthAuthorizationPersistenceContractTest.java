@@ -46,6 +46,7 @@ import top.egon.cola.component.common.mybatis.model.EgonColaModelValidationUtils
 import top.egon.cola.component.common.core.validation.ValidationUtils;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthStringListJsonbTypeHandler;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthAuthorizationMapper;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthConsentMapper;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthorizationAttributesBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthorizationBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthPendingConsentBO;
@@ -56,7 +57,9 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTy
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthAuthorizationPO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthConsentPO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthAuthorizationConverter;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthConsentConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.impl.OAuthAuthorizationRepositoryImpl;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.impl.OAuthConsentRepositoryImpl;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyEncryptionProperties;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthTokenBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthTokenMetadataBO;
@@ -496,7 +499,7 @@ class OAuthAuthorizationPersistenceContractTest {
         assertTrue(classExists(authorizationMapperName), "Missing mapper " + authorizationMapperName);
         Class<?> authorizationMapperType = Class.forName(authorizationMapperName);
         Object authorizationMapper = Mockito.mock(authorizationMapperType, invocation -> {
-            if (invocation.getMethod().getName().equals("selectByIdForUpdate")) {
+            if (invocation.getMethod().getName().equals("selectActiveById")) {
                 return authorizationRow;
             }
             if (invocation.getMethod().getName().equals("updateExpectedVersion")) {
@@ -567,7 +570,7 @@ class OAuthAuthorizationPersistenceContractTest {
         assertTrue(classExists(consentMapperName), "Missing mapper " + consentMapperName);
         Class<?> consentMapperType = Class.forName(consentMapperName);
         Object consentMapper = Mockito.mock(consentMapperType, invocation -> {
-            if (invocation.getMethod().getName().equals("selectConsentForUpdate")) {
+            if (invocation.getMethod().getName().equals("selectConsent")) {
                 return consentRow;
             }
             if (invocation.getMethod().getName().equals("updateExpectedVersion")) {
@@ -596,6 +599,79 @@ class OAuthAuthorizationPersistenceContractTest {
     }
 
     @Test
+    void concurrentAuthorizationUpdatesFromTheSameReplicaVersionHaveOneWinner() throws Exception {
+        var mapper = mock(OAuthAuthorizationMapper.class);
+        var converter = mock(OAuthAuthorizationConverter.class);
+        var cipher = mock(OAuthPayloadCipherComponent.class);
+        var row = authorizationRow(111L, 1L);
+        row.setRequestedScopes(List.of("openid"));
+        row.setRetainUntil(Instant.parse("2026-11-08T00:00:00Z"));
+        var current = authorization(row, 1L).setRequestedScopes(List.of("openid")).setRetainUntil(row.getRetainUntil());
+        var requested = authorization(row, 2L).setRequestedScopes(List.of("openid")).setRetainUntil(row.getRetainUntil());
+        var barrier = new java.util.concurrent.CyclicBarrier(2);
+        var winner = new AtomicBoolean();
+        when(mapper.selectActiveById(eq(TENANT_PARTITION_ID), eq(111L))).thenAnswer(call -> {
+            barrier.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            return row;
+        });
+        when(mapper.updateExpectedVersion(eq(TENANT_PARTITION_ID), any(), eq(1L)))
+                .thenAnswer(call -> winner.compareAndSet(false, true) ? 1 : 0);
+        when(converter.toTarget(any(), any(), any(), any(), any())).thenReturn(current);
+        when(converter.toSource(any(), any(), any(), any(), any())).thenAnswer(call -> new OAuthAuthorizationPO());
+        var repository = new OAuthAuthorizationRepositoryImpl(mapper, scopedProperties(), converter, cipher,
+                new ObjectMapper(), () -> "service:tianquan-shoubing", Clock.systemUTC());
+
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var first = workers.submit(() -> saveAuthorization(repository, requested));
+            var second = workers.submit(() -> saveAuthorization(repository, requested));
+            assertEquals(Set.of(true, false), Set.of(first.get(10, java.util.concurrent.TimeUnit.SECONDS),
+                    second.get(10, java.util.concurrent.TimeUnit.SECONDS)));
+        }
+        Mockito.verify(mapper, Mockito.never()).selectByIdForUpdate(any(), any());
+    }
+
+    private static boolean saveAuthorization(OAuthAuthorizationRepositoryImpl repository, OAuthAuthorizationBO value) {
+        try {
+            repository.save(trustedTenant(), value, 1L);
+            return true;
+        } catch (org.springframework.dao.OptimisticLockingFailureException conflict) {
+            return false;
+        }
+    }
+
+    @Test
+    void concurrentConsentUpdatesFromTheSameReplicaVersionHaveOneWinner() throws Exception {
+        var mapper = mock(OAuthConsentMapper.class);
+        var row = consentRow(131L, 1L);
+        var requested = consent(row, 2L);
+        var barrier = new java.util.concurrent.CyclicBarrier(2);
+        var winner = new AtomicBoolean();
+        when(mapper.selectConsent(eq(TENANT_PARTITION_ID), eq(row.getClientPk()), eq(row.getSubject())))
+                .thenAnswer(call -> { barrier.await(5, java.util.concurrent.TimeUnit.SECONDS); return row; });
+        when(mapper.updateExpectedVersion(eq(TENANT_PARTITION_ID), any(), eq(1L)))
+                .thenAnswer(call -> winner.compareAndSet(false, true) ? 1 : 0);
+        var repository = new OAuthConsentRepositoryImpl(mapper, scopedProperties(), Mappers.getMapper(OAuthConsentConverter.class),
+                () -> "service:tianquan-shoubing", Clock.systemUTC());
+
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var first = workers.submit(() -> saveConsent(repository, requested));
+            var second = workers.submit(() -> saveConsent(repository, requested));
+            assertEquals(Set.of(true, false), Set.of(first.get(10, java.util.concurrent.TimeUnit.SECONDS),
+                    second.get(10, java.util.concurrent.TimeUnit.SECONDS)));
+        }
+        Mockito.verify(mapper, Mockito.never()).selectConsentForUpdate(any(), any(), any());
+    }
+
+    private static boolean saveConsent(OAuthConsentRepositoryImpl repository, OAuthConsentBO value) {
+        try {
+            repository.save(trustedTenant(), value, 1L);
+            return true;
+        } catch (org.springframework.dao.OptimisticLockingFailureException conflict) {
+            return false;
+        }
+    }
+
+    @Test
     void explicitAuthorizationIdIsPreservedOnFirstInsert() throws Exception {
         long expectedId = 9_100_001L;
         OAuthAuthorizationMapper mapper = Mockito.mock(OAuthAuthorizationMapper.class);
@@ -609,7 +685,7 @@ class OAuthAuthorizationPersistenceContractTest {
                 });
         when(cipher.decrypt(any(TrustedRealmBO.class), eq("authorization-attributes"), eq(Long.toString(expectedId)),
                 any(String.class))).thenAnswer(invocation -> attributesJson.get());
-        when(mapper.selectByIdForUpdate(TENANT_PARTITION_ID, expectedId)).thenReturn(null);
+        when(mapper.selectActiveById(TENANT_PARTITION_ID, expectedId)).thenReturn(null);
         doAnswer(invocation -> 1).when(mapper).insert(any(OAuthAuthorizationPO.class));
 
         OAuthAuthorizationRepositoryImpl repository = new OAuthAuthorizationRepositoryImpl(

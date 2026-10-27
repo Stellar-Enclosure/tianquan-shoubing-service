@@ -91,7 +91,7 @@ public class OAuthConsentRepositoryImpl extends EgonColaRepository<OAuthConsentM
         String principal = required(consent.getSubject());
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthConsentPO current = baseMapper.selectConsentForUpdate(
+                OAuthConsentPO current = baseMapper.selectConsent(
                         tenantId, consent.getClientPk(), principal);
                 OAuthConsentPO value = converter.toSource(consent);
                 value.setTenantId(tenantId);
