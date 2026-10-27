@@ -152,7 +152,7 @@ public class OAuthRevocationRepositoryImpl extends EgonColaRepository<OAuthRevoc
         }
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthRevocationPO current = baseMapper.selectByTargetForUpdate(
+                OAuthRevocationPO current = baseMapper.selectByTarget(
                         tenantId, revocation.getTargetType(), targetKey);
                 OAuthRevocationPO value = converter.toSource(revocation);
                 value.setTenantId(tenantId);

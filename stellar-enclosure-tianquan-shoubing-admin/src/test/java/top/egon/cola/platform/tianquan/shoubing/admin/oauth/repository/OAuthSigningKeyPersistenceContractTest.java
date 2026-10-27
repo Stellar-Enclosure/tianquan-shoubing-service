@@ -416,7 +416,7 @@ class OAuthSigningKeyPersistenceContractTest {
         current.setReasonCode("ADMIN_REVOKE");
         AtomicBoolean updateAttempted = new AtomicBoolean();
         Object mapper = Mockito.mock(mapperType, invocation -> {
-            if (invocation.getMethod().getName().equals("selectByTargetForUpdate")) {
+            if (invocation.getMethod().getName().equals("selectByTarget")) {
                 return current;
             }
             if (invocation.getMethod().getName().equals("updateExpectedVersion")) {

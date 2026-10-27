@@ -111,7 +111,7 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
         String targetKey = requireStateTarget(state.getTargetType(), state.getTargetKey());
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthSecurityStatePO current = baseMapper.selectByTargetForUpdate(
+                OAuthSecurityStatePO current = baseMapper.selectByTarget(
                         tenantId, state.getTargetType(), targetKey);
                 if (current == null) {
                     if (state.getId() != null || expectedVersion != 0L || state.getVersion() != 0L) {
