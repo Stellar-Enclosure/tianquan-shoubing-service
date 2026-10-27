@@ -534,7 +534,7 @@ class OAuthAuthorizationPersistenceContractTest {
         assertTrue(classExists(tokenMapperName), "Missing mapper " + tokenMapperName);
         Class<?> tokenMapperType = Class.forName(tokenMapperName);
         Object tokenMapper = Mockito.mock(tokenMapperType, invocation -> {
-            if (invocation.getMethod().getName().equals("selectByTokenDigestForUpdate")) {
+            if (invocation.getMethod().getName().equals("selectByTokenDigest")) {
                 return tokenRow;
             }
             if (invocation.getMethod().getName().equals("updateExpectedVersion")) {

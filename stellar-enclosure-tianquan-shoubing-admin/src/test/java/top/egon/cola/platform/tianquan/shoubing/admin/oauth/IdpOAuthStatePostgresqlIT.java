@@ -97,6 +97,90 @@ class IdpOAuthStatePostgresqlIT {
     }
 
     @Test
+    void tokenCasRollsBackAndOnlyOneConcurrentWriterSucceeds() throws Exception {
+        String table = "it_token_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        boolean created = false;
+        try {
+            try (Connection seed = open(); var statement = seed.createStatement()) {
+                statement.execute("CREATE TABLE tianquan_oauth." + table
+                        + " (LIKE tianquan_oauth.oauth_token INCLUDING DEFAULTS INCLUDING CONSTRAINTS)");
+                created = true;
+                statement.execute("INSERT INTO tianquan_oauth." + table
+                        + " (id,tenant_id,version,create_time,create_user_id,update_time,update_user_id,authorization_pk,"
+                        + "token_type,token_digest,issued_at,expires_at,metadata_ciphertext,refresh_generation,retain_until) "
+                        + "VALUES (401,201,0,CURRENT_TIMESTAMP,'it',CURRENT_TIMESTAMP,'it',501,'REFRESH',repeat('a',64),"
+                        + "CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + interval '1 hour','ENC:test',0,CURRENT_TIMESTAMP + interval '25 hours')");
+            }
+            var configuration = new org.apache.ibatis.session.Configuration();
+            String resource = "mapper/token/OAuthTokenMapper.xml";
+            try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+                new org.apache.ibatis.builder.xml.XMLMapperBuilder(input, configuration, resource,
+                        configuration.getSqlFragments()).parse();
+            }
+            var row = new top.egon.cola.platform.tianquan.shoubing.admin.token.domain.po.OAuthTokenPO();
+            String updateSql = configuration.getMappedStatement(
+                    "top.egon.cola.platform.tianquan.shoubing.admin.token.dao.OAuthTokenMapper.updateExpectedVersion")
+                    .getBoundSql(java.util.Map.of("tenantId", 201L, "po", row, "expectedVersion", 0L)).getSql()
+                    .replace("tianquan_oauth.oauth_token", "tianquan_oauth." + table);
+            try (Connection rollback = open()) {
+                rollback.setAutoCommit(false);
+                assertEquals(1, updateToken(rollback, updateSql));
+                rollback.rollback();
+            }
+            var ready = new java.util.concurrent.CountDownLatch(2);
+            var start = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.Callable<Integer> writer = () -> {
+                try (Connection connection = open()) {
+                    connection.setAutoCommit(false);
+                    try (var query = connection.createStatement();
+                         var rows = query.executeQuery("SELECT version FROM tianquan_oauth." + table + " WHERE id=401")) {
+                        assertTrue(rows.next()); assertEquals(0L, rows.getLong(1));
+                    }
+                    ready.countDown();
+                    if (!start.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("TOKEN_CAS_START_TIMEOUT");
+                    int changed = updateToken(connection, updateSql);
+                    connection.commit();
+                    return changed;
+                }
+            };
+            try (var workers = Executors.newFixedThreadPool(2)) {
+                var first = workers.submit(writer);
+                var second = workers.submit(writer);
+                assertTrue(ready.await(10, TimeUnit.SECONDS));
+                start.countDown();
+                assertEquals(1, first.get(20, TimeUnit.SECONDS) + second.get(20, TimeUnit.SECONDS));
+            } finally {
+                start.countDown();
+            }
+        } finally {
+            if (created) {
+                try (Connection connection = open(); var statement = connection.createStatement()) {
+                    statement.execute("DROP TABLE tianquan_oauth." + table);
+                }
+            }
+        }
+    }
+
+    private static int updateToken(Connection connection, String sql) throws SQLException {
+        try (var statement = connection.prepareStatement(sql)) {
+            var now = java.sql.Timestamp.from(java.time.Instant.now());
+            statement.setTimestamp(1, now);
+            statement.setNull(2, java.sql.Types.TIMESTAMP_WITH_TIMEZONE);
+            statement.setString(3, "ENC:test");
+            statement.setLong(4, 1L);
+            statement.setString(5, "it");
+            statement.setTimestamp(6, now);
+            statement.setLong(7, 201L);
+            statement.setLong(8, 401L);
+            statement.setLong(9, 501L);
+            statement.setString(10, "a".repeat(64));
+            statement.setString(11, "REFRESH");
+            statement.setLong(12, 0L);
+            return statement.executeUpdate();
+        }
+    }
+
+    @Test
     void expiredInteractionCannotBeConsumedEvenWithCorrectVersion() throws Exception {
         try (Connection connection = open()) {
             interaction(connection, 202L, "expired");

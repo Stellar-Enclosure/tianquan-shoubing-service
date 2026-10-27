@@ -131,7 +131,7 @@ public class OAuthTokenRepositoryImpl extends EgonColaRepository<OAuthTokenMappe
         String digest = requiredDigest(token.getTokenDigest());
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthTokenPO current = baseMapper.selectByTokenDigestForUpdate(tenantId, digest);
+                OAuthTokenPO current = baseMapper.selectByTokenDigest(tenantId, digest);
                 if (current == null) {
                     if (token.getId() != null || expectedVersion != 0L || token.getVersion() != 0L) {
                         throw stale(expectedVersion, -1L);
@@ -163,7 +163,7 @@ public class OAuthTokenRepositoryImpl extends EgonColaRepository<OAuthTokenMappe
                 value.setUpdateUserId(userIdProvider.currentUserId());
                 value.setUpdateTime(clock.instant().truncatedTo(ChronoUnit.MICROS));
                 if (baseMapper.updateExpectedVersion(tenantId, value, expectedVersion) != 1) {
-                    throw stale(expectedVersion, current.getVersion());
+                    throw new OptimisticLockingFailureException("token version changed after the candidate read");
                 }
                 return toTarget(trustedRealm, digest, value);
             } catch (DataIntegrityViolationException failure) {
@@ -245,6 +245,6 @@ public class OAuthTokenRepositoryImpl extends EgonColaRepository<OAuthTokenMappe
 
     private static OptimisticLockingFailureException stale(long expectedVersion, long actualVersion) {
         return new OptimisticLockingFailureException(
-                "token expected version " + expectedVersion + " but was " + actualVersion);
+                "token expected version " + expectedVersion + " but observed " + actualVersion);
     }
 }
