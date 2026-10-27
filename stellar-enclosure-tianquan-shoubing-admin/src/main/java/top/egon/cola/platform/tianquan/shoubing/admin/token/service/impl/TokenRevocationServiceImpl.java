@@ -131,7 +131,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         OAuthAuthorizationBO authorization = authorizationRepository.findByIdForUpdate(
                         realm, tokenCandidate.getAuthorizationPk())
                 .orElseThrow(() -> unavailable("OAUTH_REVOCATION_AUTHORIZATION_MISSING"));
-        OAuthTokenBO token = tokenRepository.findByTokenDigestForUpdate(realm, input.getTokenDigest())
+        OAuthTokenBO token = tokenRepository.findByTokenDigest(realm, input.getTokenDigest())
                 .orElse(null);
         if (token == null) {
             return;
@@ -303,7 +303,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 }
                 for (OAuthTokenBO candidate : page) {
                     afterId = Objects.requireNonNull(candidate.getId(), "tokenId");
-                    OAuthTokenBO current = tokenRepository.findByTokenDigestForUpdate(
+                    OAuthTokenBO current = tokenRepository.findByTokenDigest(
                                     realm, candidate.getTokenDigest())
                             .orElse(null);
                     if (current != null && current.getRevokedAt() == null) {

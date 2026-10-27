@@ -162,7 +162,7 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 .findByIdForUpdate(realm, tokenCandidate.getAuthorizationPk())
                 .filter(value -> "ACTIVE".equals(value.getStatus()))
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        OAuthTokenBO token = tokenRepository.findByTokenDigestForUpdate(realm, input.getTokenDigest())
+        OAuthTokenBO token = tokenRepository.findByTokenDigest(realm, input.getTokenDigest())
                 .filter(value -> value.getTokenType() == input.getTokenType())
                 .filter(value -> value.getAuthorizationPk().equals(authorization.getId()))
                 .filter(value -> value.getExpiresAt() != null && value.getExpiresAt().isAfter(clock.instant()))

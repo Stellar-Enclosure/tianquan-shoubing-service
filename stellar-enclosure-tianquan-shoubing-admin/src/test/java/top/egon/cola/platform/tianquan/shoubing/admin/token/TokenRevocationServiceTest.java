@@ -130,7 +130,6 @@ class TokenRevocationServiceTest {
         when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.of(subjectState));
         when(authorizations.findByIdForUpdate(REALM, 700L)).thenReturn(Optional.of(authorization));
-        when(tokens.findByTokenDigestForUpdate(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(token));
         when(revocations.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.JTI, "123456"))
                 .thenReturn(Optional.empty(), Optional.of(pendingJti()));
         when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), eq(0L)))
@@ -151,6 +150,7 @@ class TokenRevocationServiceTest {
 
         ArgumentCaptor<OAuthTokenBO> tokenChange = ArgumentCaptor.forClass(OAuthTokenBO.class);
         verify(tokens).save(eq(REALM), tokenChange.capture(), eq(0L));
+        verify(tokens, never()).findByTokenDigestForUpdate(any(), anyString());
         assertThat(tokenChange.getValue().getRevokedAt()).isEqualTo(NOW);
         ArgumentCaptor<OutboxMessage> outboxMessage = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outbox).enqueue(outboxMessage.capture());
@@ -209,7 +209,7 @@ class TokenRevocationServiceTest {
         when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.of(subjectState));
         when(authorizations.findByIdForUpdate(REALM, 700L)).thenReturn(Optional.of(authorization));
-        when(tokens.findByTokenDigestForUpdate(eq(REALM), anyString())).thenAnswer(invocation -> {
+        when(tokens.findByTokenDigest(eq(REALM), anyString())).thenAnswer(invocation -> {
             String digest = invocation.getArgument(1);
             if (refresh.getTokenDigest().equals(digest)) {
                 return Optional.of(refresh);

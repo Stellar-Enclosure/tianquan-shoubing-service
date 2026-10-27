@@ -436,7 +436,7 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
             }
             token.setTokenDigest(digest);
             token.setAuthorizationPk(authorizationId);
-            OAuthTokenBO current = tokenRepository.findByTokenDigestForUpdate(trustedRealm, digest).orElse(null);
+            OAuthTokenBO current = tokenRepository.findByTokenDigest(trustedRealm, digest).orElse(null);
             long expectedVersion = 0L;
             if (current != null) {
                 if (!Objects.equals(current.getAuthorizationPk(), authorizationId)

@@ -1225,7 +1225,6 @@ class OAuthConsentRoundTripTest {
                             && Set.of("ACTIVE", "PENDING_CONSENT").contains(value.getStatus())).sorted(Comparator.comparing(OAuthAuthorizationPO::getId))
                     .limit((int) i.getArgument(3)).flatMap(value -> readAuthorization(i.getArgument(0), value.getId()).stream()).toList());
             when(interactionRepository.findByInteractionId(any(), anyString())).thenAnswer(i -> Optional.ofNullable(interactionFacts.get(key(i.getArgument(0), i.getArgument(1)))).map(value -> value.toBuilder().build()));
-            when(interactionRepository.findByInteractionIdForUpdate(any(), anyString())).thenAnswer(i -> interactionRepository.findByInteractionId(i.getArgument(0), i.getArgument(1)));
             when(interactionRepository.save(any(), any(), anyLong())).thenAnswer(i -> {
                 top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO value = i.getArgument(1);
                 validate(value);
@@ -1304,7 +1303,6 @@ class OAuthConsentRoundTripTest {
                 if (failTokenLookup) { throw new TransientDataAccessResourceException("fixture token lookup failure"); }
                 return readToken(i.getArgument(0), i.getArgument(1));
             });
-            when(tokenRepository.findByTokenDigestForUpdate(any(), anyString())).thenAnswer(i -> readToken(i.getArgument(0), i.getArgument(1)));
             when(tokenRepository.findByAuthorization(any(), anyLong(), any(), anyLong(), anyInt())).thenAnswer(i -> {
                 TrustedRealmBO realm = i.getArgument(0); long authorizationId = i.getArgument(1); OAuthTokenTypeEnum type = i.getArgument(2);
                 long after = i.getArgument(3); int limit = i.getArgument(4);
