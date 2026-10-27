@@ -63,6 +63,16 @@ class DatabaseSecurityStateClientTest {
         verify(service).authorize(argThat(value -> value.scopes().equals(Set.of(IdentityAuthorityScopes.STATE_RESOLVE))));
     }
 
+    @Test void existingTraceContextPropagatesToTheIdentityAuthority() throws Exception {
+        var trace = top.egon.cola.component.common.trace.TraceContext.root();
+        server.expect(requestTo(AUTHORITY + "/internal/v1/identity/security-state:resolve"))
+                .andExpect(request -> assertThat(request.getHeaders().getFirst("traceparent"))
+                        .startsWith("00-" + trace.traceId() + "-"))
+                .andRespond(withSuccess(mapper.writeValueAsString(state()), MediaType.APPLICATION_JSON));
+        try (var ignored = trace.open()) { assertThat(client.resolve(request()).isEligible()).isTrue(); }
+        server.verify();
+    }
+
     @Test void stateIsReadForEveryProofAndWrongTupleOrVersionNeverBecomesValid() {
         var port = mock(IdentityAuthorityClient.class); var resolver = mock(IdentityAuthorityClientResolver.class);
         when(resolver.forResource(ISSUER, RESOURCE)).thenReturn(port); when(port.resolve(any())).thenReturn(state());

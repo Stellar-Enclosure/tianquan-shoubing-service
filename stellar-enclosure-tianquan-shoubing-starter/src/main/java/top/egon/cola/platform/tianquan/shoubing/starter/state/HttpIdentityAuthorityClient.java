@@ -103,7 +103,11 @@ public final class HttpIdentityAuthorityClient implements IdentityAuthorityClien
             for (int attempt = 0; attempt < 2; attempt++) {
                 String token = serviceOAuth.authorize(context).getTokenValue();
                 Exchange<T> exchange = transport.post().uri(authorityBase.resolve(path)).contentType(MediaType.APPLICATION_JSON)
-                        .headers(headers -> headers.setBearerAuth(token)).body(payload).exchange((request, response) -> {
+                        .headers(headers -> {
+                            headers.setBearerAuth(token);
+                            var trace = top.egon.cola.component.common.trace.TraceContext.capture();
+                            if (trace.traceId() != null) trace.child().inject(headers::set);
+                        }).body(payload).exchange((request, response) -> {
                             int status = response.getStatusCode().value();
                             if (status == 401) { return new Exchange<>(status, null); }
                             if (status != 200) { throw new AuthorityUnavailableException("IDENTITY_AUTHORITY_HTTP_" + status); }
