@@ -231,8 +231,10 @@ class OAuthManagedSchemaContractTest {
         String source = Files.readString(configuration);
         int oauthDdl = source.indexOf("oauthManagedDdlComponent.initialize");
         int outboxFactory = source.indexOf("new OutboxLogicalDataSourceFactory");
+        int outboxCreate = source.indexOf("return super.create(physical, yaml)");
+        assertTrue(outboxFactory >= 0);
         assertTrue(oauthDdl >= 0);
-        assertTrue(outboxFactory > oauthDdl);
+        assertTrue(outboxCreate > oauthDdl);
         assertFalse(source.contains("YamlShardingSphereDataSourceFactory"));
     }
 

@@ -10,6 +10,7 @@ import top.egon.cola.component.outbox.migration.OutboxLogicalDataSourceFactory;
 import top.egon.cola.component.outbox.migration.OutboxManagedDdlInitializer;
 
 import java.time.Clock;
+import java.util.Map;
 import javax.sql.DataSource;
 import org.mybatis.spring.annotation.MapperScan;
 import top.egon.cola.platform.tianquan.shoubing.admin.IdpAdminApplication;
@@ -27,9 +28,12 @@ public class OAuthPersistenceConfiguration {
     public LogicalDataSourceFactory egonColaShardingLogicalDataSourceFactory(
             OAuthManagedDdlComponent oauthManagedDdlComponent,
             @Qualifier("outboxManagedDdlInitializer") OutboxManagedDdlInitializer outboxDdlInitializer) {
-        return (physical, yaml) -> {
-            oauthManagedDdlComponent.initialize(physical, yaml);
-            return new OutboxLogicalDataSourceFactory(outboxDdlInitializer).create(physical, yaml);
+        return new OutboxLogicalDataSourceFactory(outboxDdlInitializer) {
+            @Override
+            public DataSource create(Map<String, DataSource> physical, byte[] yaml) throws Exception {
+                oauthManagedDdlComponent.initialize(physical, yaml);
+                return super.create(physical, yaml);
+            }
         };
     }
 
