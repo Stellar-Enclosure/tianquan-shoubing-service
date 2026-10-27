@@ -42,6 +42,7 @@ public class TokenUsageAuditComponent {
     public IdentityAuditReceipt appendStrict(@Valid TokenUsageAuditEvent event) {
         TokenUsageAuditEvent value = new ValidationUtils(validator).validate(Objects.requireNonNull(event, "event"));
         IdentityAuditReceipt receipt;
+        long started = System.nanoTime();
         try {
             receipt = authority.forResource(value.issuer(), URI.create(value.resource())).appendAudit(value);
             if (receipt == null || receipt.receiptId() == null
@@ -55,9 +56,13 @@ public class TokenUsageAuditComponent {
             }
         } catch (RuntimeException failure) {
             observeMetric(SecurityMetricObservationBO.builder().signal("oauth.audit.delivery").result("FAILED").build());
+            observeMetric(SecurityMetricObservationBO.builder().signal("oauth.audit.delivery.duration").result("FAILED")
+                    .duration(Duration.ofNanos(Math.max(0, System.nanoTime() - started))).build());
             throw new IllegalStateException("OAUTH_AUDIT_DELIVERY_UNAVAILABLE", failure);
         }
         observeMetric(SecurityMetricObservationBO.builder().signal("oauth.audit.delivery").result("CONFIRMED").build());
+        observeMetric(SecurityMetricObservationBO.builder().signal("oauth.audit.delivery.duration").result("CONFIRMED")
+                .duration(Duration.ofNanos(Math.max(0, System.nanoTime() - started))).build());
         Duration age = Duration.between(receipt.confirmedAt(), clock.instant());
         observeMetric(SecurityMetricObservationBO.builder().signal("receipt.age").result("CONFIRMED")
                 .duration(age.isNegative() ? Duration.ZERO : age).build());

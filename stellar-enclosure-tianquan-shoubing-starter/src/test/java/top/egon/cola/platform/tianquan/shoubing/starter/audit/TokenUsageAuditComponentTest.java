@@ -75,4 +75,16 @@ class TokenUsageAuditComponentTest {
         assertThatThrownBy(() -> component.reference(event().issuer(), "raw-token")).isInstanceOf(IllegalArgumentException.class);
         verifyNoInteractions(client, resolver);
     }
+
+    @Test void strictHandoffRecordsDurationForConfirmedAndFailedReceipts() {
+        var metrics = mock(IdpSecurityMetricsRecorder.class);
+        component = new TokenUsageAuditComponent(resolver, Clock.fixed(event().occurredAt(), ZoneOffset.UTC), validator, metrics);
+        when(client.appendAudit(event())).thenReturn(receipt(event())).thenReturn(null);
+        component.appendStrict(event());
+        assertThatThrownBy(() -> component.appendStrict(event())).hasMessage("OAUTH_AUDIT_DELIVERY_UNAVAILABLE");
+        verify(metrics).record(argThat(sample -> sample.getSignal().equals("oauth.audit.delivery.duration")
+                && sample.getResult().equals("CONFIRMED") && sample.getDuration() != null && !sample.getDuration().isNegative()));
+        verify(metrics).record(argThat(sample -> sample.getSignal().equals("oauth.audit.delivery.duration")
+                && sample.getResult().equals("FAILED") && sample.getDuration() != null && !sample.getDuration().isNegative()));
+    }
 }

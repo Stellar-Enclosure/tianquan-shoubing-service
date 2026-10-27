@@ -31,7 +31,8 @@ public class IdpSecurityMetricsComponent implements IdpSecurityMetricsRecorder {
             "jwt.verify.duration", this::timer, "jwks.cache.access", this::counter,
             "token.cache.access", this::counter, "token.acquire.duration", this::timer,
             "oauth.authentication", this::counter, "rbac.authorization", this::counter,
-            "oauth.audit.delivery", this::counter, "receipt.age", this::timer, "spool.bytes", this::gauge);
+            "oauth.audit.delivery", this::counter, "oauth.audit.delivery.duration", this::timer,
+            "receipt.age", this::timer, "spool.bytes", this::gauge);
 
     @Override
     public void record(SecurityMetricObservationBO observation) {

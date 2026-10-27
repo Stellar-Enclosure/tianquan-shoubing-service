@@ -20,15 +20,15 @@ class IdpSecurityMetricsComponentTest {
     @AfterEach void close() { validator.close(); }
 
     @Test
-    void recordsAllNineSignalsWithEveryFixedReceiverAndNoDynamicTags() {
+    void recordsAllTenSignalsWithEveryFixedReceiverAndNoDynamicTags() {
         for (var receiver : IdpSecurityObservationReceiverEnum.values()) {
             var registry = new SimpleMeterRegistry();
             try {
                 var usage = new OAuthUsageObservationProperties(true, URI.create("https://idp.example/tenants/1001"), false, receiver);
                 var recorder = new IdpSecurityMetricsComponent(() -> registry, validator, usage);
-                for (String signal : java.util.List.of("jwt.verify.duration", "token.acquire.duration", "receipt.age")) {
+                for (String signal : java.util.List.of("jwt.verify.duration", "token.acquire.duration", "receipt.age", "oauth.audit.delivery.duration")) {
                     recorder.record(SecurityMetricObservationBO.builder().signal(signal)
-                            .result(signal.equals("receipt.age") ? "CONFIRMED" : "SUCCESS").duration(Duration.ofMillis(1)).build());
+                            .result(signal.equals("receipt.age") || signal.equals("oauth.audit.delivery.duration") ? "CONFIRMED" : "SUCCESS").duration(Duration.ofMillis(1)).build());
                 }
                 for (String signal : java.util.List.of("jwks.cache.access", "token.cache.access")) {
                     recorder.record(SecurityMetricObservationBO.builder().signal(signal).result("HIT").build());
@@ -38,11 +38,12 @@ class IdpSecurityMetricsComponentTest {
                 recorder.record(SecurityMetricObservationBO.builder().signal("oauth.audit.delivery").result("SENT").build());
                 recorder.record(SecurityMetricObservationBO.builder().signal("spool.bytes").result("CURRENT").value(123).build());
                 recorder.record(SecurityMetricObservationBO.builder().signal("spool.bytes").result("CURRENT").value(456).build());
-                assertThat(registry.getMeters()).hasSize(9).allSatisfy(meter -> {
+                assertThat(registry.getMeters()).hasSize(10).allSatisfy(meter -> {
                     assertThat(meter.getId().getTag("receiver")).isEqualTo(receiver.name());
                     assertThat(meter.getId().getTags()).allSatisfy(tag -> assertThat(tag.getKey()).isIn("receiver", "result"));
                 });
                 assertThat(registry.get("jwt.verify.duration").timer().count()).isEqualTo(1);
+                assertThat(registry.get("oauth.audit.delivery.duration").timer().count()).isEqualTo(1);
                 assertThat(registry.get("spool.bytes").gauge().value()).isEqualTo(456);
             } finally { registry.close(); }
         }

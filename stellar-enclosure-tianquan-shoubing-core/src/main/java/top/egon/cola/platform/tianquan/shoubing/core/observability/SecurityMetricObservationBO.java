@@ -21,7 +21,7 @@ import lombok.experimental.Accessors;
 @Accessors(chain = true)
 public class SecurityMetricObservationBO {
     @NotBlank
-    @Pattern(regexp = "jwt\\.verify\\.duration|jwks\\.cache\\.access|token\\.cache\\.access|token\\.acquire\\.duration|oauth\\.authentication|rbac\\.authorization|oauth\\.audit\\.delivery|receipt\\.age|spool\\.bytes")
+    @Pattern(regexp = "jwt\\.verify\\.duration|jwks\\.cache\\.access|token\\.cache\\.access|token\\.acquire\\.duration|oauth\\.authentication|rbac\\.authorization|oauth\\.audit\\.delivery|oauth\\.audit\\.delivery\\.duration|receipt\\.age|spool\\.bytes")
     private String signal;
     @NotBlank
     @Pattern(regexp = "SUCCESS|FAILURE|VALID|INVALID|EXPIRED|UNAVAILABLE|ALLOW|DENY|INDETERMINATE|HIT|MISS|STAGED|SENT|CONFIRMED|FAILED|DEAD|CURRENT")
@@ -38,6 +38,7 @@ public class SecurityMetricObservationBO {
             "oauth.authentication", Set.of("VALID", "INVALID", "EXPIRED", "UNAVAILABLE"),
             "rbac.authorization", Set.of("ALLOW", "DENY", "INDETERMINATE", "FAILURE", "UNAVAILABLE"),
             "oauth.audit.delivery", Set.of("STAGED", "SENT", "CONFIRMED", "FAILED", "DEAD", "EXPIRED"),
+            "oauth.audit.delivery.duration", Set.of("CONFIRMED", "FAILED"),
             "receipt.age", Set.of("CURRENT", "CONFIRMED"),
             "spool.bytes", Set.of("CURRENT"));
 
@@ -45,7 +46,7 @@ public class SecurityMetricObservationBO {
     @java.beans.Transient
     public boolean isShapeValid() {
         if (signal == null || result == null || !RESULTS.getOrDefault(signal, Set.of()).contains(result)) { return false; }
-        boolean timer = Set.of("jwt.verify.duration", "token.acquire.duration", "receipt.age").contains(signal);
+        boolean timer = Set.of("jwt.verify.duration", "token.acquire.duration", "oauth.audit.delivery.duration", "receipt.age").contains(signal);
         boolean gauge = "spool.bytes".equals(signal);
         return timer ? duration != null && !duration.isNegative() && value == 0
                 : duration == null && (gauge || value == 0);

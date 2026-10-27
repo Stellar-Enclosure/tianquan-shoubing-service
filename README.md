@@ -88,3 +88,9 @@ An SSO authentication may serve both a browser and an App. Each client receives 
 The single new managed migration is `db/egon-mp/V20261027_001__add_device_sessions.sql`; preceding migrations remain unchanged. It backfills existing USER grants without replacing credentials or deleting data, and revokes older excess sessions for accounts already above the five-session limit. Session metadata follows the existing retention job after linked families expire and their retention ends. Peer addresses use the servlet's resolved remote address; forwarded headers are not trusted by this feature.
 
 Session listing uses `tianquan-shoubing:identity:self:read`. Revocation uses the new `tianquan-shoubing:identity:self:session-revoke` permission and matching OAuth scope. Deploy the updated API/web manifests and grant these through the existing role/client-resource workflow; declaring a permission does not grant it at runtime. No database, application or browser acceptance is implied by the unit tests and artifact builds.
+
+## Audit delivery and retention
+
+`oauth.audit.delivery.duration` measures the strict authority handoff through receipt validation, with fixed receiver and CONFIRMED/FAILED tags. It does not change the required committed remote receipt or separately measure database commit time.
+
+The retention job keeps expired audit dead letters because expiry alone does not prove recovery or archival. It warns when such records are found; operators must investigate the existing durable inbox/dead-letter evidence before any separately designed archival or cleanup. Pending and processing inbox entries are not deleted by the existing SQL predicate. Existing retention limits and replay protections for OAuth transactions, tokens and receipts remain in force.
