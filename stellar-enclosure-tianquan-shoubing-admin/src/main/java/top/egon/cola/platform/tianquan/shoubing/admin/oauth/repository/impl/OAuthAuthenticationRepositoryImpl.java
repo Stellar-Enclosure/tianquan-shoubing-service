@@ -73,7 +73,7 @@ public class OAuthAuthenticationRepositoryImpl extends EgonColaRepository<OAuthA
         if (expectedVersion < 0) { throw new IllegalArgumentException("OAUTH_STATE_VERSION_INVALID"); }
         return withRealm(realm, tenant -> {
             try {
-                OAuthAuthenticationPO current = baseMapper.selectByKeyForUpdate(tenant, requested.getJtiDigest());
+                OAuthAuthenticationPO current = baseMapper.selectByKey(tenant, requested.getJtiDigest());
                 requireTransition(current, requested);
                 if (current == null) {
                     if (requested.getId() != null || requested.getVersion() != 0L || expectedVersion != 0L) {

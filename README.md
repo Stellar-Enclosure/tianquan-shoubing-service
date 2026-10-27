@@ -24,7 +24,7 @@ Management APIs use `/api/v1/tianquan-shoubing`; [tianquan-shoubing-web](https:/
 
 At the code level, Shoubing handles identity and token issuance; [Jianshen](https://github.com/Stellar-Enclosure/tianquan-jianshen-service) owns role graphs, active roles and fine-grained USER authorization. OAuth resource grants here do not replace Jianshen's function/data/field decisions. A package build does not establish a working browser login, consent, revocation or key-rotation flow against live infrastructure.
 
-Token persistence reads its candidate without a row lock and uses the token version in the primary update; concurrent writes to the same observed version cannot both succeed. A lagging replica may return an older token or revocation state, and a stale write can fail with a version conflict. Other OAuth locking paths still require adaptation before this service can use strict read/write splitting.
+Token, authentication, interaction and audit-state saves read their candidates without a row lock and use version conditions in primary updates; concurrent writes to the same observed version cannot both succeed. A lagging replica may return an older token or revocation state, and a stale write can fail with a version conflict. Other OAuth locking paths still require adaptation before this service can use strict read/write splitting.
 
 ## Build
 

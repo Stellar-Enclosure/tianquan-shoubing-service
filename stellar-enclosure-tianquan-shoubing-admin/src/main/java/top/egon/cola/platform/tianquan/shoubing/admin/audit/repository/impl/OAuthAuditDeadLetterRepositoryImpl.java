@@ -73,7 +73,7 @@ public class OAuthAuditDeadLetterRepositoryImpl extends EgonColaRepository<OAuth
         if (expectedVersion < 0) { throw new IllegalArgumentException("OAUTH_STATE_VERSION_INVALID"); }
         return withRealm(realm, tenant -> {
             try {
-                OAuthAuditDeadLetterPO current = baseMapper.selectByKeyForUpdate(tenant, requested.getInboxPk());
+                OAuthAuditDeadLetterPO current = baseMapper.selectByKey(tenant, requested.getInboxPk());
                 requireTransition(current, requested);
                 if (current == null) {
                     if (requested.getId() != null || requested.getVersion() != 0L || expectedVersion != 0L) {

@@ -169,7 +169,8 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
         var realm = realm(request);
         String id = cookie(request, name("interaction", realm));
         if (id == null) { throw rejected(); }
-        var interaction = (lock ? interactions.findByInteractionIdForUpdate(realm, id) : interactions.findByInteractionId(realm, id))
+        // The lock argument is retained for callers; a later mutation must win the interaction version CAS.
+        var interaction = interactions.findByInteractionId(realm, id)
                 .orElseThrow(OAuthBrowserInteractionComponent::rejected);
         var csrf = loadToken(request);
         if (!LIVE.contains(interaction.getState()) || !interaction.getExpiresAt().isAfter(clock.instant())) { throw rejected("OAUTH_INTERACTION_NOT_LIVE"); }

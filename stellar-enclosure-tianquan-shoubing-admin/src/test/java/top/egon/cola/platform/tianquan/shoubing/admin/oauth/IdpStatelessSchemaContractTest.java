@@ -68,6 +68,11 @@ class IdpStatelessSchemaContractTest {
                 new XMLMapperBuilder(input, configuration, resource, configuration.getSqlFragments()).parse();
             }
             String namespace = BASE + names[0] + ".dao." + names[1] + "Mapper.";
+            var candidate = configuration.getMappedStatement(namespace + "selectByKey")
+                    .getBoundSql(Map.of("tenantId", 101L, "key", "stable"));
+            assertTrue(candidate.getSql().contains("tenant_id = ?"));
+            assertFalse(candidate.getSql().toUpperCase(java.util.Locale.ROOT).contains("FOR UPDATE"));
+            assertFalse(candidate.getSql().toUpperCase(java.util.Locale.ROOT).contains("FOR SHARE"));
             var select = configuration.getMappedStatement(namespace + "selectByKeyForUpdate")
                     .getBoundSql(Map.of("tenantId", 101L, "key", "stable"));
             assertTrue(select.getSql().contains("tenant_id = ?"));

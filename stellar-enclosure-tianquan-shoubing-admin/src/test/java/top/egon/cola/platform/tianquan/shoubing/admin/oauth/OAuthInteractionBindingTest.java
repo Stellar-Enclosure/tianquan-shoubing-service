@@ -124,6 +124,12 @@ class OAuthInteractionBindingTest {
         verifyNoInteractions(authentications, identities);
     }
 
+    @Test void mutationCandidateUsesTheNonlockingInteractionRead() {
+        assertSame(row, interactions.require(current(BROWSER, CSRF), true));
+        verify(rows).findByInteractionId(realm, ID);
+        verify(rows, never()).findByInteractionIdForUpdate(realm, ID);
+    }
+
     @Test void userInfoAndTokenFailuresDoNotCreateBrowserInteractions() {
         interactions.saveRequest(new MockHttpServletRequest("GET", "/tenants/101/userinfo"), new MockHttpServletResponse());
         interactions.saveRequest(new MockHttpServletRequest("POST", "/tenants/101/oauth2/token"), new MockHttpServletResponse());

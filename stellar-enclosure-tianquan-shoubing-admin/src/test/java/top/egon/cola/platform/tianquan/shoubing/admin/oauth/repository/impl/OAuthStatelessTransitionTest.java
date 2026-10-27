@@ -68,6 +68,47 @@ class OAuthStatelessTransitionTest {
                 pending.toBuilder().authenticationJtiDigest("d".repeat(64)).build()));
     }
 
+    @Test
+    void competingInteractionWritesUseTheObservedVersionWithoutLockingTheRead() throws Exception {
+        var mapper = org.mockito.Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthInteractionMapper.class);
+        var converter = Mappers.getMapper(OAuthInteractionConverter.class);
+        var observed = interaction().id(201L).version(0L).build();
+        var row = converter.toSource(observed);
+        row.setId(201L); row.setTenantId(1001L); row.setVersion(0L);
+        var request = observed.toBuilder().version(1L).state("CONSUMED").consumedAt(NOW.plusSeconds(1)).build();
+        var realm = top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO.builder()
+                .issuer(java.net.URI.create("https://auth.example/tenants/1001")).realmKey("tenant:1001")
+                .realmType(top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum.TENANT)
+                .storagePartitionId(1001L).businessTenantId(1001L).trustVersion(0L).build();
+        var barrier = new java.util.concurrent.CyclicBarrier(2);
+        var won = new java.util.concurrent.atomic.AtomicBoolean();
+        org.mockito.Mockito.when(mapper.selectByKey(1001L, "interaction")).thenAnswer(call -> {
+            barrier.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            return row;
+        });
+        org.mockito.Mockito.when(mapper.updateExpectedVersion(org.mockito.ArgumentMatchers.eq(1001L),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(0L)))
+                .thenAnswer(call -> won.compareAndSet(false, true) ? 1 : 0);
+        var repository = new OAuthInteractionRepositoryImpl(mapper,
+                new top.egon.cola.component.common.mybatis.autoconfigure.EgonColaMybatisPlusProperties(),
+                converter, () -> "service:tianquan-shoubing", java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC));
+        java.util.concurrent.Callable<Boolean> save = () -> {
+            try {
+                repository.save(realm, request, 0L);
+                return true;
+            } catch (org.springframework.dao.OptimisticLockingFailureException conflict) {
+                return false;
+            }
+        };
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var first = workers.submit(save);
+            var second = workers.submit(save);
+            assertNotEquals(first.get(10, java.util.concurrent.TimeUnit.SECONDS),
+                    second.get(10, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        org.mockito.Mockito.verify(mapper, org.mockito.Mockito.never()).selectByKeyForUpdate(1001L, "interaction");
+    }
+
     private static OAuthAuthenticationBO.OAuthAuthenticationBOBuilder authentication() {
         return OAuthAuthenticationBO.builder().jtiDigest("a".repeat(64)).subject("subject")
                 .browserBindingDigest("b".repeat(64)).subjectGeneration(0L).realmGeneration(0L)
