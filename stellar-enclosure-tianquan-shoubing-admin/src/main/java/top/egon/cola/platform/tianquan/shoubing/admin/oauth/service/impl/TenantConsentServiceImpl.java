@@ -55,7 +55,7 @@ public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentServi
 
         OAuthConsentBO mapped = converter.toSource(consent);
         mapped.setAuthorities(authorities);
-        OAuthConsentBO current = consentRepository.findConsentForUpdate(
+        OAuthConsentBO current = consentRepository.findConsent(
                 trustedRealm, clientPk, consent.getPrincipalName()).orElse(null);
         mapped.setGrantedAt(clock.instant().truncatedTo(ChronoUnit.MICROS));
         long expectedVersion = 0L;

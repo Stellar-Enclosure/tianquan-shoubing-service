@@ -149,11 +149,11 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
         }
         securityProjection.requireCurrentSnapshot(realm, input.getClientPk(), "USER",
                 authorizationCandidate.getPrincipalName(), authorizationCandidate.getAttributes().getSecuritySnapshot());
-        OAuthConsentBO lockedConsent = consentRepository.findConsentForUpdate(
+        OAuthConsentBO observedConsent = consentRepository.findConsent(
                         realm, input.getClientPk(), authorizationCandidate.getPrincipalName())
                 .filter(value -> "ACTIVE".equals(value.getStatus()))
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        if (!consentedScopes(lockedConsent).containsAll(authorizationCandidate.getAuthorizedScopes())) {
+        if (!consentedScopes(observedConsent).containsAll(authorizationCandidate.getAuthorizedScopes())) {
             throw new OAuth2AuthenticationException(new OAuth2Error("invalid_scope", "Request rejected", null));
         }
         lockUserGrants(realm, lockedClient, authorizationCandidate.getAudiences(), authorizationCandidate.getAuthorizedScopes());
@@ -315,7 +315,7 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
         if (!client.getAllowedScopes().containsAll(value.getAuthorizedScopes())) {
             throw new OAuth2AuthenticationException(new OAuth2Error("invalid_scope", "Request rejected", null));
         }
-        OAuthConsentBO consent = consentRepository.findConsentForUpdate(
+        OAuthConsentBO consent = consentRepository.findConsent(
                         realm, value.getClientPk(), value.getPrincipalName())
                 .filter(candidate -> "ACTIVE".equals(candidate.getStatus()))
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);

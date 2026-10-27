@@ -667,7 +667,7 @@ class OAuthOidcProtocolContractTest {
         when(memberships.resolve("platform-admin-sub", "9001")).thenReturn(
                 new TenantMembershipPort.TenantMembership("platform-admin-sub", "9001", "Admin",
                         TenantMembershipPort.MembershipStatus.ACTIVE));
-        when(consents.findConsentForUpdate(eq(platformRealm), eq(501L), eq("platform-admin-sub")))
+        when(consents.findConsent(eq(platformRealm), eq(501L), eq("platform-admin-sub")))
                 .thenReturn(Optional.of(OAuthConsentBO.builder().id(800L).version(0L).clientPk(501L)
                         .subject("platform-admin-sub").authorities(List.of("SCOPE_openid"))
                         .grantedAt(NOW).status("ACTIVE").build()));
@@ -696,6 +696,7 @@ class OAuthOidcProtocolContractTest {
         assertEquals(700L, issue.authorizationId());
         assertEquals(Set.of(resourceUri), issue.audiences());
         verify(memberships).resolve("platform-admin-sub", "9001");
+        verify(consents, org.mockito.Mockito.never()).findConsentForUpdate(any(), any(), any());
     }
 
     private static TrustedRealmBO trustedTenant() {

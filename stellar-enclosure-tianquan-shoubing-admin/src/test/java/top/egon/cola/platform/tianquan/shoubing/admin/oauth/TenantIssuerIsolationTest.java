@@ -123,6 +123,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -516,7 +517,7 @@ class TenantIssuerIsolationTest {
                 .authorities(List.of("SCOPE_openid"))
                 .grantedAt(NOW.minusSeconds(60)).status("ACTIVE").build();
         OAuthConsentRepository updatingConsents = mock(OAuthConsentRepository.class);
-        when(updatingConsents.findConsentForUpdate(any(TrustedRealmBO.class), eq(501L), eq("subject-1")))
+        when(updatingConsents.findConsent(any(TrustedRealmBO.class), eq(501L), eq("subject-1")))
                 .thenReturn(Optional.of(existingConsent));
         TenantConsentServiceImpl updatingConsentService = new TenantConsentServiceImpl(
                 issuerService,
@@ -534,6 +535,7 @@ class TenantIssuerIsolationTest {
         });
         ArgumentCaptor<OAuthConsentBO> savedConsent = ArgumentCaptor.forClass(OAuthConsentBO.class);
         verify(updatingConsents).save(any(TrustedRealmBO.class), savedConsent.capture(), eq(2L));
+        verify(updatingConsents, never()).findConsentForUpdate(any(TrustedRealmBO.class), anyLong(), anyString());
         assertEquals(901L, savedConsent.getValue().getId());
         assertEquals(3L, savedConsent.getValue().getVersion());
         assertEquals(NOW, savedConsent.getValue().getGrantedAt());
