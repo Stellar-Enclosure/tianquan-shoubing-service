@@ -12,6 +12,7 @@ import java.util.TreeMap;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -63,20 +64,20 @@ public class OAuthAuditDeliveryService {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         transaction.setName("oauthAuditIntake");
-        transaction.executeWithoutResult(status -> {
-            var existing = inboxes.findByEventIdForUpdate(realm, event.eventId()).orElse(null);
+        OAuthAuditInboxBO intake = transaction.execute(status -> {
+            var existing = inboxes.findByEventId(realm, event.eventId()).orElse(null);
             if (existing != null) {
                 requireSameEvent(existing, sourceClientPk, sourceIssuer, sourceResource, fingerprint);
-                return;
+                return existing;
             }
-            inboxes.save(realm, OAuthAuditInboxBO.builder().eventId(event.eventId()).eventFingerprint(fingerprint)
+            return inboxes.save(realm, OAuthAuditInboxBO.builder().eventId(event.eventId()).eventFingerprint(fingerprint)
                     .schemaVersion(1).sourceClientPk(sourceClientPk).sourceIssuer(sourceIssuer).sourceResourceUri(sourceResource)
                     .eventPayload(payload).occurredAt(event.occurredAt()).receivedAt(now).state("PENDING")
                     .attemptCount(0).nextAttemptAt(now).claimGeneration(0L)
                     .processingDeadline(now.plusSeconds(PROCESSING_SECONDS)).retainUntil(retainUntil).build(), 0L);
         });
         var receipt = receipts.findByEventId(realm, event.eventId()).orElse(null);
-        if (receipt == null) { process(realm, event.eventId()); }
+        if (receipt == null) { process(realm, intake); }
         return receipts.findByEventId(realm, event.eventId())
                 .filter(value -> value.getEventFingerprint().equals(fingerprint)
                         && value.getSourceClientPk() == sourceClientPk && value.getSourceIssuer().equals(sourceIssuer)
@@ -87,64 +88,66 @@ public class OAuthAuditDeliveryService {
     public int drain(TrustedRealmBO realm) {
         int completed = 0;
         for (var due : inboxes.findDue(realm, now(), 100)) {
-            if (process(realm, due.getEventId())) { completed++; }
+            if (process(realm, due)) { completed++; }
         }
         return completed;
     }
 
-    boolean process(TrustedRealmBO realm, String eventId) {
+    boolean process(TrustedRealmBO realm, OAuthAuditInboxBO current) {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         transaction.setName("oauthAuditClaim");
-        OAuthAuditInboxBO claimed = transaction.execute(status -> {
-            var current = inboxes.findByEventIdForUpdate(realm, eventId).orElseThrow();
-            if (terminal(current.getState())) { return null; }
-            Instant now = now();
-            if ("PROCESSING".equals(current.getState()) && current.getLeaseUntil().isAfter(now)
-                    || "PENDING".equals(current.getState()) && current.getNextAttemptAt().isAfter(now)) { return null; }
-            if (!current.getProcessingDeadline().isAfter(now) || current.getAttemptCount() >= MAX_ATTEMPTS) {
-                finishDead(realm, current, "EXPIRED", "OAUTH_AUDIT_DEADLINE_REACHED", now);
-                return null;
-            }
-            Instant lease = now.plusSeconds(LEASE_SECONDS);
-            if (lease.isAfter(current.getProcessingDeadline())) { lease = current.getProcessingDeadline(); }
-            return inboxes.save(realm, current.toBuilder().version(current.getVersion() + 1).state("PROCESSING")
-                    .attemptCount(current.getAttemptCount() + 1).claimGeneration(current.getClaimGeneration() + 1)
-                    .claimOwner(UUID.randomUUID().toString()).claimToken(UUID.randomUUID().toString()).leaseUntil(lease).build(), current.getVersion());
-        });
-        if (claimed == null) { return receipts.findByEventId(realm, eventId).isPresent(); }
-        transaction.setName("oauthAuditStoreAndConfirm");
-        return Boolean.TRUE.equals(transaction.execute(status -> {
-            var current = inboxes.findByEventIdForUpdate(realm, eventId).orElseThrow();
-            if (!"PROCESSING".equals(current.getState()) || !Objects.equals(current.getClaimToken(), claimed.getClaimToken())
-                    || !Objects.equals(current.getClaimGeneration(), claimed.getClaimGeneration())
-                    || !current.getLeaseUntil().isAfter(now())) { return false; }
-            TokenUsageAuditEvent event;
-            try { event = mapper.treeToValue(current.getEventPayload(), TokenUsageAuditEvent.class); }
-            catch (com.fasterxml.jackson.core.JsonProcessingException | IllegalArgumentException invalid) {
-                finishDead(realm, current, "DEAD", "OAUTH_AUDIT_EVENT_INVALID", now()); return true;
-            }
-            if (!fingerprint(event).equals(current.getEventFingerprint())) {
-                finishDead(realm, current, "DEAD", "OAUTH_AUDIT_PAYLOAD_CONFLICT", now()); return true;
-            }
-            OAuthAuditBO stored = audits.save(realm, OAuthAuditBO.builder().eventId(event.eventId()).publicId(event.eventId())
-                    .eventType("TOKEN_USE_VERIFIED").subjectRef(event.subjectRef()).clientRef(event.clientRef()).tokenRef(event.tokenRef())
-                    .resourceRef(event.resource()).result(event.result()).reasonCode(event.reasonCode()).traceId(event.traceId())
-                    .occurredAt(event.occurredAt()).payload(JsonNodeFactory.instance.objectNode()).auditKind("OAUTH")
-                    .eventFingerprint(current.getEventFingerprint()).sourceClientPk(current.getSourceClientPk())
-                    .sourceIssuer(current.getSourceIssuer()).retainUntil(current.getRetainUntil()).build(), 0L);
-            Instant confirmed = now();
-            inboxes.save(realm, terminal(current, "STORED", null, confirmed), current.getVersion());
-            receipts.save(realm, receipt(current, "STORED", stored.getId(), confirmed), 0L);
-            return true;
-        }));
+        try {
+            OAuthAuditInboxBO claimed = transaction.execute(status -> {
+                if (terminal(current.getState())) { return null; }
+                Instant now = now();
+                if ("PROCESSING".equals(current.getState()) && current.getLeaseUntil().isAfter(now)
+                        || "PENDING".equals(current.getState()) && current.getNextAttemptAt().isAfter(now)) { return null; }
+                if (!current.getProcessingDeadline().isAfter(now) || current.getAttemptCount() >= MAX_ATTEMPTS) {
+                    finishDead(realm, current, "EXPIRED", "OAUTH_AUDIT_DEADLINE_REACHED", now);
+                    return null;
+                }
+                Instant lease = now.plusSeconds(LEASE_SECONDS);
+                if (lease.isAfter(current.getProcessingDeadline())) { lease = current.getProcessingDeadline(); }
+                return inboxes.saveObserved(realm, current, current.toBuilder().version(current.getVersion() + 1).state("PROCESSING")
+                        .attemptCount(current.getAttemptCount() + 1).claimGeneration(current.getClaimGeneration() + 1)
+                        .claimOwner(UUID.randomUUID().toString()).claimToken(UUID.randomUUID().toString()).leaseUntil(lease).build());
+            });
+            if (claimed == null) { return receipts.findByEventId(realm, current.getEventId()).isPresent(); }
+            transaction.setName("oauthAuditStoreAndConfirm");
+            return Boolean.TRUE.equals(transaction.execute(status -> {
+                // The committed claim may not yet be visible on a replica; its version fences the later update.
+                var owned = claimed;
+                if (!owned.getLeaseUntil().isAfter(now())) { return false; }
+                TokenUsageAuditEvent event;
+                try { event = mapper.treeToValue(owned.getEventPayload(), TokenUsageAuditEvent.class); }
+                catch (com.fasterxml.jackson.core.JsonProcessingException | IllegalArgumentException invalid) {
+                    finishDead(realm, owned, "DEAD", "OAUTH_AUDIT_EVENT_INVALID", now()); return true;
+                }
+                if (!fingerprint(event).equals(owned.getEventFingerprint())) {
+                    finishDead(realm, owned, "DEAD", "OAUTH_AUDIT_PAYLOAD_CONFLICT", now()); return true;
+                }
+                OAuthAuditBO stored = audits.save(realm, OAuthAuditBO.builder().eventId(event.eventId()).publicId(event.eventId())
+                        .eventType("TOKEN_USE_VERIFIED").subjectRef(event.subjectRef()).clientRef(event.clientRef()).tokenRef(event.tokenRef())
+                        .resourceRef(event.resource()).result(event.result()).reasonCode(event.reasonCode()).traceId(event.traceId())
+                        .occurredAt(event.occurredAt()).payload(JsonNodeFactory.instance.objectNode()).auditKind("OAUTH")
+                        .eventFingerprint(owned.getEventFingerprint()).sourceClientPk(owned.getSourceClientPk())
+                        .sourceIssuer(owned.getSourceIssuer()).retainUntil(owned.getRetainUntil()).build(), 0L);
+                Instant confirmed = now();
+                inboxes.saveObserved(realm, owned, terminal(owned, "STORED", null, confirmed));
+                receipts.save(realm, receipt(owned, "STORED", stored.getId(), confirmed), 0L);
+                return true;
+            }));
+        } catch (OptimisticLockingFailureException conflict) {
+            return false;
+        }
     }
 
     private void finishDead(TrustedRealmBO realm, OAuthAuditInboxBO current, String outcome, String reason, Instant now) {
         deadLetters.save(realm, OAuthAuditDeadLetterBO.builder().inboxPk(current.getId()).eventId(current.getEventId())
                 .eventFingerprint(current.getEventFingerprint()).failureCode(reason).attemptCount(current.getAttemptCount())
                 .firstReceivedAt(current.getReceivedAt()).terminalAt(now).retainUntil(current.getRetainUntil()).build(), 0L);
-        inboxes.save(realm, terminal(current, outcome, reason, now), current.getVersion());
+        inboxes.saveObserved(realm, current, terminal(current, outcome, reason, now));
         receipts.save(realm, receipt(current, outcome, null, now), 0L);
     }
 

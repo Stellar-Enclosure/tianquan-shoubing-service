@@ -15,6 +15,8 @@ public interface OAuthAuditInboxRepository {
 
     OAuthAuditInboxBO save(TrustedRealmBO realm, OAuthAuditInboxBO value, long expectedVersion);
 
+    OAuthAuditInboxBO saveObserved(TrustedRealmBO realm, OAuthAuditInboxBO observed, OAuthAuditInboxBO value);
+
     List<OAuthAuditInboxBO> findRetainedBefore(TrustedRealmBO realm, Instant now, long afterId, int limit);
 
     List<OAuthAuditInboxBO> findDue(TrustedRealmBO realm, Instant now, int limit);

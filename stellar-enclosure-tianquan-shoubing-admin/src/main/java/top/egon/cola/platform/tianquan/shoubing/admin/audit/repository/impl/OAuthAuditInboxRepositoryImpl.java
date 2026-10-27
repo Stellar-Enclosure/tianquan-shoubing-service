@@ -99,6 +99,26 @@ public class OAuthAuditInboxRepositoryImpl extends EgonColaRepository<OAuthAudit
         });
     }
 
+    @Override
+    @Transactional
+    public OAuthAuditInboxBO saveObserved(TrustedRealmBO realm, OAuthAuditInboxBO observed, OAuthAuditInboxBO requested) {
+        Objects.requireNonNull(observed, "observed");
+        Objects.requireNonNull(requested, "requested");
+        requireKey(requested.getEventId());
+        if (observed.getId() == null || observed.getVersion() < 0
+                || !Objects.equals(observed.getId(), requested.getId())
+                || requested.getVersion() != Math.addExact(observed.getVersion(), 1L)) { throw stale(); }
+        requireTransition(converter.toSource(observed), requested);
+        return withRealm(realm, tenant -> {
+            OAuthAuditInboxPO row = converter.toSource(requested);
+            row.setTenantId(tenant);
+            row.setUpdateUserId(userIdProvider.currentUserId());
+            row.setUpdateTime(clock.instant().truncatedTo(ChronoUnit.MICROS));
+            if (baseMapper.updateExpectedVersion(tenant, row, observed.getVersion()) != 1) { throw stale(); }
+            return converter.toTarget(row);
+        });
+    }
+
     static void requireTransition(OAuthAuditInboxPO current, OAuthAuditInboxBO requested) {
         if (requested.getRetainUntil() == null) { throw new IllegalArgumentException("OAUTH_STATE_RETENTION_REQUIRED"); }
         if (requested.getEventPayload() == null || !requested.getEventPayload().isObject()

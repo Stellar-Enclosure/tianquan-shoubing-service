@@ -172,7 +172,7 @@ public class OAuthAuditRepositoryImpl extends EgonColaRepository<OAuthAuditMappe
         }
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthAuditPO current = baseMapper.selectByEventIdForUpdate(tenantId, audit.getEventId());
+                OAuthAuditPO current = baseMapper.selectByEventId(tenantId, audit.getEventId());
                 if (current != null) {
                     if (expectedVersion != current.getVersion() || audit.getVersion() != current.getVersion()
                             || audit.getId() != null && !Objects.equals(audit.getId(), current.getId())
