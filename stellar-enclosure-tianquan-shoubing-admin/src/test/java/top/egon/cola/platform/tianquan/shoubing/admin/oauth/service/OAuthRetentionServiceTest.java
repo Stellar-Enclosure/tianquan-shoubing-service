@@ -230,4 +230,13 @@ class OAuthRetentionServiceTest {
         verify(auditRepository, never()).deleteVersionedById(any(), any(), anyLong());
     }
 
+    @Test
+    void expiredDeadLetterIsRetainedUntilRecoveryOrArchivalCanBeProved() {
+        var letter = mock(top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditDeadLetterBO.class);
+        when(deadLetters.findRetainedBefore(TENANT, NOW, 0L, 1)).thenReturn(List.of(letter));
+        assertThat(service.cleanExpired(TENANT)).isZero();
+        verify(deadLetters, never()).deleteRetained(any(), anyLong(), anyLong(), any());
+        verify(inboxes).findRetainedBefore(TENANT, NOW, 0L, 500);
+    }
+
 }

@@ -142,9 +142,9 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
             if (deadlineReached(deadline)) { return deleted; }
             if (receipts.deleteRetained(realm, receipt.getId(), receipt.getVersion(), now)) { deleted++; }
         }
-        for (var letter : deadLetters.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
-            if (deadlineReached(deadline)) { return deleted; }
-            if (deadLetters.deleteRetained(realm, letter.getId(), letter.getVersion(), now)) { deleted++; }
+        // A terminal delivery failure is not proof that the event was recovered or archived.
+        if (!deadlineReached(deadline) && !deadLetters.findRetainedBefore(realm, now, 0L, 1).isEmpty()) {
+            log.warn("Expired OAuth audit dead letters retained for recovery realmKey={}", realm.getRealmKey());
         }
         for (var inbox : inboxes.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
             if (deadlineReached(deadline)) { return deleted; }
