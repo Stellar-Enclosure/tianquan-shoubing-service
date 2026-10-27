@@ -25,6 +25,8 @@ import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyRotationProperties;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,8 +47,6 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.service.SigningKeySe
 public class SigningKeyServiceImpl implements SigningKeyService {
 
     private static final int MINIMUM_RSA_BITS = 3072;
-    private static final long PUBLICATION_WINDOW_SECONDS = Duration.ofHours(24).getSeconds();
-    private static final Duration KEY_OVERLAP = Duration.ofSeconds(690L);
     private static final Set<OAuthKeyStatusEnum> DIRECTORY_STATUSES = EnumSet.allOf(OAuthKeyStatusEnum.class);
     private static final Set<String> PUBLIC_JWK_FIELDS = Set.of("kty", "kid", "alg", "use", "n", "e");
 
@@ -68,6 +68,20 @@ public class SigningKeyServiceImpl implements SigningKeyService {
     @NonNull
     @Qualifier("idpClock")
     private final Clock clock;
+
+    @NonNull
+    @Qualifier("oauthKeyRotationProperties")
+    private final OAuthKeyRotationProperties rotation;
+    @Value("${egon.tianquan-shoubing.oauth.authentication-ttl:PT8H}")
+    private final Duration authenticationTtl;
+    @Value("${egon.tianquan-shoubing.clock-skew:PT30S}")
+    private final Duration clockSkew;
+
+    @jakarta.annotation.PostConstruct
+    void validateLifecycle() {
+        rotation.validate();
+        rotation.verificationOverlap(authenticationTtl, clockSkew);
+    }
 
     @Override
     @Transactional(readOnly = true)
@@ -128,7 +142,7 @@ public class SigningKeyServiceImpl implements SigningKeyService {
         }
         if (target.getStatus() != OAuthKeyStatusEnum.PUBLISHED
                 || target.getPublishedAt() == null
-                || target.getPublishedAt().plusSeconds(PUBLICATION_WINDOW_SECONDS).isAfter(clock.instant())) {
+                || target.getPublishedAt().plus(rotation.getPrepublish()).isAfter(clock.instant())) {
             throw new IllegalStateException("OAUTH_SIGNING_KEY_PUBLICATION_WINDOW_NOT_ELAPSED");
         }
         validateKeyPair(realm, exactKid, target.getPrivateKeyCiphertext(), target.getPublicJwk());
@@ -142,7 +156,7 @@ public class SigningKeyServiceImpl implements SigningKeyService {
                 OAuthSigningKeyBO verifyOnly = copy(active)
                         .version(Math.addExact(active.getVersion(), 1L))
                         .status(OAuthKeyStatusEnum.VERIFY_ONLY)
-                        .verifyUntil(now.plus(KEY_OVERLAP))
+                        .verifyUntil(now.plus(rotation.verificationOverlap(authenticationTtl, clockSkew)))
                         .build();
                 keys.save(realm, verifyOnly, active.getVersion());
             }

@@ -72,3 +72,9 @@ Original MIT/LGPL licenses and author attribution are preserved.
 ### Permission manifest delivery
 
 The `permission-producer` profile exports and verifies each final executable independently. See [permission build and controlled delivery](docs/permission-ci.md) for the exact toolchain pin, offline CI, candidate registration and deployment-qualified activation gates. Runtime startup and administrator grants are not CI side effects.
+
+## SSO and signing-key lifecycle
+
+`egon.tianquan-shoubing.oauth.authentication-ttl` controls the SSO lifetime (1 minute to 8 hours, default `PT8H`).
+`oauth.key-rotation.period`, `prepublish`, and `schedule` control automatic rotation and the same publication delay is enforced for manual activation.
+`oauth.key-rotation.verification-overlap` is optional. When omitted, retiring keys remain verifiable for the SSO lifetime plus `egon.tianquan-shoubing.clock-skew` (at least the existing 690-second access-token grace). An explicit overlap must be at least this long; invalid lifecycle settings fail at startup. Existing key expiry timestamps are preserved.

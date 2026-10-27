@@ -11,6 +11,8 @@ import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.time.Clock;
+import java.time.Duration;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyRotationProperties;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
@@ -64,7 +66,8 @@ class SigningKeyServiceImplTest {
     @BeforeEach
     void setUp() {
         service = new SigningKeyServiceImpl(keys, realms, cipher, views, objectMapper,
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC), new OAuthKeyRotationProperties(),
+                Duration.ofHours(8), Duration.ofSeconds(30));
         when(views.toTarget(any(OAuthSigningKeyBO.class), eq(TENANT.getIssuer()), anyBoolean()))
                 .thenAnswer(invocation -> {
                     OAuthSigningKeyBO value = invocation.getArgument(0);
@@ -116,8 +119,9 @@ class SigningKeyServiceImplTest {
                 NOW.minusSeconds(24 * 60 * 60L), 0L);
         when(realms.findByRealmKeyForUpdate(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 4L, 8L)));
         when(keys.findByKidForUpdate(TENANT, "key-3")).thenReturn(Optional.of(published));
+        OAuthSigningKeyBO previous = key("old-key", pair, OAuthKeyStatusEnum.ACTIVE, NOW.minusSeconds(172800), 2L);
         when(keys.findByStatuses(eq(TENANT), eq(EnumSet.of(OAuthKeyStatusEnum.ACTIVE)), eq(0L), eq(8)))
-                .thenReturn(List.of());
+                .thenReturn(List.of(previous));
         when(cipher.decryptPrivateKey(TENANT, "key-3", CIPHERTEXT)).thenReturn(privatePem(pair));
         when(keys.save(eq(TENANT), any(OAuthSigningKeyBO.class), any(Long.class)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
@@ -127,6 +131,9 @@ class SigningKeyServiceImplTest {
         SigningKeyVO active = service.activate(TENANT, "key-3", 0L);
 
         assertThat(active.getStatus()).isEqualTo("ACTIVE");
+        var savedKeys = org.mockito.ArgumentCaptor.forClass(OAuthSigningKeyBO.class);
+        verify(keys, org.mockito.Mockito.times(2)).save(eq(TENANT), savedKeys.capture(), anyLong());
+        assertThat(savedKeys.getAllValues().getFirst().getVerifyUntil()).isEqualTo(NOW.plusSeconds(28_830));
         var savedRealm = org.mockito.ArgumentCaptor.forClass(OAuthRealmBO.class);
         verify(realms).save(eq(TENANT), savedRealm.capture(), eq(4L));
         assertThat(savedRealm.getValue().getActiveKid()).isEqualTo("key-3");

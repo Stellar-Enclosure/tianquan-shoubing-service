@@ -35,6 +35,23 @@ public class OAuthKeyRotationProperties {
     @NotBlank
     private String schedule = "0 0 2 * * *";
 
+    /** Null follows the SSO lifetime automatically; an explicit window may only extend it. */
+    private Duration verificationOverlap;
+
+    public Duration verificationOverlap(Duration authenticationTtl, Duration clockSkew) {
+        if (authenticationTtl == null || authenticationTtl.compareTo(Duration.ofMinutes(1)) < 0
+                || authenticationTtl.compareTo(Duration.ofHours(8)) > 0
+                || clockSkew == null || clockSkew.isNegative() || clockSkew.compareTo(Duration.ofSeconds(60)) > 0) {
+            throw new IllegalStateException("OAUTH_AUTHENTICATION_LIFECYCLE_INVALID");
+        }
+        Duration required = authenticationTtl.plus(clockSkew);
+        if (required.compareTo(Duration.ofSeconds(690)) < 0) { required = Duration.ofSeconds(690); }
+        if (verificationOverlap != null && verificationOverlap.compareTo(required) < 0) {
+            throw new IllegalStateException("OAUTH_KEY_VERIFICATION_OVERLAP_TOO_SHORT");
+        }
+        return verificationOverlap == null ? required : verificationOverlap;
+    }
+
     public void validate() {
         if (period == null || period.compareTo(Duration.ofDays(90)) < 0
                 || prepublish == null || prepublish.compareTo(Duration.ofHours(24)) < 0
