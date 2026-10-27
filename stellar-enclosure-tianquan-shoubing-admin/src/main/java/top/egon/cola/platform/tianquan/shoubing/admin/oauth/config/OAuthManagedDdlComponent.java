@@ -12,9 +12,9 @@ import top.egon.cola.component.common.mybatis.ddl.EgonColaDdlResult;
 import top.egon.cola.component.common.mybatis.ddl.EgonColaDdlTargetBO;
 import top.egon.cola.component.common.mybatis.ddl.EgonColaPostgreDdlRunner;
 import top.egon.cola.component.common.mybatis.sharding.EgonColaShardingProperties;
-import top.egon.cola.component.common.mybatis.sharding.EgonColaShardingProperties.DataSourceRoleEnum;
 import top.egon.cola.component.common.mybatis.sharding.bootstrap.EgonColaShardingTopologyValidator;
 import top.egon.cola.component.common.mybatis.sharding.bootstrap.EgonColaShardingTopologyValidator.TopologyBO;
+import top.egon.cola.component.outbox.migration.OutboxStorageTopology;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -46,14 +46,14 @@ public class OAuthManagedDdlComponent {
     private final OAuthStateSchemaValidator stateSchemaValidator;
 
     public void initialize(Map<String, DataSource> physicalDataSources, byte[] nativeRules) {
-        if (physicalDataSources == null || physicalDataSources.size() != 1
-                || shardingProperties.getDataSources() == null
-                || shardingProperties.getDataSources().size() != 1) {
+        if (physicalDataSources == null || shardingProperties.getDataSources() == null) {
             throw new IllegalStateException("OAUTH_SINGLE_PRIMARY_REQUIRED");
         }
-        var primary = shardingProperties.getDataSources().getFirst();
+        var primary = OutboxStorageTopology.singlePrimary(shardingProperties);
+        var configured = shardingProperties.getDataSources().stream().map(source -> source.name())
+                .collect(java.util.stream.Collectors.toSet());
         DataSource primaryDataSource = physicalDataSources.get(primary.name());
-        if (primary.role() != DataSourceRoleEnum.PRIMARY || primaryDataSource == null) {
+        if (!physicalDataSources.keySet().equals(configured) || primaryDataSource == null) {
             throw new IllegalStateException("OAUTH_PRIMARY_DATASOURCE_REQUIRED");
         }
 
