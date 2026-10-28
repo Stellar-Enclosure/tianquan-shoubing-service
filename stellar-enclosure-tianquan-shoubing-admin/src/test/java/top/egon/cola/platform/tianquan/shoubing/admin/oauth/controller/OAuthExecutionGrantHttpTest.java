@@ -71,7 +71,8 @@ class OAuthExecutionGrantHttpTest {
         var resolve = new ExecutionGrantContract.ResolveRequest(TICKET);
         var revoke = new ExecutionGrantContract.RevokeRequest(USER, TICKET);
         var resolution = new ExecutionGrantContract.Resolution(ID, caller.realm().getIssuer().toString(), 101L,
-                "subject", "https://api.example/orders", issue.purpose(), INTENT, issue.bindingSha256(), true,
+                "subject", "https://api.example/orders", new ExecutionGrantContract.Source("service", "orders", "trade", "orders", "test"),
+                issue.purpose(), INTENT, issue.bindingSha256(), true,
                 DEADLINE.minusSeconds(60), DEADLINE, Set.of("agent:run"));
         when(grants.issue(caller, issue)).thenReturn(new ExecutionGrantContract.Issued(TICKET, DEADLINE.minusSeconds(60)));
         when(grants.resolve(caller, resolve)).thenReturn(resolution);

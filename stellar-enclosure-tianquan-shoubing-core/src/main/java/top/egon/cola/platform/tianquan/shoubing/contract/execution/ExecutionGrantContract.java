@@ -50,12 +50,20 @@ public final class ExecutionGrantContract {
         @Override public String toString() { return "ExecutionGrantIssued[redacted]"; }
     }
 
-    public record Resolution(String grantId, String issuer, long tenantId, String subject, String resource, String purpose,
+    /** Attested source tuple must be compared with the separately authenticated requester. */
+    public record Source(String clientId, String appId, String businessCode, String applicationCode, String environment) {
+        public Source {
+            if (!text(clientId) || !text(appId) || !text(businessCode) || !text(applicationCode) || !text(environment)) throw invalid();
+        }
+        @Override public String toString() { return "ExecutionGrantSource[redacted]"; }
+    }
+
+    public record Resolution(String grantId, String issuer, long tenantId, String subject, String resource, Source source, String purpose,
                              String intentId, String bindingSha256, boolean sessionRequired, Instant expiresAt,
                              Instant intentDeadlineAt, Set<String> scopes) {
         public Resolution {
             if (grantId == null || !grantId.matches("9[0-9]{62}") || issuer == null || issuer.isBlank()
-                    || tenantId <= 0 || subject == null || subject.isBlank() || resource == null || resource.isBlank()
+                    || tenantId <= 0 || subject == null || subject.isBlank() || resource == null || resource.isBlank() || source == null
                     || purpose == null || !purpose.matches("[A-Z][A-Z0-9_]{0,95}") || intentId == null
                     || bindingSha256 == null || !bindingSha256.matches("[0-9a-f]{64}") || expiresAt == null
                     || intentDeadlineAt == null || scopes == null || scopes.isEmpty() || scopes.size() > 64) throw invalid();
@@ -69,6 +77,11 @@ public final class ExecutionGrantContract {
 
     private static void requireToken(String token) {
         if (token == null || token.length() > 16_384 || !token.matches("[A-Za-z0-9._~+/-]+=*")) throw invalid();
+    }
+
+    private static boolean text(String value) {
+        return value != null && !value.isBlank() && value.length() <= 128 && value.equals(value.trim())
+                && value.chars().noneMatch(Character::isISOControl);
     }
 
     private static IllegalArgumentException invalid() { return new IllegalArgumentException("EXECUTION_GRANT_REQUEST_INVALID"); }

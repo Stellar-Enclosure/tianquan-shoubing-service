@@ -120,6 +120,8 @@ class OAuthExecutionGrantServiceTest {
         assertEquals(request.bindingSha256(), result.bindingSha256()); assertTrue(result.sessionRequired());
         assertEquals(request.deadlineAt(), result.intentDeadlineAt()); assertEquals(issued.expiresAt(), result.expiresAt());
         assertEquals("alice", result.subject()); assertEquals(user.scopes(), result.scopes());
+        assertEquals(new ExecutionGrantContract.Source(source.clientId(), source.appId(), source.businessCode(),
+                source.applicationCode(), source.environment()), result.source());
         var revokeCaller = caller(source, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, 51, "501", "1".repeat(64));
         when(authority.captureExecutionUser(revokeCaller, TARGET, "fresh-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE))
                 .thenReturn(user);

@@ -53,7 +53,8 @@ class OAuthExecutionGrantSecurityChainTest {
             var mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
             String ticket = "{\"ticket\":{\"grantId\":\"9" + "1".repeat(62) + "\",\"ciphertext\":\"ENC:v1:fixture\"}}";
             var resolution = new ExecutionGrantContract.Resolution("9" + "1".repeat(62), "https://idp.example/tenants/101", 101,
-                    "subject", "https://api.example/orders", "TEST", "00000000-0000-0000-0000-000000000123", "c".repeat(64),
+                    "subject", "https://api.example/orders", new ExecutionGrantContract.Source("service", "jianshen", "platform", "jianshen", "test"),
+                    "TEST", "00000000-0000-0000-0000-000000000123", "c".repeat(64),
                     false, Instant.parse("2026-10-30T00:00:00Z"), Instant.parse("2026-10-30T00:01:00Z"), Set.of("agent:run"));
             when(grants.resolve(any(), any())).thenReturn(resolution);
             for (String path : new String[]{ExecutionGrantContract.ISSUE_PATH, ExecutionGrantContract.RESOLVE_PATH, ExecutionGrantContract.REVOKE_PATH}) {

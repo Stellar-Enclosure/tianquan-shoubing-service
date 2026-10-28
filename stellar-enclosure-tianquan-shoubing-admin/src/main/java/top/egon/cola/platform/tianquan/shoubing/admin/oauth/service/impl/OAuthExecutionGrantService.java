@@ -72,8 +72,10 @@ public class OAuthExecutionGrantService {
     public ExecutionGrantContract.Resolution resolve(OAuthAuthorityService.Caller caller, ExecutionGrantContract.ResolveRequest request) {
         Objects.requireNonNull(request, "request");
         Resolution value = resolve(caller, new OpaqueExecutionGrantCodec.Ticket(request.ticket().grantId(), request.ticket().ciphertext()));
+        var source = value.source();
         return new ExecutionGrantContract.Resolution(value.grantId(), value.issuer(), value.tenantId(), value.subject(),
-                value.resource(), value.purpose(), value.intentId(), value.bindingSha256(), value.sessionRequired(),
+                value.resource(), new ExecutionGrantContract.Source(source.clientId(), source.appId(), source.businessCode(),
+                        source.applicationCode(), source.environment()), value.purpose(), value.intentId(), value.bindingSha256(), value.sessionRequired(),
                 value.expiresAt(), value.intentDeadlineAt(), value.scopes());
     }
 
@@ -148,7 +150,7 @@ public class OAuthExecutionGrantService {
             throw rejected();
         }
         if (envelope.expiresAt().isAfter(user.validUntil())) throw rejected();
-        return new Resolution(envelope.grantId(), user.issuer(), user.tenantId(), user.subject(), user.resource(),
+        return new Resolution(envelope.grantId(), user.issuer(), user.tenantId(), user.subject(), user.resource(), envelope.source(),
                 envelope.purpose(), envelope.intentId(), envelope.bindingSha256(), envelope.sessionRequired(),
                 envelope.expiresAt(), envelope.intentDeadlineAt(), user.scopes());
     }
@@ -235,7 +237,8 @@ public class OAuthExecutionGrantService {
         @Override public String toString() { return "ExecutionGrantIssued[redacted]"; }
     }
 
-    record Resolution(String grantId, String issuer, long tenantId, String subject, String resource, String purpose,
+    record Resolution(String grantId, String issuer, long tenantId, String subject, String resource,
+                      ExecutionGrantEnvelope.ServiceBinding source, String purpose,
                       String intentId, String bindingSha256, boolean sessionRequired, Instant expiresAt,
                       Instant intentDeadlineAt, Set<String> scopes) {
         Resolution { scopes = Set.copyOf(scopes); }
