@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.net.URI;
@@ -303,12 +304,31 @@ class TokenRevocationServiceTest {
         when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
         when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.empty());
+        when(states.fenceRealmWhenTokenAbsent(REALM, 1L, 0L, TOKEN_DIGEST, NOW)).thenReturn(true);
         var command = RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("REFRESH_TOKEN_REPLAY").build();
 
         service.revoke(REALM, command);
         assertThatThrownBy(() -> service.revokeKnown(REALM, command))
                 .isInstanceOf(org.springframework.dao.TransientDataAccessResourceException.class);
+        verify(states).fenceRealmWhenTokenAbsent(REALM, 1L, 0L, TOKEN_DIGEST, NOW);
         verify(outbox, never()).enqueue(any(OutboxMessage.class));
+    }
+
+    @Test
+    void replicaMissCannotReportAnUnknownTokenWhenThePrimaryConditionDoesNotConfirmAbsence() {
+        when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
+        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.empty());
+        when(states.fenceRealmWhenTokenAbsent(REALM, 1L, 0L, TOKEN_DIGEST, NOW)).thenReturn(false);
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        var command = RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("ADMIN_REVOKE").build();
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> service.revoke(REALM, command)))
+                .isInstanceOf(org.springframework.dao.TransientDataAccessResourceException.class);
+        verify(transactionManager).rollback(any());
+        verify(outbox, never()).enqueue(any(OutboxMessage.class));
+        verifyNoInteractions(authorizations);
     }
 
     @org.junit.jupiter.params.ParameterizedTest

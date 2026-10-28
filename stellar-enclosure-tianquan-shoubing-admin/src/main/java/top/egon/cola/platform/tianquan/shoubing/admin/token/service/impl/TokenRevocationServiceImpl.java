@@ -123,6 +123,11 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 .orElse(null);
         if (tokenCandidate == null) {
             if (tokenWasObserved) { throw new org.springframework.dao.TransientDataAccessResourceException("observed token is not yet visible"); }
+            // A replica miss is only idempotent once the primary condition confirms absence.
+            if (!stateRepository.fenceRealmWhenTokenAbsent(realm, realmState.getId(), realmState.getVersion(),
+                    input.getTokenDigest(), clock.instant())) {
+                throw new org.springframework.dao.TransientDataAccessResourceException("token absence cannot yet be confirmed");
+            }
             return;
         }
         OAuthAuthorizationBO authorizationCandidate = authorizationRepository.findById(

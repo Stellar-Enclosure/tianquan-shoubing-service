@@ -8,6 +8,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
@@ -24,6 +25,10 @@ public interface OAuthSecurityStateMapper extends EgonColaMapper<OAuthSecuritySt
 
     List<OAuthSecurityStatePO> selectSnapshot(@Param("tenantId") Long tenantId,
             @Param("clientKey") String clientKey, @Param("subject") String subject);
+
+    int fenceRealmWhenTokenAbsent(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("expectedVersion") long expectedVersion, @Param("tokenDigest") String tokenDigest,
+            @Param("now") Instant now, @Param("actor") String actor);
 
     @Validated(EgonColaModelValidationGroups.Query.class)
     OAuthSecurityStatePO selectByTarget(

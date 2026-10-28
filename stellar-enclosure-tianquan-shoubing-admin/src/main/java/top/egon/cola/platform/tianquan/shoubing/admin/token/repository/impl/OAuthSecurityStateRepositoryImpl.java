@@ -1,6 +1,7 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl;
 
 import java.time.Clock;
+import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Objects;
@@ -59,6 +60,16 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
         }
         return withTrustedStoragePartition(realm, tenant -> baseMapper.selectSnapshot(tenant, clientPk.toString(), subject)
                 .stream().map(converter::toTarget).toList());
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRealmWhenTokenAbsent(TrustedRealmBO realm, long id, long expectedVersion, String tokenDigest, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || tokenDigest == null || !tokenDigest.matches("[0-9a-f]{64}") || now == null) {
+            throw new IllegalArgumentException("OAUTH_SECURITY_STATE_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceRealmWhenTokenAbsent(
+                tenant, id, expectedVersion, tokenDigest, now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
     }
 
     @Override

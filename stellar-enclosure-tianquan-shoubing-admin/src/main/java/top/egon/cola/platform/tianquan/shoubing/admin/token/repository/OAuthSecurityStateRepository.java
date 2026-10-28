@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.validation.annotation.Validated;
@@ -18,6 +19,8 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSe
 public interface OAuthSecurityStateRepository {
 
     List<OAuthSecurityStateBO> findSnapshot(TrustedRealmBO trustedRealm, Long clientPk, String subject);
+
+    boolean fenceRealmWhenTokenAbsent(TrustedRealmBO realm, long id, long expectedVersion, String tokenDigest, Instant now);
 
     Optional<OAuthSecurityStateBO> findByTarget(
             @NotNull @Valid TrustedRealmBO trustedRealm,
