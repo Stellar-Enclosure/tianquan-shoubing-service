@@ -464,7 +464,7 @@ class TokenRevocationServiceTest {
                 .thenReturn(Optional.of(realmState));
         when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
         when(clients.findByClientIdForUpdate(REALM, "web-client")).thenReturn(Optional.of(client));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
                 .thenReturn(Optional.empty());
         when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
@@ -484,6 +484,7 @@ class TokenRevocationServiceTest {
         verify(outbox).enqueue(outboxMessage.capture());
         assertThat(((OAuthSecurityChangedEvent) outboxMessage.getValue().payload()).targetType())
                 .isEqualTo("CLIENT");
+        verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
     }
 
     @Test
@@ -499,8 +500,9 @@ class TokenRevocationServiceTest {
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(registered));
         when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(realmState));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.empty());
+        when(states.advanceRealmIfSubjectAbsent(eq(REALM), anyLong(), anyLong(), eq("alice"), anyLong(), any())).thenReturn(true);
         when(authorizations.findByPrincipalName(REALM, "alice", "ACTIVE", 0L, 1)).thenReturn(List.of());
         when(authorizations.findByPrincipalName(REALM, "alice", "REVOKED", 0L, 1)).thenReturn(List.of());
         when(authorizations.findByPrincipalName(REALM, "alice", "EXPIRED", 0L, 1)).thenReturn(List.of());
@@ -513,11 +515,60 @@ class TokenRevocationServiceTest {
         TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
 
         ArgumentCaptor<OAuthSecurityStateBO> stateChange = ArgumentCaptor.forClass(OAuthSecurityStateBO.class);
-        verify(states, org.mockito.Mockito.times(2)).save(eq(REALM), stateChange.capture(), anyLong());
-        OAuthSecurityStateBO subjectState = stateChange.getAllValues().get(1);
+        verify(states).save(eq(REALM), stateChange.capture(), anyLong());
+        OAuthSecurityStateBO subjectState = stateChange.getValue();
         assertThat(subjectState.getTargetType()).isEqualTo(OAuthSecurityTargetEnum.SUBJECT);
         assertThat(subjectState.getGeneration()).isZero();
         assertThat(subjectState.getTargetKey()).isEqualTo("alice");
+        verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
+    }
+
+    @Test
+    void replicaMissCannotSeedSubjectIfPrimaryHasStateOrAuthorizationHistory() {
+        TrustedRealmBO platform = TrustedRealmBO.builder().issuer(URI.create("https://idp.example/platform"))
+                .realmKey("platform").realmType(RealmTypeEnum.PLATFORM).storagePartitionId(9000L).trustVersion(0L).build();
+        OAuthRealmBO registered = realmRow();
+        when(managementRealms.platformRealm()).thenReturn(platform);
+        when(realms.findAllByStoragePartition(platform)).thenReturn(List.of(registered));
+        when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(registered));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice")).thenReturn(Optional.empty());
+        when(states.advanceRealmIfSubjectAbsent(eq(REALM), anyLong(), anyLong(), eq("alice"), anyLong(), any())).thenReturn(false);
+
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status ->
+                service.revokeSubject(new OAuthSubjectRevokeCommand("alice", "USER_CREATED"))))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(transactionManager).rollback(any());
+        verify(states, never()).save(any(), any(), anyLong());
+        verify(outbox, never()).enqueue(any());
+    }
+
+    @Test
+    void existingSubjectGenerationUsesReplicaCandidateAndVersionedWrite() {
+        TrustedRealmBO platform = TrustedRealmBO.builder().issuer(URI.create("https://idp.example/platform"))
+                .realmKey("platform").realmType(RealmTypeEnum.PLATFORM).storagePartitionId(9000L).trustVersion(0L).build();
+        OAuthRealmBO registered = realmRow();
+        when(managementRealms.platformRealm()).thenReturn(platform);
+        when(realms.findAllByStoragePartition(platform)).thenReturn(List.of(registered));
+        when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(registered));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        OAuthSecurityStateBO subject = securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 7L);
+        subject.setVersion(4L);
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice")).thenReturn(Optional.of(subject));
+        when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), anyLong())).thenAnswer(call -> call.getArgument(1));
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        service.revokeSubject(new OAuthSubjectRevokeCommand("alice", "ADMIN_REVOKE_ALL"));
+
+        ArgumentCaptor<OAuthSecurityStateBO> changes = ArgumentCaptor.forClass(OAuthSecurityStateBO.class);
+        verify(states).save(eq(REALM), changes.capture(), eq(4L));
+        assertThat(changes.getValue().getGeneration()).isEqualTo(4L);
+        verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
+        verify(states, never()).advanceRealmIfSubjectAbsent(any(), anyLong(), anyLong(), anyString(), anyLong(), any());
     }
 
     private static OAuthSecurityStateBO securityState(

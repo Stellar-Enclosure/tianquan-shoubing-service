@@ -25,6 +25,9 @@ public interface OAuthSecurityStateRepository {
     boolean advanceRealmIfRevocationAbsent(TrustedRealmBO realm, long id, long expectedVersion,
             OAuthSecurityTargetEnum targetType, String targetKey, long revision, Instant now);
 
+    boolean advanceRealmIfSubjectAbsent(TrustedRealmBO realm, long id, long expectedVersion,
+            String subject, long revision, Instant now);
+
     Optional<OAuthSecurityStateBO> findByTarget(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotNull OAuthSecurityTargetEnum targetType,

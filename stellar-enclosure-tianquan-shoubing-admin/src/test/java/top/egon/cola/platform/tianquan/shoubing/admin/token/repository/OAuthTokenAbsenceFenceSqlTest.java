@@ -124,4 +124,47 @@ class OAuthTokenAbsenceFenceSqlTest {
             MDC.remove("tenantId");
         }
     }
+
+    @Test
+    void subjectSeedRequiresPrimaryAbsenceOfStateAndAuthorizationInTheSameGroup() throws Exception {
+        var configuration = new Configuration();
+        String resource = "mapper/token/OAuthSecurityStateMapper.xml";
+        try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            new XMLMapperBuilder(input, configuration, resource, configuration.getSqlFragments()).parse();
+        }
+        configuration.setEnvironment(new Environment("test", new SpringManagedTransactionFactory(), mock(DataSource.class)));
+        var properties = new EgonColaMybatisPlusProperties();
+        var tenantGuard = new EgonColaTenantIdGuardInnerInterceptor(() -> "service:tianquan-shoubing", properties);
+        new CommonAnnotationBeanPostProcessor().postProcessBeforeInitialization(tenantGuard, "sqlGuard");
+        var tables = new ArrayList<String>();
+        var guard = new EgonColaLocalWriteGuardInnerInterceptor(query -> {
+            tables.add(query.logicalTable());
+            return new EgonColaRouteResult(List.of(new EgonColaPhysicalTargetBO("primary", "tianquan_oauth", query.logicalTable())), "a".repeat(64));
+        }, tenantGuard, mock(EgonColaTwoLevelRouteStrategy.class), Map.of());
+        var parameters = Map.<String, Object>of("tenantId", 101L, "id", 42L, "expectedVersion", 4L,
+                "subject", "alice", "revision", 8L, "now", Instant.parse("2026-10-28T00:00:00Z"),
+                "actor", "service:tianquan-shoubing");
+        var statement = configuration.getMappedStatement(OAuthSecurityStateMapper.class.getName() + ".advanceRealmIfSubjectAbsent");
+        String sql = statement.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
+        assertThat(sql).contains("s.tenant_id = ?", "s.id = ?", "s.version = ?", "subject_state.tenant_id = ?",
+                "subject_state.target_key = ?", "a.tenant_id = ?", "a.principal_name = ?", "a.principal_type = 'user'");
+        var parser = new org.apache.shardingsphere.infra.parser.ShardingSphereSQLParserEngine(
+                org.apache.shardingsphere.infra.spi.type.typed.TypedSPILoader.getService(
+                        org.apache.shardingsphere.database.connector.core.type.DatabaseType.class, "PostgreSQL"),
+                new org.apache.shardingsphere.sql.parser.engine.api.CacheOption(16, 64),
+                new org.apache.shardingsphere.sql.parser.engine.api.CacheOption(16, 64));
+        assertThat(parser.parse(sql, false)).isNotNull();
+        MDC.put("tenantId", "101");
+        try {
+            Executor executor = mock(Executor.class);
+            var invocation = new Invocation(executor, Executor.class.getMethod("update", MappedStatement.class, Object.class),
+                    new Object[]{statement, parameters});
+            assertThatCode(() -> new EgonColaOriginalSqlGuardInterceptor(properties).intercept(invocation)).doesNotThrowAnyException();
+            var handler = configuration.newStatementHandler(executor, statement, parameters, RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
+            assertThatCode(() -> guard.beforePrepare(handler, null, null)).doesNotThrowAnyException();
+            assertThat(tables).contains("oauth_security_state", "oauth_authorization");
+        } finally {
+            MDC.remove("tenantId");
+        }
+    }
 }

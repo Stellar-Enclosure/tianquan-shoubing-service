@@ -232,7 +232,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
             realmRepository.findByRealmKeyForUpdate(realm)
                     .orElseThrow(() -> unavailable("OAUTH_REVOCATION_REALM_MISSING"));
             OAuthSecurityStateBO realmState = requiredState(realm, OAuthSecurityTargetEnum.REALM, "self");
-            OAuthSecurityStateBO subjectState = stateRepository.findByTargetForUpdate(
+            OAuthSecurityStateBO subjectState = stateRepository.findByTarget(
                     realm, OAuthSecurityTargetEnum.SUBJECT, input.getSubject()).orElse(null);
             if (subjectState == null && hasAuthorizationHistory(realm, input.getSubject())) {
                 throw unavailable("OAUTH_SECURITY_SUBJECT_STATE_MISSING_WITH_AUTHORIZATION");
@@ -245,7 +245,14 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 case "USER_ENABLED", "USER_CREATED" -> true;
                 default -> subjectState == null || subjectState.isEnabled();
             };
-            saveRealmRevision(realm, realmState, revision);
+            if (subjectState == null) {
+                if (!stateRepository.advanceRealmIfSubjectAbsent(realm, realmState.getId(), realmState.getVersion(),
+                        input.getSubject(), revision, now)) {
+                    throw new org.springframework.dao.OptimisticLockingFailureException("OAuth subject state or authorization history changed");
+                }
+            } else {
+                saveRealmRevision(realm, realmState, revision);
+            }
             OAuthSecurityStateBO changed = securityState(
                     subjectState, OAuthSecurityTargetEnum.SUBJECT, input.getSubject(),
                     generation, enabled, revision, input.getReasonCode());
@@ -275,7 +282,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         OAuthClientBO client = clientRepository.findByClientIdForUpdate(realm, clientCandidate.getClientId())
                 .filter(value -> Objects.equals(value.getId(), input.getClientPk()))
                 .orElseThrow(TokenRevocationServiceImpl::invalidClient);
-        OAuthSecurityStateBO clientState = stateRepository.findByTargetForUpdate(
+        OAuthSecurityStateBO clientState = stateRepository.findByTarget(
                 realm, OAuthSecurityTargetEnum.CLIENT, Long.toString(client.getId())).orElse(null);
         boolean created = clientState == null;
         if (created && !"CLIENT_CREATED".equals(input.getReasonCode())) {
