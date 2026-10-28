@@ -127,7 +127,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         if (primary == null) throw unavailable("EXECUTION_AUTHORITY_PRIMARY_REQUIRED");
         primary.requirePrimaryTransaction();
         TrustedRealmBO realm = requireRealm(trustedRealm);
-        if (realm.getBusinessTenantId() == null || grantId == null || !grantId.matches("9[0-9]{62}") || intentDeadline == null
+        if (realm.getBusinessTenantId() == null || grantId == null || !grantId.matches("[89][0-9]{62}") || intentDeadline == null
                 || intentDeadline.isAfter(Instant.parse("9999-12-30T23:59:59Z"))) {
             throw new IllegalArgumentException("EXECUTION_GRANT_REVOCATION_INVALID");
         }

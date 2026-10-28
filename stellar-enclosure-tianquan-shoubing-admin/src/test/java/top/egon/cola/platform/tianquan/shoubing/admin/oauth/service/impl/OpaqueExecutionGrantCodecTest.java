@@ -92,6 +92,89 @@ class OpaqueExecutionGrantCodecTest {
                 original.user(), original.source(), PURPOSE, "x".repeat(100_000)));
         assertTrue(original.grantId().matches("9[0-9]{62}"));
         assertTrue(original.grantId().length() > 19);
+        assertEquals("972723622044314141421981409055292564705970325140163685520872518", original.grantId());
+    }
+
+    @Test
+    void service_tickets_are_realm_bound_confidential_and_separate_from_user_tickets() {
+        var envelope = serviceEnvelope(INTENT, "c".repeat(64));
+        var first = codec.sealService(realm, envelope);
+        var second = codec.sealService(realm, envelope);
+        assertEquals(first.grantId(), second.grantId());
+        assertNotEquals(first.ciphertext(), second.ciphertext());
+        assertEquals(envelope, codec.openService(realm, first));
+        assertTrue(first.grantId().matches("8[0-9]{62}"));
+        assertFalse(first.ciphertext().contains("worker-service"));
+        assertFalse(first.toString().contains(first.ciphertext()));
+        assertFalse(envelope.toString().contains("worker-service"));
+        assertThrows(IllegalArgumentException.class,
+                () -> cipher.decrypt(realm, "execution-grant", first.grantId(), first.ciphertext()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OpaqueExecutionGrantCodec.Ticket(first.grantId(), first.ciphertext()));
+        var user = codec.seal(realm, envelope(INTENT, "c".repeat(64)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OpaqueExecutionGrantCodec.ServiceTicket(user.grantId(), user.ciphertext()));
+        var otherIssuer = TrustedRealmBO.builder().issuer(URI.create("https://other.example/tenants/101"))
+                .realmKey("tenant:101").realmType(RealmTypeEnum.TENANT).storagePartitionId(101L)
+                .businessTenantId(101L).trustVersion(2L).build();
+        assertThrows(IllegalArgumentException.class, () -> codec.openService(otherIssuer, first));
+    }
+
+    @Test
+    void service_tickets_reject_altered_identifiers_ciphertext_and_noncanonical_json() throws Exception {
+        var value = serviceEnvelope(INTENT, "c".repeat(64));
+        var ticket = codec.sealService(realm, value);
+        String otherId = serviceEnvelope("17d85a12-4080-4ce0-86a6-b7fc9555d9e1", "c".repeat(64)).grantId();
+        assertThrows(IllegalArgumentException.class, () -> codec.openService(realm,
+                new OpaqueExecutionGrantCodec.ServiceTicket(otherId, ticket.ciphertext())));
+        int offset = ticket.ciphertext().length() - 8;
+        char original = ticket.ciphertext().charAt(offset);
+        String altered = ticket.ciphertext().substring(0, offset) + (original == 'A' ? 'B' : 'A')
+                + ticket.ciphertext().substring(offset + 1);
+        assertThrows(IllegalArgumentException.class, () -> codec.openService(realm,
+                new OpaqueExecutionGrantCodec.ServiceTicket(ticket.grantId(), altered)));
+        String json = mapper.writeValueAsString(value);
+        for (String invalid : List.of(json.replaceFirst("\\{", "{\"schemaVersion\":1,"),
+                json.replaceFirst("\\{", "{\"unexpected\":true,"))) {
+            String sealed = cipher.encrypt(realm, "execution-service-grant", value.grantId(), invalid);
+            assertThrows(IllegalArgumentException.class, () -> codec.openService(realm,
+                    new OpaqueExecutionGrantCodec.ServiceTicket(value.grantId(), sealed)));
+        }
+        assertThrows(IllegalArgumentException.class, () -> new OpaqueExecutionGrantCodec.ServiceTicket(
+                value.grantId(), "ENC:v1:" + "x".repeat(32_769)));
+    }
+
+    @Test
+    void service_grants_are_stable_per_intent_and_cannot_outlive_their_evidence() {
+        var value = serviceEnvelope(INTENT, "c".repeat(64));
+        var changedBinding = serviceEnvelope(INTENT, "d".repeat(64));
+        var anotherIntent = serviceEnvelope("17d85a12-4080-4ce0-86a6-b7fc9555d9e1", "c".repeat(64));
+        assertEquals(value.grantId(), changedBinding.grantId());
+        assertNotEquals(value.grantId(), anotherIntent.grantId());
+        assertNotEquals(value.grantId(), envelope(INTENT, "c".repeat(64)).grantId());
+        assertThrows(IllegalArgumentException.class, () -> new ServiceExecutionGrantEnvelope(1, value.grantId(),
+                value.source(), value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(300), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), NOW, NOW.plusSeconds(3_600),
+                NOW.plusSeconds(7_200), value.subject()));
+        assertThrows(IllegalArgumentException.class, () -> new ServiceExecutionGrantEnvelope(1, value.grantId(),
+                value.source(), value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), NOW, NOW.plusSeconds(28_801),
+                NOW.plusSeconds(86_400), value.subject()));
+        assertThrows(IllegalArgumentException.class, () -> new ServiceExecutionGrantEnvelope(1, value.grantId(),
+                value.source(), value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), NOW, NOW.plusSeconds(3_600),
+                NOW.plusSeconds(300), value.subject()));
+        assertThrows(IllegalArgumentException.class, () -> new ServiceExecutionGrantEnvelope(1, value.grantId(),
+                value.source(), value.source(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), NOW, NOW.plusSeconds(3_600),
+                NOW.plusSeconds(7_200), value.subject()));
+        var wrongResource = new ExecutionGrantEnvelope.ServiceBinding(15, "agent-service", "agent", "platform",
+                "tianji", "test", "https://api.example/other");
+        String wrongId = OpaqueExecutionGrantCodec.serviceGrantId(value.subject(), wrongResource, PURPOSE, INTENT);
+        assertThrows(IllegalArgumentException.class, () -> new ServiceExecutionGrantEnvelope(1, wrongId,
+                wrongResource, value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), NOW, NOW.plusSeconds(3_600),
+                NOW.plusSeconds(7_200), value.subject()));
     }
 
     @Test
@@ -179,6 +262,21 @@ class OpaqueExecutionGrantCodecTest {
         return new ExecutionGrantEnvelope(1, id, source, verifier, 1, 2, 33, "e".repeat(64), "301",
                 NOW.plusSeconds(86_400), "source-key", PURPOSE, intent, binding, "f".repeat(64), false,
                 NOW, NOW.plusSeconds(3_600), NOW.plusSeconds(7_200), user);
+    }
+
+    private static ServiceExecutionGrantEnvelope serviceEnvelope(String intent, String binding) {
+        var subject = new StoredServiceExecutionProof("https://idp.example/tenants/101", 101, 2, "worker-service",
+                "https://api.example/tianji", 1, 31, "worker-service", "worker", "ops", "process", "test",
+                "https://api.example/process", "31:7", 51, "a".repeat(64), "501", "worker-key",
+                Set.of("tianji:agent:linked:submit"), 1, 2, NOW.plusSeconds(86_400));
+        var source = new ExecutionGrantEnvelope.ServiceBinding(15, "agent-service", "agent", "platform",
+                "tianji", "test", "https://api.example/tianji");
+        var verifier = new ExecutionGrantEnvelope.ServiceBinding(20, "rbac-service", "rbac", "platform",
+                "jianshen", "test", "https://api.example/jianshen");
+        String id = OpaqueExecutionGrantCodec.serviceGrantId(subject, source, PURPOSE, intent);
+        return new ServiceExecutionGrantEnvelope(1, id, source, verifier, 1, 2, 33, "e".repeat(64), "301",
+                NOW.plusSeconds(86_400), "source-key", PURPOSE, intent, binding, "f".repeat(64),
+                NOW, NOW.plusSeconds(3_600), NOW.plusSeconds(7_200), subject);
     }
 
     private OAuthAuthorityService.Caller caller(ExecutionGrantEnvelope.ServiceBinding binding, String appId,

@@ -42,6 +42,7 @@ import static org.mockito.Mockito.*;
 class ExecutionGrantRevocationTest {
     private static final Instant NOW = Instant.parse("2026-10-29T00:00:00Z");
     private static final String ID = "9" + "1".repeat(62);
+    private static final String SERVICE_ID = "8" + "1".repeat(62);
     private final TrustedRealmBO realm = TrustedRealmBO.builder().issuer(URI.create("https://idp.example/tenants/101"))
             .realmKey("tenant:101").realmType(RealmTypeEnum.TENANT).storagePartitionId(101L)
             .businessTenantId(101L).trustVersion(0L).build();
@@ -119,6 +120,20 @@ class ExecutionGrantRevocationTest {
     }
 
     @Test
+    void service_grant_namespace_uses_the_same_durable_revocation_fence() {
+        when(states.advanceRealmIfRevocationAbsent(eq(realm), anyLong(), anyLong(), eq(OAuthSecurityTargetEnum.JTI),
+                eq(SERVICE_ID), anyLong(), any())).thenReturn(true);
+        when(revocations.findByTarget(realm, OAuthSecurityTargetEnum.JTI, SERVICE_ID)).thenReturn(Optional.empty());
+        service.revokeExecutionGrant(realm, SERVICE_ID, NOW.plusSeconds(60));
+        var saved = ArgumentCaptor.forClass(OAuthRevocationBO.class);
+        verify(revocations).save(eq(realm), saved.capture(), eq(0L));
+        assertEquals(SERVICE_ID, saved.getValue().getTargetKey());
+        assertEquals("EXECUTION_GRANT_REVOKED", saved.getValue().getReasonCode());
+        assertEquals(NOW.plus(Duration.ofHours(8)).plusSeconds(30), saved.getValue().getExpiresAt());
+        verify(outbox).enqueue(any());
+    }
+
+    @Test
     void duplicate_revocation_is_idempotent_but_a_longer_deadline_extends_the_tombstone() {
         OAuthRevocationBO existing = existing("EXECUTION_GRANT_REVOKED", NOW.plus(Duration.ofHours(8)).plusSeconds(30));
         when(revocations.findByTarget(realm, OAuthSecurityTargetEnum.JTI, ID)).thenReturn(Optional.of(existing));
@@ -141,6 +156,7 @@ class ExecutionGrantRevocationTest {
                 .thenReturn(Optional.of(existing("TOKEN_REVOKED", NOW.plusSeconds(600))));
         assertThrows(OAuth2AuthenticationException.class, () -> service.revokeExecutionGrant(realm, ID, NOW.plusSeconds(60)));
         assertThrows(IllegalArgumentException.class, () -> service.revokeExecutionGrant(realm, "123", NOW.plusSeconds(60)));
+        assertThrows(IllegalArgumentException.class, () -> service.revokeExecutionGrant(realm, "7" + "1".repeat(62), NOW.plusSeconds(60)));
         var platform = TrustedRealmBO.builder().issuer(URI.create("https://idp.example/platform")).realmKey("platform")
                 .realmType(RealmTypeEnum.PLATFORM).storagePartitionId(1L).trustVersion(0L).build();
         assertThrows(IllegalArgumentException.class, () -> service.revokeExecutionGrant(platform, ID, NOW.plusSeconds(60)));
