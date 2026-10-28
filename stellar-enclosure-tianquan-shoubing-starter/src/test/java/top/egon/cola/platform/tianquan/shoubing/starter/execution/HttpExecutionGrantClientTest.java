@@ -63,7 +63,7 @@ class HttpExecutionGrantClientTest {
             return new ServiceAuthorizationKey(ISSUER.toASCIIString(), request.registrationId(), "client", 1,
                     request.appId(), request.audience(), request.context(), request.tenantId(), request.scopes());
         });
-        when(oauth.authorize(any())).thenReturn(new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER,
+        when(oauth.authorizeBounded(any(), anyString(), any())).thenReturn(new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER,
                 "service-token-sentinel", NOW, NOW.plusSeconds(300)));
         when(http.<byte[]>sendAsync(any(), any())).thenAnswer(invocation -> {
             HttpRequest request = invocation.getArgument(0);
@@ -97,7 +97,7 @@ class HttpExecutionGrantClientTest {
         assertEquals(SECRET, mapper.readTree(requests.get(1).body()).get("ticket").get("ciphertext").asText());
         assertEquals("Bearer service-token-sentinel", requests.getFirst().request().headers().firstValue("Authorization").orElseThrow());
         var captured = org.mockito.ArgumentCaptor.forClass(IdpServiceTokenRequest.class);
-        verify(oauth, times(3)).authorize(captured.capture());
+        verify(oauth, times(3)).authorizeBounded(captured.capture(), eq(ISSUER.toString()), any());
         assertEquals(List.of(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE),
                 Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE), Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE)),
                 captured.getAllValues().stream().map(IdpServiceTokenRequest::scopes).toList());
@@ -123,7 +123,7 @@ class HttpExecutionGrantClientTest {
         assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> client.issue(issue));
         add(401, "{}".getBytes(StandardCharsets.UTF_8));
         assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> client.issue(issue));
-        verify(oauth, times(1)).invalidate(argThat(request -> request.scopes().equals(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE))));
+        verify(oauth, times(1)).invalidateBounded(argThat(request -> request.scopes().equals(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE))), eq(ISSUER.toString()), any());
         add(302, new byte[0]);
         assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> client.issue(issue));
         assertEquals(4, requests.size());
@@ -151,6 +151,15 @@ class HttpExecutionGrantClientTest {
         assertTrue(pending.isCancelled()); verify(http, times(1)).sendAsync(any(), any());
     }
 
+    @Test void token_acquisition_and_http_share_one_deadline() throws Exception {
+        var token = new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "service-token-sentinel", NOW, NOW.plusSeconds(300));
+        when(oauth.authorizeBounded(any(), anyString(), any())).thenAnswer(inv -> { Thread.sleep(150); return token; });
+        add(200, mapper.writeValueAsBytes(new ExecutionGrantContract.Issued(ticket, NOW.plusSeconds(300))));
+        var limited = create(service, ISSUER, http, Duration.ofSeconds(2));
+        limited.issue(issue);
+        assertTrue(requests.getFirst().request().timeout().orElseThrow().compareTo(Duration.ofMillis(1900)) < 0);
+    }
+
     @Test void configuration_and_service_failures_fail_closed_without_secret_details() {
         assertThrows(IllegalArgumentException.class, () -> new HttpExecutionGrantClient(URI.create("http://idp.example"), ISSUER,
                 service, oauth, mapper, Duration.ofSeconds(1), http, Clock.fixed(NOW, ZoneOffset.UTC)));
@@ -163,7 +172,7 @@ class HttpExecutionGrantClientTest {
                 service.tenantId(), Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE));
         var restrictedClient = create(restricted, ISSUER, http, Duration.ofSeconds(1));
         assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> restrictedClient.issue(issue));
-        when(oauth.authorize(any())).thenThrow(new IllegalStateException(USER + SECRET));
+        when(oauth.authorizeBounded(any(), anyString(), any())).thenThrow(new IllegalStateException(USER + SECRET));
         var failure = assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> client.issue(issue));
         assertFalse(failure.toString().contains(USER)); assertFalse(failure.toString().contains(SECRET)); assertNull(failure.getCause());
     }

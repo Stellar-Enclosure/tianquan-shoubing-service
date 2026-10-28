@@ -9,11 +9,18 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import lombok.AccessLevel;
@@ -86,6 +93,7 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
             new ConcurrentHashMap<>();
     private final Object cacheLock = new Object();
     private final ScheduledThreadPoolExecutor refreshScheduler = newRefreshScheduler();
+    private final ThreadPoolExecutor boundedOperations = newBoundedOperations();
     private final AtomicLong refreshGeneration = new AtomicLong();
     private volatile boolean closed;
     private final java.util.concurrent.atomic.AtomicBoolean metricFailureLogged = new java.util.concurrent.atomic.AtomicBoolean();
@@ -148,7 +156,10 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
 
     /** Obtains an access token for exactly one validated authorization key. */
     public OAuth2AccessToken authorize(IdpServiceTokenRequest request) {
-        ServiceAuthorizationKey key = key(request);
+        return authorizeResolved(request, key(request));
+    }
+
+    private OAuth2AccessToken authorizeResolved(IdpServiceTokenRequest request, ServiceAuthorizationKey key) {
         ensureOpen();
         OAuth2AccessToken cached = cache.get(key);
         boolean usable = usable(cached);
@@ -163,6 +174,48 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         return authorize(key, request);
     }
 
+    /** Bounds an entire SERVICE-token acquisition; its worker receives only the non-secret service context. */
+    public OAuth2AccessToken authorizeBounded(IdpServiceTokenRequest request, String expectedIssuer, Duration timeout) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(expectedIssuer, "expectedIssuer");
+        return bounded(() -> {
+            ServiceAuthorizationKey key = key(request);
+            if (!expectedIssuer.equals(key.issuer())) throw new IdpServiceAuthorizationException("issuer_mismatch", null);
+            return authorizeResolved(request, key);
+        }, timeout);
+    }
+
+    /** Bounds cache invalidation and does not automatically replay the failed request. */
+    public void invalidateBounded(IdpServiceTokenRequest request, String expectedIssuer, Duration timeout) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(expectedIssuer, "expectedIssuer");
+        bounded(() -> {
+            ServiceAuthorizationKey key = key(request);
+            if (!expectedIssuer.equals(key.issuer())) throw new IdpServiceAuthorizationException("issuer_mismatch", null);
+            evict(key);
+            return Boolean.TRUE;
+        }, timeout);
+    }
+
+    private <T> T bounded(Callable<T> work, Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative() || timeout.compareTo(Duration.ofSeconds(30)) > 0) {
+            throw new IllegalArgumentException("SERVICE_AUTHORIZATION_TIMEOUT_INVALID");
+        }
+        ensureOpen();
+        Future<T> future;
+        try { future = boundedOperations.submit(work); }
+        catch (RejectedExecutionException full) { throw new IdpServiceAuthorizationException("authorization_capacity", null); }
+        try { return future.get(timeout.toNanos(), TimeUnit.NANOSECONDS); }
+        catch (InterruptedException interrupted) {
+            future.cancel(true); Thread.currentThread().interrupt();
+            throw new IdpServiceAuthorizationException("authorization_interrupted", null);
+        } catch (TimeoutException expired) {
+            future.cancel(true); throw new IdpServiceAuthorizationException("authorization_timeout", null);
+        } catch (ExecutionException failed) {
+            throw new IdpServiceAuthorizationException("authorization_failed", null);
+        }
+    }
+
     /** Removes both the local token and Spring's underlying authorized-client entry. */
     public void invalidate(IdpServiceTokenRequest request) {
         evict(key(request));
@@ -171,6 +224,8 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
     int cacheSize() {
         return cache.size();
     }
+
+    int boundedInFlight() { return boundedOperations.getActiveCount(); }
 
     private OAuth2AccessToken authorize(
             ServiceAuthorizationKey key,
@@ -571,6 +626,7 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        boundedOperations.shutdownNow();
         synchronized (cacheLock) {
             refreshTasks.values().forEach(task -> task.cancel(false));
             refreshTasks.clear();
@@ -590,6 +646,12 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         });
         executor.setRemoveOnCancelPolicy(true);
         return executor;
+    }
+
+    private static ThreadPoolExecutor newBoundedOperations() {
+        return new ThreadPoolExecutor(0, 8, 30, TimeUnit.SECONDS, new SynchronousQueue<>(),
+                Thread.ofVirtual().name("tianquan-service-token-", 0).inheritInheritableThreadLocals(false).factory(),
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     /** Stable safe category for token endpoint/manager failures. */

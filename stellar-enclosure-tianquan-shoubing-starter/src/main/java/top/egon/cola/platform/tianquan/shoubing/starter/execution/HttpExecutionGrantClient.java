@@ -99,7 +99,11 @@ public final class HttpExecutionGrantClient {
         if (!service.scopes().contains(requiredScope)) throw unavailable();
         var context = new IdpServiceTokenRequest(service.registrationId(), service.appId(), service.audience(),
                 service.context(), service.tenantId(), Set.of(requiredScope));
-        requireIssuer(context);
+        long started = System.nanoTime();
+        String token;
+        try { token = serviceOAuth.authorizeBounded(context, issuer.toASCIIString(), timeout).getTokenValue(); }
+        catch (RuntimeException failure) { throw unavailable(); }
+        if (token == null || token.length() > 16_384 || !token.matches("[A-Za-z0-9._~+/-]+=*")) throw unavailable();
         byte[] payload;
         try { payload = mapper.writeValueAsBytes(requestBody); }
         catch (com.fasterxml.jackson.core.JsonProcessingException | RuntimeException invalid) { throw unavailable(); }
@@ -109,21 +113,22 @@ public final class HttpExecutionGrantClient {
         CompletableFuture<HttpResponse<byte[]>> pending = null;
         byte[] responseBody = null;
         try {
-            String token = serviceOAuth.authorize(context).getTokenValue();
-            if (token == null || token.length() > 16_384 || !token.matches("[A-Za-z0-9._~+/-]+=*")) throw unavailable();
             var target = baseUri.resolve(path.substring(1));
-            var builder = HttpRequest.newBuilder(target).timeout(timeout).header("Authorization", "Bearer " + token)
+            var builder = HttpRequest.newBuilder(target).timeout(Duration.ofNanos(remaining(started))).header("Authorization", "Bearer " + token)
                     .header("Content-Type", "application/json").header("Accept", "application/json")
                     .header("Cache-Control", "no-store");
             var trace = top.egon.cola.component.common.trace.TraceContext.capture();
             if (trace.traceId() != null) trace.child().inject(builder::header);
             var request = builder.POST(HttpRequest.BodyPublishers.ofByteArray(payload)).build();
             pending = http.sendAsync(request, info -> new BoundedBody(ExecutionGrantContract.MAX_RESPONSE_BYTES));
-            HttpResponse<byte[]> response = pending.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
+            HttpResponse<byte[]> response = pending.get(remaining(started), TimeUnit.NANOSECONDS);
             responseBody = response.body();
             if (responseBody == null) throw unavailable();
             int status = response.statusCode();
-            if (status == 401) { serviceOAuth.invalidate(context); throw unavailable(); }
+            if (status == 401) {
+                serviceOAuth.invalidateBounded(context, issuer.toASCIIString(), Duration.ofNanos(remaining(started)));
+                throw unavailable();
+            }
             if (status == 403 && json(response) && denied(responseBody)) throw new ExecutionGrantDeniedException();
             if (type == Void.class) {
                 if (status != 204 || responseBody.length != 0) throw unavailable();
@@ -147,9 +152,17 @@ public final class HttpExecutionGrantClient {
         } catch (ExecutionException | RuntimeException failure) {
             throw unavailable();
         } finally {
+            if (pending != null && !pending.isDone()) pending.cancel(true);
             Arrays.fill(payload, (byte) 0);
             if (responseBody != null) Arrays.fill(responseBody, (byte) 0);
         }
+    }
+
+    private long remaining(long started) {
+        long elapsed = Math.max(0L, System.nanoTime() - started);
+        long value = timeout.toNanos() - elapsed;
+        if (value <= 0) throw unavailable();
+        return value;
     }
 
     private boolean denied(byte[] body) {

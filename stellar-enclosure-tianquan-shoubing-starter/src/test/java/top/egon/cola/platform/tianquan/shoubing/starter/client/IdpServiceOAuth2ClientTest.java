@@ -728,6 +728,89 @@ class IdpServiceOAuth2ClientTest {
                 .hasMessageContaining("invalid_client").hasMessageNotContaining("token-stays-private");
     }
 
+    @Test
+    void boundedAcquisitionLimitsUninterruptibleWorkAndDoesNotInheritRequestState() throws Exception {
+        Instant now = Instant.parse("2026-10-10T00:00:00Z");
+        var manager = mock(OAuth2AuthorizedClientManager.class);
+        var authorizedClients = mock(OAuth2AuthorizedClientService.class);
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var inherited = new InheritableThreadLocal<String>(); inherited.set("request-private-sentinel");
+        var observed = new AtomicReference<String>(); var virtual = new java.util.concurrent.atomic.AtomicBoolean();
+        when(manager.authorize(any(OAuth2AuthorizeRequest.class))).thenAnswer(call -> {
+            virtual.set(Thread.currentThread().isVirtual()); observed.set(inherited.get()); entered.countDown();
+            while (release.getCount() != 0) {
+                try { release.await(); } catch (InterruptedException ignored) { }
+            }
+            return authorizedClient(call.getArgument(0), "fixture-service-token", now, now.plusSeconds(300));
+        });
+        var client = newClient(manager, authorizedClients, Clock.fixed(now, ZoneOffset.UTC), Duration.ofSeconds(60),
+                serviceProperties(), registrations(registration()));
+        var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+        try {
+            for (int index = 0; index < 8; index++) {
+                assertThatThrownBy(() -> client.authorizeBounded(request, ISSUER, Duration.ofMillis(80)))
+                        .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class)
+                        .hasMessageContaining("authorization_timeout").hasNoCause();
+                int active = index + 1;
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                        assertThat(client.boundedInFlight()).isEqualTo(active));
+            }
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(virtual).isTrue(); assertThat(observed.get()).isNull();
+            assertThatThrownBy(() -> client.authorizeBounded(request, ISSUER, Duration.ofMillis(80)))
+                    .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class)
+                    .hasMessageContaining("authorization_capacity").hasNoCause();
+        } finally { release.countDown(); inherited.remove(); }
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(client.authorizeBounded(request, ISSUER, Duration.ofSeconds(1)).getTokenValue()).isEqualTo("fixture-service-token"));
+        verify(manager, times(1)).authorize(any(OAuth2AuthorizeRequest.class));
+    }
+
+    @Test
+    void boundedIssuerMismatchAndInvalidationFailureExposeNoUnderlyingDetails() {
+        Instant now = Instant.parse("2026-10-10T00:00:00Z");
+        var manager = mock(OAuth2AuthorizedClientManager.class);
+        var authorizedClients = mock(OAuth2AuthorizedClientService.class);
+        var client = newClient(manager, authorizedClients, Clock.fixed(now, ZoneOffset.UTC), Duration.ofSeconds(60),
+                serviceProperties(), registrations(registration()));
+        var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+        assertThatThrownBy(() -> client.authorizeBounded(request, "https://other.example", Duration.ofSeconds(1)))
+                .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class).hasNoCause();
+        verify(manager, never()).authorize(any(OAuth2AuthorizeRequest.class));
+        org.mockito.Mockito.doThrow(new IllegalStateException("private-detail-sentinel")).when(authorizedClients)
+                .removeAuthorizedClient(any(), any());
+        assertThatThrownBy(() -> client.invalidateBounded(request, ISSUER, Duration.ofSeconds(1)))
+                .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class).hasNoCause()
+                .hasMessageNotContaining("private-detail-sentinel");
+    }
+
+    @Test
+    void interruptedBoundedCallerKeepsItsInterruptAndReceivesASafeFailure() throws Exception {
+        var manager = mock(OAuth2AuthorizedClientManager.class);
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        when(manager.authorize(any(OAuth2AuthorizeRequest.class))).thenAnswer(call -> {
+            entered.countDown();
+            while (release.getCount() != 0) {
+                try { release.await(); } catch (InterruptedException ignored) { }
+            }
+            throw new IllegalStateException("private-detail-sentinel");
+        });
+        var client = newClient(manager, mock(OAuth2AuthorizedClientService.class), Clock.systemUTC(), Duration.ofSeconds(60),
+                serviceProperties(), registrations(registration()));
+        var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+        var error = new AtomicReference<Throwable>(); var interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread caller = Thread.ofPlatform().daemon().start(() -> {
+            try { client.authorizeBounded(request, ISSUER, Duration.ofSeconds(5)); }
+            catch (RuntimeException failure) { error.set(failure); interrupted.set(Thread.currentThread().isInterrupted()); }
+        });
+        try {
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue(); caller.interrupt(); caller.join(2000);
+            assertThat(caller.isAlive()).isFalse(); assertThat(interrupted).isTrue();
+            assertThat(error.get()).isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class)
+                    .hasMessageContaining("authorization_interrupted").hasNoCause().hasMessageNotContaining("private-detail-sentinel");
+        } finally { release.countDown(); }
+    }
+
     private static IdpServiceTokenRequest request(
             String registrationId,
             String appId,
