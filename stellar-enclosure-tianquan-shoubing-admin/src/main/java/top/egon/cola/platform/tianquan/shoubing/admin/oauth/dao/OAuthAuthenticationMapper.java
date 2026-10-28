@@ -30,6 +30,6 @@ public interface OAuthAuthenticationMapper extends EgonColaMapper<OAuthAuthentic
 
     List<OAuthAuthenticationPO> selectByBrowser(@Param("tenantId") Long tenantId,
             @Param("binding") String binding, @Param("afterId") long afterId, @Param("limit") int limit);
-    int deleteRetained(@Param("tenantId") Long tenantId, @Param("id") long id,
+    int deleteVersionedById(@Param("tenantId") Long tenantId, @Param("id") long id,
             @Param("expectedVersion") long expectedVersion, @Param("now") Instant now, @Param("actor") String actor);
 }

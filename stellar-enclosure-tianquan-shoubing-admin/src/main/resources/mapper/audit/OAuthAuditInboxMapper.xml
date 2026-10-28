@@ -69,7 +69,7 @@
             OR (state = 'PROCESSING' AND lease_until &lt;= #{now}))
         ORDER BY next_attempt_at, id LIMIT #{limit}
     </select>
-    <update id="deleteRetained">
+    <update id="deleteVersionedById">
         UPDATE tianquan_oauth.oauth_audit_inbox t
         SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,
             update_time = #{now}, update_user_id = #{actor}

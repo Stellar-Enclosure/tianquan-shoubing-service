@@ -52,7 +52,7 @@
         WHERE tenant_id = #{tenantId} AND id = #{po.id} AND event_id = #{po.eventId}
           AND version = #{expectedVersion} AND deleted_at IS NULL
     </update>
-    <update id="deleteRetained">
+    <update id="deleteVersionedById">
         UPDATE tianquan_oauth.oauth_audit_receipt t
         SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,
             update_time = #{now}, update_user_id = #{actor}

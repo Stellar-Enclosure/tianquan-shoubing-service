@@ -82,7 +82,7 @@
           AND csrf_digest = #{interaction.csrfDigest} AND authentication_jti_digest IS NULL
           AND state = 'AUTHENTICATED' AND deleted_at IS NULL
     </update>
-    <update id="deleteRetained">
+    <update id="deleteVersionedById">
         UPDATE tianquan_oauth.oauth_interaction t
         SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,
             update_time = #{now}, update_user_id = #{actor}

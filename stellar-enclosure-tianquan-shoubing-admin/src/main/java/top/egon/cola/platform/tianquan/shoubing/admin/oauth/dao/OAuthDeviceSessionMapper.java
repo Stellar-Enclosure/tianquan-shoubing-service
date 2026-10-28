@@ -20,8 +20,11 @@ public interface OAuthDeviceSessionMapper extends EgonColaMapper<OAuthDeviceSess
             @Param("count") int count, @Param("actor") String actor);
     int fenceRevokedWithoutLiveAuthorizations(@Param("tenantId") Long tenantId, @Param("id") long id,
             @Param("expectedVersion") long expectedVersion, @Param("now") Instant now, @Param("actor") String actor);
-    int deleteRetained(@Param("tenantId") Long tenantId, @Param("now") Instant now,
-            @Param("limit") int limit, @Param("actor") String actor);
+    List<OAuthDeviceSessionPO> selectRetainedCandidates(@Param("tenantId") Long tenantId,
+            @Param("cutoff") Instant cutoff, @Param("limit") int limit);
+    int deleteVersionedById(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("expectedVersion") long expectedVersion, @Param("cutoff") Instant cutoff,
+            @Param("now") Instant now, @Param("actor") String actor);
     int updateExpectedVersion(@Param("tenantId") Long tenantId, @Param("po") OAuthDeviceSessionPO po,
             @Param("expectedVersion") long expectedVersion);
 }

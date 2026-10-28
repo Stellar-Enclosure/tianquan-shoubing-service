@@ -170,7 +170,7 @@ class OAuthRetentionServiceTest {
 
         assertThat(service.cleanExpired(TENANT)).isZero();
 
-        verify(realmRepository).fenceObservedVersion(TENANT);
+        verify(realmRepository, org.mockito.Mockito.atLeastOnce()).fenceObservedVersion(TENANT);
         verify(authorizationRepository).deleteRetainedWithoutTokens(TENANT, 30L, 8L, NOW);
         verify(authorizationRepository, never()).findByIdForUpdate(any(), any());
         verify(authorizationRepository, never()).deleteVersionedById(any(), any(), anyLong());
@@ -247,8 +247,18 @@ class OAuthRetentionServiceTest {
         when(interactions.deleteRetained(TENANT, 71L, 3L, NOW)).thenReturn(false);
         when(authentications.deleteRetained(TENANT, 72L, 4L, NOW)).thenReturn(false);
         assertThat(service.cleanExpired(TENANT)).isZero();
+        verify(realmRepository).fenceObservedVersion(TENANT);
         verify(interactions).deleteRetained(TENANT, 71L, 3L, NOW);
         verify(authentications).deleteRetained(TENANT, 72L, 4L, NOW);
+    }
+
+    @Test
+    void browserCleanupAbortsWhenTheRealmFenceIsStale() {
+        when(realmRepository.fenceObservedVersion(TENANT)).thenReturn(false);
+        assertThatThrownBy(() -> service.cleanExpired(TENANT))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(interactions, never()).findRetainedBefore(any(), any(), anyLong(), anyInt());
+        verify(transactionManager).rollback(any());
     }
 
     @Test

@@ -24,6 +24,6 @@ public interface OAuthInteractionMapper extends EgonColaMapper<OAuthInteractionP
             @Param("now") Instant now, @Param("actor") String actor);
     int consumePasswordChange(@Param("tenantId") Long tenantId, @Param("interaction") OAuthInteractionBO interaction,
             @Param("now") Instant now, @Param("actor") String actor);
-    int deleteRetained(@Param("tenantId") Long tenantId, @Param("id") long id,
+    int deleteVersionedById(@Param("tenantId") Long tenantId, @Param("id") long id,
             @Param("expectedVersion") long expectedVersion, @Param("now") Instant now, @Param("actor") String actor);
 }

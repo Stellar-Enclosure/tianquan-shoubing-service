@@ -19,6 +19,6 @@ public interface OAuthAuditDeadLetterMapper extends EgonColaMapper<OAuthAuditDea
 
     int updateExpectedVersion(@Param("tenantId") Long tenantId, @Param("po") OAuthAuditDeadLetterPO po,
             @Param("expectedVersion") long expectedVersion);
-    int deleteRetained(@Param("tenantId") Long tenantId, @Param("id") long id,
+    int deleteVersionedById(@Param("tenantId") Long tenantId, @Param("id") long id,
             @Param("expectedVersion") long expectedVersion, @Param("now") Instant now, @Param("actor") String actor);
 }

@@ -155,6 +155,9 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
     }
 
     private int purgeBrowserState(TrustedRealmBO realm, Instant now, long deadline) {
+        if (!OAuthTransactionFences.realm(realmRepository, realm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before browser retention cleanup");
+        }
         int deleted = 0;
         for (var interaction : interactions.findRetainedBefore(realm, now, 0L, BATCH_SIZE)) {
             if (deadlineReached(deadline)) { return deleted; }

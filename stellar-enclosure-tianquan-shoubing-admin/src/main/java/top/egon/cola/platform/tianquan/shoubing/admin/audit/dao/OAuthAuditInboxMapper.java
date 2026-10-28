@@ -22,6 +22,6 @@ public interface OAuthAuditInboxMapper extends EgonColaMapper<OAuthAuditInboxPO>
 
     List<OAuthAuditInboxPO> selectDue(@Param("tenantId") Long tenantId,
             @Param("now") Instant now, @Param("limit") int limit);
-    int deleteRetained(@Param("tenantId") Long tenantId, @Param("id") long id,
+    int deleteVersionedById(@Param("tenantId") Long tenantId, @Param("id") long id,
             @Param("expectedVersion") long expectedVersion, @Param("now") Instant now, @Param("actor") String actor);
 }

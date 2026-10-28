@@ -168,7 +168,7 @@ public class OAuthAuthenticationRepositoryImpl extends EgonColaRepository<OAuthA
     @Transactional
     public boolean deleteRetained(TrustedRealmBO realm, long id, long expectedVersion, Instant now) {
         if (id <= 0 || expectedVersion < 0 || now == null) { throw new IllegalArgumentException("OAUTH_RETENTION_INPUT_INVALID"); }
-        return withRealm(realm, tenant -> baseMapper.deleteRetained(tenant, id, expectedVersion,
+        return withRealm(realm, tenant -> baseMapper.deleteVersionedById(tenant, id, expectedVersion,
                 now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
     }
 

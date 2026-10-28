@@ -79,7 +79,7 @@
         WHERE tenant_id = #{tenantId} AND browser_binding_digest = #{binding}
           AND status = 'ACTIVE' AND id &gt; #{afterId} AND deleted_at IS NULL ORDER BY id LIMIT #{limit}
     </select>
-    <update id="deleteRetained">
+    <update id="deleteVersionedById">
         UPDATE tianquan_oauth.oauth_authentication t
         SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,
             update_time = #{now}, update_user_id = #{actor}
@@ -88,5 +88,6 @@
           AND expires_at &lt;= #{now}
           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization a WHERE a.tenant_id = #{tenantId} AND a.authentication_jti_digest = t.jti_digest AND a.deleted_at IS NULL)
           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_interaction i WHERE i.tenant_id = #{tenantId} AND i.authentication_jti_digest = t.jti_digest AND i.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_device_session s WHERE s.tenant_id = #{tenantId} AND s.authentication_jti_digest = t.jti_digest AND s.deleted_at IS NULL)
     </update>
 </mapper>

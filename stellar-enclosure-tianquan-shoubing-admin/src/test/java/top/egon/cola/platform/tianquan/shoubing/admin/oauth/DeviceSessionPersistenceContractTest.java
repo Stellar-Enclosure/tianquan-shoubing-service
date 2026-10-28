@@ -29,9 +29,12 @@ class DeviceSessionPersistenceContractTest {
         assertTrue(live.contains("a.realm_generation = r.generation"));
         String update = configuration.getMappedStatement(NAMESPACE + "updateExpectedVersion").getBoundSql(null).getSql();
         assertTrue(update.contains("tenant_id = ? AND id = ? AND version = ?"));
-        String retention = configuration.getMappedStatement(NAMESPACE + "deleteRetained").getBoundSql(null).getSql();
-        assertTrue(retention.contains("g.device_session_id = s.id AND g.deleted_at IS NULL"));
-        assertTrue(retention.contains("a.expires_at <= ? - INTERVAL '24 hours'"));
+        String candidates = configuration.getMappedStatement(NAMESPACE + "selectRetainedCandidates").getBoundSql(null).getSql();
+        assertTrue(candidates.contains("g.device_session_id = s.id AND g.deleted_at IS NULL"));
+        assertFalse(candidates.contains("FOR UPDATE"));
+        String retention = configuration.getMappedStatement(NAMESPACE + "deleteVersionedById").getBoundSql(null).getSql();
+        assertTrue(retention.contains("s.tenant_id = ? AND s.id = ? AND s.version = ?"));
+        assertTrue(retention.contains("a.expires_at <= ?"));
     }
 
     @Test void generatedConverterPreservesTheStableSessionAndSsoBinding() {

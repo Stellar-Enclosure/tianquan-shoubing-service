@@ -122,7 +122,18 @@ public class OAuthDeviceSessionRepositoryImpl extends EgonColaRepository<OAuthDe
     public int deleteRetained(TrustedRealmBO realm, Instant now, int limit) {
         Objects.requireNonNull(now, "now");
         if (limit < 1 || limit > 500) { throw new IllegalArgumentException("OAUTH_SESSION_RETENTION_LIMIT_INVALID"); }
-        return withRealm(realm, tenant -> baseMapper.deleteRetained(tenant, now, limit, userIdProvider.currentUserId()));
+        return withRealm(realm, tenant -> {
+            Instant cutoff = now.minus(1, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+            Instant updated = now.truncatedTo(ChronoUnit.MICROS);
+            String actor = userIdProvider.currentUserId();
+            int deleted = 0;
+            for (OAuthDeviceSessionPO candidate : baseMapper.selectRetainedCandidates(tenant, cutoff, limit)) {
+                if (baseMapper.deleteVersionedById(tenant, candidate.getId(), candidate.getVersion(), cutoff, updated, actor) == 1) {
+                    deleted++;
+                }
+            }
+            return deleted;
+        });
     }
 
     private <T> T withRealm(TrustedRealmBO realm, Function<Long, T> action) {
