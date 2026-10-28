@@ -97,6 +97,7 @@ class OAuthExecutionGrantHttpTest {
         for (String bad : new String[] {
                 valid.replace("\"userToken\":", "\"userToken\":\"" + USER + "\",\"userToken\":"),
                 valid.replace("\"sessionRequired\":true", "\"sessionRequired\":\"true\""),
+                valid.replace("\"userToken\":\"" + USER + "\"", "\"userToken\":12345"),
                 valid.replace("\"sessionRequired\":true,", ""),
                 valid.replace("\"sessionRequired\":true", "\"sessionRequired\":null"),
                 valid.substring(0, valid.length() - 1) + ",\"unexpected\":\"" + USER + "\"}",
@@ -105,6 +106,17 @@ class OAuthExecutionGrantHttpTest {
             String response = call(ExecutionGrantContract.ISSUE_PATH, bad).andExpect(status().isBadRequest())
                     .andReturn().getResponse().getContentAsString();
             assertFalse(response.contains(USER));
+        }
+        verifyNoInteractions(grants);
+    }
+
+    @Test void ticket_identifiers_must_be_json_strings_for_resolve_and_revoke() throws Exception {
+        for (var entry : java.util.Map.of(
+                ExecutionGrantContract.RESOLVE_PATH, mapper.writeValueAsString(new ExecutionGrantContract.ResolveRequest(TICKET)),
+                ExecutionGrantContract.REVOKE_PATH, mapper.writeValueAsString(new ExecutionGrantContract.RevokeRequest(USER, TICKET))).entrySet()) {
+            String malformed = entry.getValue().replace("\"grantId\":\"" + ID + "\"", "\"grantId\":" + ID);
+            assertNotEquals(entry.getValue(), malformed);
+            call(entry.getKey(), malformed).andExpect(status().isBadRequest());
         }
         verifyNoInteractions(grants);
     }

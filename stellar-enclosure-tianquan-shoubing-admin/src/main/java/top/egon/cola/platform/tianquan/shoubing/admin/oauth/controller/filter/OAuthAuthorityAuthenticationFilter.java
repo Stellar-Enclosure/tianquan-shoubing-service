@@ -75,7 +75,7 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
         try {
             var caller = authority.authenticateService(headers.getFirst().substring(7), scope);
             if (grantType != null) {
-                try { request.setAttribute(GRANT_BODY_ATTRIBUTE, grantMapper.readValue(body, grantType)); }
+                try { request.setAttribute(GRANT_BODY_ATTRIBUTE, grantBody(body, grantType)); }
                 catch (IOException | RuntimeException invalid) { failure(response, 400, "invalid_request"); return; }
             }
             var authentication = new IdpAuthenticationToken(caller.principal(), caller.principal().scopes().stream()
@@ -99,6 +99,28 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
             SecurityContextHolder.setContext(previous);
             java.util.Arrays.fill(body, (byte) 0);
         }
+    }
+
+    private Object grantBody(byte[] body, Class<?> type) throws IOException {
+        var value = grantMapper.readTree(body);
+        if (value == null || !value.isObject()) throw new IllegalArgumentException("EXECUTION_GRANT_BODY_INVALID");
+        if (type == ExecutionGrantContract.IssueRequest.class) {
+            if (value.size() != 6 || !value.path("userToken").isTextual() || !value.path("purpose").isTextual()
+                    || !value.path("intentId").isTextual() || !value.path("bindingSha256").isTextual()
+                    || !value.path("sessionRequired").isBoolean()
+                    || !(value.path("deadlineAt").isTextual() || value.path("deadlineAt").isNumber())) {
+                throw new IllegalArgumentException("EXECUTION_GRANT_BODY_INVALID");
+            }
+        } else {
+            var ticket = value.path("ticket");
+            if (value.size() != (type == ExecutionGrantContract.ResolveRequest.class ? 1 : 2)
+                    || !ticket.isObject() || ticket.size() != 2 || !ticket.path("grantId").isTextual()
+                    || !ticket.path("ciphertext").isTextual()
+                    || type == ExecutionGrantContract.RevokeRequest.class && !value.path("userToken").isTextual()) {
+                throw new IllegalArgumentException("EXECUTION_GRANT_BODY_INVALID");
+            }
+        }
+        return grantMapper.treeToValue(value, type);
     }
 
     private static String scope(String path) {
