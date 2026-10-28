@@ -252,8 +252,9 @@ public class ResourceServerServiceImpl implements ResourceServerService {
         TrustedRealmBO realm = requirePlatform(platformRealm);
         List<String> appCodes = explicitApps(command.appCodes(), command.expectedVersions());
         List<OAuthResourceBO> selected = selectResources(realm, command.bizCode(), command.environment(), appCodes);
-        List<OAuthResourceBO> saved = new ArrayList<>();
-        for (OAuthResourceBO current : selected) {
+        Map<Long, OAuthResourceBO> savedById = new LinkedHashMap<>();
+        // Use the same fence order as cross-shard grant mutations.
+        for (OAuthResourceBO current : selected.stream().sorted(Comparator.comparing(OAuthResourceBO::getId)).toList()) {
             long expected = expected(command.expectedVersions(), current.getAppCode());
             if (current.getVersion() != expected) {
                 throw new OptimisticLockingFailureException("OAUTH_RESOURCE_VERSION_CONFLICT");
@@ -262,7 +263,7 @@ public class ResourceServerServiceImpl implements ResourceServerService {
                     ? ResourceServerStatus.ACTIVE : ResourceServerStatus.DISABLED;
             if (current.getStatus() == status) {
                 fenceResource(realm, current);
-                saved.add(current);
+                savedById.put(current.getId(), current);
                 continue;
             }
             OAuthResourceBO changed = copy(current)
@@ -271,11 +272,12 @@ public class ResourceServerServiceImpl implements ResourceServerService {
                     .updatedAt(clock.instant())
                     .build();
             OAuthResourceBO value = resources.save(realm, changed, current.getVersion());
-            saved.add(value);
+            savedById.put(current.getId(), value);
             if (status == ResourceServerStatus.DISABLED) {
                 events.enqueueDisabled(value);
             }
         }
+        List<OAuthResourceBO> saved = selected.stream().map(resource -> savedById.get(resource.getId())).toList();
         saved.forEach(events::enqueueResourceProjection);
         return saved.stream().map(resourceViews::toTarget).toList();
     }

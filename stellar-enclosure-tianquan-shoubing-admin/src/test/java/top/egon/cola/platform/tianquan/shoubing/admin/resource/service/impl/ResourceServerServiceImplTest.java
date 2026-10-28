@@ -381,8 +381,8 @@ class ResourceServerServiceImplTest {
 
     @Test
     void batchStatusExpandsOnlyExplicitApplicationCodes() {
-        OAuthResourceBO first = resource("resource-idp", "tianquan-shoubing", ResourceServerStatus.DISABLED);
-        OAuthResourceBO second = resource("resource-jianshen", "tianquan-jianshen", ResourceServerStatus.DISABLED);
+        OAuthResourceBO first = resource("resource-idp", "tianquan-shoubing", ResourceServerStatus.DISABLED).setId(12L);
+        OAuthResourceBO second = resource("resource-jianshen", "tianquan-jianshen", ResourceServerStatus.DISABLED).setId(11L);
         when(resources.findByBizCodeAndEnvironmentAndAppCodeIn(PLATFORM, "permission", "prod",
                 List.of("tianquan-shoubing", "tianquan-jianshen"))).thenReturn(List.of(first, second));
         when(clients.findByClientId(PLATFORM, "manager-tianquan-shoubing"))
@@ -398,7 +398,10 @@ class ResourceServerServiceImplTest {
                 Map.of("tianquan-shoubing", 0L, "tianquan-jianshen", 0L)));
 
         assertThat(results).extracting(ResourceServerVO::getAppCode)
-                .containsExactlyInAnyOrder("tianquan-shoubing", "tianquan-jianshen");
+                .containsExactly("tianquan-shoubing", "tianquan-jianshen");
+        var writeOrder = org.mockito.Mockito.inOrder(resources);
+        writeOrder.verify(resources).save(eq(PLATFORM), org.mockito.ArgumentMatchers.argThat(value -> value.getId() == 11L), eq(0L));
+        writeOrder.verify(resources).save(eq(PLATFORM), org.mockito.ArgumentMatchers.argThat(value -> value.getId() == 12L), eq(0L));
         assertThat(results).allMatch(value -> value.getVersion() == 1L);
         verify(events, times(2)).enqueueResourceProjection(any(OAuthResourceBO.class));
         assertThatThrownBy(() -> service.batch(PLATFORM, new BatchResourceServerActionDTO(
