@@ -121,6 +121,14 @@ class OAuthExecutionGrantHttpTest {
         verifyNoInteractions(grants);
     }
 
+    @Test void numeric_deadline_retains_postgres_microsecond_precision() throws Exception {
+        var precise = new ExecutionGrantContract.IssueRequest(USER, "TIANJI_AGENT_RUN_EXECUTION", INTENT,
+                "c".repeat(64), true, Instant.parse("2026-10-30T00:00:00.123456Z"));
+        when(grants.issue(caller, precise)).thenReturn(new ExecutionGrantContract.Issued(TICKET, DEADLINE));
+        call(ExecutionGrantContract.ISSUE_PATH, mapper.writeValueAsString(precise)).andExpect(status().isOk());
+        verify(grants).issue(caller, precise);
+    }
+
     @Test void missingAuthenticationWrongContentTypeAndOversizeFailBeforeGrantHandling() throws Exception {
         mvc.perform(post(ExecutionGrantContract.ISSUE_PATH).contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isUnauthorized());

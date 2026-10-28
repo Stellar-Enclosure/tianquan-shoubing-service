@@ -42,7 +42,7 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
         this.grantMapper = mapper.copy().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, DeserializationFeature.FAIL_ON_TRAILING_TOKENS,
                         DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES, DeserializationFeature.FAIL_ON_NULL_CREATOR_PROPERTIES,
-                        DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+                        DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES, DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
                 .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS);
     }
 
