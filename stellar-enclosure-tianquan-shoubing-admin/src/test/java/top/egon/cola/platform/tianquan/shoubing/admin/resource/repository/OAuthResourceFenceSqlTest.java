@@ -29,12 +29,38 @@ import top.egon.cola.component.common.mybatis.routing.EgonColaPhysicalTargetBO;
 import top.egon.cola.component.common.mybatis.routing.EgonColaRouteResult;
 import top.egon.cola.component.common.mybatis.routing.EgonColaTwoLevelRouteStrategy;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.dao.OAuthResourceFenceMapper;
+import top.egon.cola.platform.tianquan.shoubing.admin.resource.dao.OAuthResourceMapper;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 
 class OAuthResourceFenceSqlTest {
     private static final Instant NOW = Instant.parse("2026-10-28T00:00:00Z");
+
+    @Test void resourceBatchCandidateQueryDoesNotLockAndPassesTheReplicaReadGuard() throws Exception {
+        var configuration = new Configuration(); String resource = "mapper/resource/OAuthResourceMapper.xml";
+        try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            new XMLMapperBuilder(input, configuration, resource, configuration.getSqlFragments()).parse();
+        }
+        var properties = new EgonColaMybatisPlusProperties();
+        var tenantGuard = new EgonColaTenantIdGuardInnerInterceptor(() -> "worker", properties);
+        new CommonAnnotationBeanPostProcessor().postProcessBeforeInitialization(tenantGuard, "sqlGuard");
+        var params = Map.<String, Object>of("tenantId", 1L, "bizCode", "retail", "environment", "prod",
+                "appCodes", List.of("orders", "billing"));
+        var read = configuration.getMappedStatement(OAuthResourceMapper.class.getName() + ".selectByBizCodeAndEnvironmentAndAppCodeIn");
+        assertThat(read.getBoundSql(params).getSql().toLowerCase()).doesNotContain("for update", "for share");
+        var parser = new org.apache.shardingsphere.infra.parser.ShardingSphereSQLParserEngine(
+                org.apache.shardingsphere.infra.spi.type.typed.TypedSPILoader.getService(
+                        org.apache.shardingsphere.database.connector.core.type.DatabaseType.class, "PostgreSQL"),
+                new org.apache.shardingsphere.sql.parser.engine.api.CacheOption(16, 64),
+                new org.apache.shardingsphere.sql.parser.engine.api.CacheOption(16, 64));
+        assertThat(parser.parse(read.getBoundSql(params).getSql(), false)).isNotNull();
+        MDC.put("tenantId", "1"); MDC.put("userId", "worker");
+        try {
+            assertThatCode(() -> tenantGuard.beforeQuery(mock(Executor.class), read, params, RowBounds.DEFAULT, null,
+                    read.getBoundSql(params))).doesNotThrowAnyException();
+        } finally { MDC.remove("tenantId"); MDC.remove("userId"); }
+    }
     @Test void staleFenceOrResourceVersionCannotAcquireThePrimaryGuard() throws Exception {
         var source = new JdbcDataSource(); source.setURL("jdbc:h2:mem:" + UUID.randomUUID().toString().replace("-", "") + ";DB_CLOSE_DELAY=-1");
         var jdbc = new JdbcTemplate(source); jdbc.execute("CREATE SCHEMA tianquan_oauth");

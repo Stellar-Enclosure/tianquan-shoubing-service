@@ -85,7 +85,6 @@
               #{appCode}
           </foreach>
         ORDER BY app_code ASC, resource_server_id ASC
-        FOR UPDATE
     </select>
 
     <select id="selectActiveById" resultMap="OAuthResourcePOResultMap">
