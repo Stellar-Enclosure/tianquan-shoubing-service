@@ -51,6 +51,8 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthToken
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthTokenMetadataBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthTokenTypeEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthTokenRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSecurityProjectionComponent;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.SignedTokenClaimsBO;
 import top.egon.cola.component.common.id.snowflake.SnowflakeIdGenerator;
@@ -92,6 +94,8 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
 
     @Qualifier("oauthDeviceSessionService")
     private final OAuthDeviceSessionService deviceSessions;
+    @Qualifier("oAuthSecurityStateRepository")
+    private final OAuthSecurityStateRepository securityStates;
 
     @Override
     @Transactional
@@ -298,24 +302,39 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
     public void remove(OAuth2Authorization source) {
         OAuth2Authorization authorization = Objects.requireNonNull(source, "authorization");
         TrustedRealmBO trustedRealm = tenantIssuerService.resolveCurrentIssuer();
-        realmRepository.findByRealmKeyForUpdate(trustedRealm)
-                .orElseThrow(() -> new IllegalStateException("OAUTH_AUTHORIZATION_REALM_NOT_FOUND"));
+        if (!OAuthTransactionFences.realm(realmRepository, trustedRealm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before authorization removal");
+        }
         Long id = parseOptionalPositiveId(authorization.getId());
         if (id == null) {
             return;
         }
-        OAuthAuthorizationBO current = authorizationRepository.findByIdForUpdate(trustedRealm, id).orElse(null);
-        if (current != null) {
+        OAuthAuthorizationBO current = authorizationRepository.findById(trustedRealm, id).orElse(null);
+        if (current == null) {
+            fenceAuthorizationRemoval(trustedRealm, id, true);
+        } else {
             invalidateTokensMissingFromSnapshot(trustedRealm, id, List.of());
             long version = current.getVersion();
             boolean pending = current.getAttributes().getPendingConsent() != null;
             current.setVersion(version + 1).setStatus(pending ? "CANCELLED" : "REVOKED")
                     .setRevokedAt(pending ? null : clock.instant());
             authorizationRepository.save(trustedRealm, current, version);
+            fenceAuthorizationRemoval(trustedRealm, id, false);
             if (pending && RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes browser) {
                 interactions.cancelAuthorization(browser.getRequest());
             }
         }
+    }
+
+    private void fenceAuthorizationRemoval(TrustedRealmBO realm, long authorizationId, boolean absent) {
+        var state = securityStates.findByTarget(realm, OAuthSecurityTargetEnum.REALM, "self")
+                .orElseThrow(() -> new org.springframework.dao.TransientDataAccessResourceException("OAuth realm state is not yet visible"));
+        boolean confirmed = absent
+                ? securityStates.fenceRealmIfAuthorizationAbsent(realm, state.getId(), state.getVersion(), authorizationId, clock.instant())
+                : securityStates.fenceRealmIfAuthorizationTokensInactive(realm, state.getId(), state.getVersion(), authorizationId, clock.instant());
+        if (!confirmed) throw new org.springframework.dao.TransientDataAccessResourceException("OAuth authorization or tokens are not yet visible");
+        state.setVersion(Math.addExact(state.getVersion(), 1L));
+        OAuthTransactionFences.securityStateWritten(realm, state);
     }
 
     @Override
@@ -500,10 +519,14 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
                     if (existing.getId() != null && existing.getId() > afterId) {
                         afterId = existing.getId();
                     }
-                    if (incomingDigests.contains(existing.getTokenDigest())
-                            || existing.getMetadata() == null || existing.getMetadata().isInvalidated()) {
+                    if (incomingDigests.contains(existing.getTokenDigest())) {
                         continue;
                     }
+                    if (existing.getMetadata() == null) {
+                        throw new org.springframework.dao.TransientDataAccessResourceException("OAuth token metadata is not yet visible");
+                    }
+                    if (existing.getMetadata().isInvalidated()
+                            && (existing.getConsumedAt() != null || existing.getRevokedAt() != null)) continue;
                     existing.getMetadata().setInvalidated(true);
                     if (type == OAuthTokenTypeEnum.CODE) {
                         existing.getMetadata().setCodeConsumed(true);

@@ -56,7 +56,8 @@ class TenantAuthorizationReplicaVersionTest {
         var service = new TenantAuthorizationServiceImpl(issuers, realms, authorizations, mock(OAuthAuthenticationRepository.class),
                 tokens, clients, mock(SasAuthorizationConverter.class), mock(SasRegisteredClientConverter.class), new ObjectMapper(),
                 Clock.fixed(Instant.parse("2026-10-28T00:00:00Z"), ZoneOffset.UTC), mock(OAuthSecurityProjectionComponent.class),
-                mock(OAuthTokenIssueService.class), mock(OAuthBrowserInteractionComponent.class), mock(OAuthDeviceSessionService.class));
+                mock(OAuthTokenIssueService.class), mock(OAuthBrowserInteractionComponent.class), mock(OAuthDeviceSessionService.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class));
         var registered = RegisteredClient.withId("501").clientId("client-501").clientSecret("secret")
                 .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
                 .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS).build();

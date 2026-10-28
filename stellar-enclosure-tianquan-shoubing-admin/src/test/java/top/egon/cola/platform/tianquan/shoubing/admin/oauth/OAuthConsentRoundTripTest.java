@@ -1341,6 +1341,14 @@ class OAuthConsentRoundTripTest {
                     i.getArgument(0), "fixture-user", "fixture-user", "Fixture user", top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.ACTIVE, 0, null, null, 0L)));
             when(securityStateRepository.findByTarget(any(), any(), anyString())).thenAnswer(i -> Optional.of(top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO.builder()
                     .id(42L).version(0L).targetType(i.getArgument(1)).targetKey(i.getArgument(2)).generation(0L).enabled(true).revision(0L).reasonCode("TEST").build()));
+            when(securityStateRepository.fenceRealmIfAuthorizationAbsent(any(), anyLong(), anyLong(), anyLong(), any())).thenAnswer(i ->
+                    !authorizations.containsKey(key(i.getArgument(0), i.getArgument(3))));
+            when(securityStateRepository.fenceRealmIfAuthorizationTokensInactive(any(), anyLong(), anyLong(), anyLong(), any())).thenAnswer(i -> {
+                TrustedRealmBO realm = i.getArgument(0); long authorizationId = i.getArgument(3);
+                return tokens.entrySet().stream().filter(entry -> entry.getKey().startsWith(realm.getRealmKey() + ":"))
+                        .map(Map.Entry::getValue).noneMatch(token -> token.getAuthorizationPk() == authorizationId
+                                && token.getConsumedAt() == null && token.getRevokedAt() == null);
+            });
             when(signingKeyRepository.findByKid(any(), anyString())).thenAnswer(i -> signingKeyRepository.findByStatuses(i.getArgument(0), Set.of(OAuthKeyStatusEnum.ACTIVE), 0L, 8).stream().filter(value -> value.getKid().equals(i.getArgument(1))).findFirst());
             when(authorizationRepository.findByInteractionId(any(), anyString())).thenAnswer(i -> authorizations.values().stream()
                     .filter(value -> Objects.equals(value.getInteractionId(), i.getArgument(1)))

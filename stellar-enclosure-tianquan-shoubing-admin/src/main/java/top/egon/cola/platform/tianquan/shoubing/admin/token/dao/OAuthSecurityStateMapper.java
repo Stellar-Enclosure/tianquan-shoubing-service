@@ -35,6 +35,14 @@ public interface OAuthSecurityStateMapper extends EgonColaMapper<OAuthSecuritySt
             @Param("expectedVersion") Long expectedVersion, @Param("clientPk") Long clientPk,
             @Param("subject") String subject, @Param("now") java.time.Instant now, @Param("actor") String actor);
 
+    int fenceRealmIfAuthorizationAbsent(@Param("tenantId") Long tenantId, @Param("id") Long id,
+            @Param("expectedVersion") Long expectedVersion, @Param("authorizationId") long authorizationId,
+            @Param("now") Instant now, @Param("actor") String actor);
+
+    int fenceRealmIfAuthorizationTokensInactive(@Param("tenantId") Long tenantId, @Param("id") Long id,
+            @Param("expectedVersion") Long expectedVersion, @Param("authorizationId") long authorizationId,
+            @Param("now") Instant now, @Param("actor") String actor);
+
     int fenceSubjectDelivery(@Param("tenantId") Long tenantId, @Param("id") Long id,
             @Param("expectedVersion") Long expectedVersion, @Param("subject") String subject,
             @Param("sourceRevision") long sourceRevision, @Param("previousRevision") long previousRevision,

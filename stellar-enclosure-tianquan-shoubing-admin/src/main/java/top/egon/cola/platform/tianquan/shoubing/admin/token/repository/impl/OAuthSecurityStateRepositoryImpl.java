@@ -124,6 +124,28 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
 
     @Override
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRealmIfAuthorizationAbsent(TrustedRealmBO realm, long id, long expectedVersion,
+            long authorizationId, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || authorizationId <= 0 || now == null) {
+            throw new IllegalArgumentException("OAUTH_SECURITY_STATE_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceRealmIfAuthorizationAbsent(
+                tenant, id, expectedVersion, authorizationId, now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRealmIfAuthorizationTokensInactive(TrustedRealmBO realm, long id, long expectedVersion,
+            long authorizationId, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || authorizationId <= 0 || now == null) {
+            throw new IllegalArgumentException("OAUTH_SECURITY_STATE_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceRealmIfAuthorizationTokensInactive(
+                tenant, id, expectedVersion, authorizationId, now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public boolean fenceSubjectDelivery(TrustedRealmBO realm, long id, long expectedVersion,
             String subject, long sourceRevision, long previousRevision, Instant now) {
         if (id <= 0 || expectedVersion < 0 || subject == null || !subject.matches("[A-Za-z0-9._~-]{1,64}")

@@ -163,6 +163,23 @@
                           WHERE c.tenant_id = #{tenantId} AND c.client_pk = #{clientPk}
                             AND c.subject = #{subject} AND c.status = 'ACTIVE' AND c.deleted_at IS NULL)
     </update>
+    <update id="fenceRealmIfAuthorizationAbsent">
+        UPDATE tianquan_oauth.oauth_security_state s
+        SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
+          AND s.target_type = 'REALM' AND s.target_key = 'self' AND s.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization a
+                          WHERE a.tenant_id = #{tenantId} AND a.id = #{authorizationId} AND a.deleted_at IS NULL)
+    </update>
+    <update id="fenceRealmIfAuthorizationTokensInactive">
+        UPDATE tianquan_oauth.oauth_security_state s
+        SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
+          AND s.target_type = 'REALM' AND s.target_key = 'self' AND s.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_token t
+                          WHERE t.tenant_id = #{tenantId} AND t.authorization_pk = #{authorizationId}
+                            AND t.consumed_at IS NULL AND t.revoked_at IS NULL AND t.deleted_at IS NULL)
+    </update>
     <update id="fenceSubjectDelivery">
         UPDATE tianquan_oauth.oauth_security_state s
         SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
