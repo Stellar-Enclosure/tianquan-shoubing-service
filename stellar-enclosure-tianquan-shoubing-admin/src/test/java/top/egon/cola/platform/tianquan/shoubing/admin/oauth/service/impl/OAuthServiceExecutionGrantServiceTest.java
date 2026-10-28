@@ -18,6 +18,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocat
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceIdentityPrincipal;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ServiceExecutionGrantContract;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 
 import java.net.URI;
@@ -147,6 +148,28 @@ class OAuthServiceExecutionGrantServiceTest {
                 IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE);
         verify(authority).requireRecordedServiceExecutionSource(eq(realm), any(),
                 eq(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
+    }
+
+    @Test
+    void transport_adapter_preserves_the_sealed_service_and_revoke_intent() {
+        var request = new ServiceExecutionGrantContract.IssueRequest("worker-proof", PURPOSE, INTENT, "c".repeat(64),
+                true, NOW.plusSeconds(7_200));
+        var issued = service.issue(sourceCaller, request);
+        var result = service.resolve(verifierCaller, new ServiceExecutionGrantContract.ResolveRequest(issued.ticket()));
+        assertEquals(issued.ticket().grantId(), result.grantId());
+        assertEquals(request.purpose(), result.purpose());
+        assertEquals(request.intentId(), result.intentId());
+        assertEquals(request.bindingSha256(), result.bindingSha256());
+        assertTrue(result.sessionRequired());
+        assertEquals(request.deadlineAt(), result.intentDeadlineAt());
+        assertEquals(issued.expiresAt(), result.expiresAt());
+        assertEquals("worker-service", result.subject());
+        assertEquals(worker.resourceUri(), result.subjectSource().resourceUri());
+        assertEquals(source.resourceUri(), result.source().resourceUri());
+        assertEquals(subject.scopes(), result.scopes());
+        var revoker = caller(source, IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE, 51, "601", "1".repeat(64), NOW);
+        service.revoke(revoker, new ServiceExecutionGrantContract.RevokeRequest(issued.ticket()));
+        verify(revocationWriter).revokeExecutionGrant(realm, result.grantId(), request.deadlineAt());
     }
 
     @Test

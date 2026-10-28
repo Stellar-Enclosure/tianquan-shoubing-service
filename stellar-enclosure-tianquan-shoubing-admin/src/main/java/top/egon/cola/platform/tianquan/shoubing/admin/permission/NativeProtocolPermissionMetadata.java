@@ -156,6 +156,24 @@ public final class NativeProtocolPermissionMetadata {
             allowedPrincipals = {PermissionManifest.PrincipalType.SERVICE}, oauthScopes = {"tianquan-shoubing:execution-grant:revoke"})
     public static void executionGrantRevoke() { throw new UnsupportedOperationException("metadata only"); }
 
+    @RequestMapping(path = {"/internal/v1/identity/service-execution-grants:issue"}, method = {RequestMethod.POST})
+    @PermissionResource(key = "tianquan-shoubing.protocol.serviceExecutionGrantIssue", type = ResourceType.API,
+            labelPage = "identity.protocol", labelKey = "serviceExecutionGrantIssue", access = ResourceAccess.INTERNAL,
+            allowedPrincipals = {PermissionManifest.PrincipalType.SERVICE}, oauthScopes = {"tianquan-shoubing:service-execution-grant:issue"})
+    public static void serviceExecutionGrantIssue() { throw new UnsupportedOperationException("metadata only"); }
+
+    @RequestMapping(path = {"/internal/v1/identity/service-execution-grants:resolve"}, method = {RequestMethod.POST})
+    @PermissionResource(key = "tianquan-shoubing.protocol.serviceExecutionGrantResolve", type = ResourceType.API,
+            labelPage = "identity.protocol", labelKey = "serviceExecutionGrantResolve", access = ResourceAccess.INTERNAL,
+            allowedPrincipals = {PermissionManifest.PrincipalType.SERVICE}, oauthScopes = {"tianquan-shoubing:service-execution-grant:resolve"})
+    public static void serviceExecutionGrantResolve() { throw new UnsupportedOperationException("metadata only"); }
+
+    @RequestMapping(path = {"/internal/v1/identity/service-execution-grants:revoke"}, method = {RequestMethod.POST})
+    @PermissionResource(key = "tianquan-shoubing.protocol.serviceExecutionGrantRevoke", type = ResourceType.API,
+            labelPage = "identity.protocol", labelKey = "serviceExecutionGrantRevoke", access = ResourceAccess.INTERNAL,
+            allowedPrincipals = {PermissionManifest.PrincipalType.SERVICE}, oauthScopes = {"tianquan-shoubing:service-execution-grant:revoke"})
+    public static void serviceExecutionGrantRevoke() { throw new UnsupportedOperationException("metadata only"); }
+
     @RequestMapping(path = "/egon.tianquan.shoubing.v1.IdentityDirectoryService/BatchGetIdentityProfiles", method = RequestMethod.POST, consumes = "application/grpc")
     @PermissionResource(key = "tianquan-shoubing.protocol.identityProfilesRpc", type = ResourceType.API,
             labelPage = "identity.protocol", labelKey = "identityProfilesRpc", access = ResourceAccess.INTERNAL,

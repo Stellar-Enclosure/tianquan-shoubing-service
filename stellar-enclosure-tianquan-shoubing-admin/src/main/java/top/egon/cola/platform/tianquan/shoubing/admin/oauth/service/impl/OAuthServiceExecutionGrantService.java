@@ -13,6 +13,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSe
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ServiceExecutionGrantContract;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 
 import java.time.Clock;
@@ -48,6 +49,35 @@ public class OAuthServiceExecutionGrantService {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.revocationWriter = Objects.requireNonNull(revocationWriter, "revocationWriter");
         if (!properties.enabled() || properties.bindings().isEmpty()) throw new IllegalArgumentException("SERVICE_EXECUTION_GRANT_DISABLED");
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ServiceExecutionGrantContract.Issued issue(OAuthAuthorityService.Caller caller, ServiceExecutionGrantContract.IssueRequest request) {
+        Objects.requireNonNull(request, "request");
+        var result = issue(caller, request.serviceToken(), new IssueRequest(request.purpose(), request.intentId(),
+                request.bindingSha256(), request.sessionRequired(), request.deadlineAt()));
+        return new ServiceExecutionGrantContract.Issued(new ServiceExecutionGrantContract.Ticket(result.ticket().grantId(),
+                result.ticket().ciphertext()), result.expiresAt());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ServiceExecutionGrantContract.Resolution resolve(OAuthAuthorityService.Caller caller, ServiceExecutionGrantContract.ResolveRequest request) {
+        Objects.requireNonNull(request, "request");
+        var result = resolve(caller, new OpaqueExecutionGrantCodec.ServiceTicket(request.ticket().grantId(), request.ticket().ciphertext()));
+        return new ServiceExecutionGrantContract.Resolution(result.grantId(), result.issuer(), result.tenantId(), result.subject(),
+                result.resource(), source(result.source()), source(result.subjectSource()), result.purpose(), result.intentId(),
+                result.bindingSha256(), result.sessionRequired(), result.expiresAt(), result.intentDeadlineAt(), result.scopes());
+    }
+
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    public void revoke(OAuthAuthorityService.Caller caller, ServiceExecutionGrantContract.RevokeRequest request) {
+        Objects.requireNonNull(request, "request");
+        revoke(caller, new OpaqueExecutionGrantCodec.ServiceTicket(request.ticket().grantId(), request.ticket().ciphertext()));
+    }
+
+    private static ServiceExecutionGrantContract.Source source(ExecutionGrantEnvelope.ServiceBinding value) {
+        return new ServiceExecutionGrantContract.Source(value.clientId(), value.appId(), value.businessCode(),
+                value.applicationCode(), value.environment(), value.resourceUri());
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)

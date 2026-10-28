@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.security.oauth2.core.OAuth2AccessToken;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
 import top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ServiceExecutionGrantContract;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceTokenRequest;
@@ -101,6 +102,57 @@ class HttpExecutionGrantClientTest {
         assertEquals(List.of(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE),
                 Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE), Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE)),
                 captured.getAllValues().stream().map(IdpServiceTokenRequest::scopes).toList());
+    }
+
+    @Test void service_grants_use_separate_paths_scopes_and_a_ticket_only_revoke() throws Exception {
+        var serviceContext = new IdpServiceTokenRequest(service.registrationId(), service.appId(), service.audience(),
+                service.context(), service.tenantId(), Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE, IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE));
+        var serviceClient = create(serviceContext, ISSUER, http, Duration.ofSeconds(1));
+        var serviceTicket = new ServiceExecutionGrantContract.Ticket("8" + "1".repeat(62), SECRET);
+        var serviceIssue = new ServiceExecutionGrantContract.IssueRequest("worker-token-sentinel", issue.purpose(), INTENT,
+                issue.bindingSha256(), true, issue.deadlineAt());
+        var issued = new ServiceExecutionGrantContract.Issued(serviceTicket, NOW.plusSeconds(300));
+        var resolution = serviceResolution(ISSUER.toASCIIString(), 101, serviceTicket.grantId(), NOW.plusSeconds(300));
+        add(200, mapper.writeValueAsBytes(issued)); add(200, mapper.writeValueAsBytes(resolution)); add(204, new byte[0]);
+        assertEquals(issued, serviceClient.issueService(serviceIssue));
+        assertEquals(resolution, serviceClient.resolveService(serviceTicket));
+        serviceClient.revokeService(serviceTicket);
+        assertEquals("https://idp.example/prefix" + ServiceExecutionGrantContract.ISSUE_PATH, requests.get(0).request().uri().toString());
+        assertEquals("https://idp.example/prefix" + ServiceExecutionGrantContract.RESOLVE_PATH, requests.get(1).request().uri().toString());
+        assertEquals("https://idp.example/prefix" + ServiceExecutionGrantContract.REVOKE_PATH, requests.get(2).request().uri().toString());
+        assertEquals("worker-token-sentinel", mapper.readTree(requests.get(0).body()).get("serviceToken").asText());
+        assertEquals(1, mapper.readTree(requests.get(2).body()).size());
+        assertEquals(SECRET, mapper.readTree(requests.get(2).body()).get("ticket").get("ciphertext").asText());
+        var captured = org.mockito.ArgumentCaptor.forClass(IdpServiceTokenRequest.class);
+        verify(oauth, times(3)).authorizeBounded(captured.capture(), eq(ISSUER.toString()), any());
+        assertEquals(List.of(Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE),
+                Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE), Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE)),
+                captured.getAllValues().stream().map(IdpServiceTokenRequest::scopes).toList());
+        assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> client.issueService(serviceIssue));
+    }
+
+    @Test void service_client_rejects_forged_response_binding_and_never_retries_writes() throws Exception {
+        var context = new IdpServiceTokenRequest(service.registrationId(), service.appId(), service.audience(), service.context(),
+                service.tenantId(), Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE));
+        var serviceClient = create(context, ISSUER, http, Duration.ofSeconds(1));
+        var serviceTicket = new ServiceExecutionGrantContract.Ticket("8" + "1".repeat(62), SECRET);
+        for (var response : List.of(serviceResolution("https://other.example/tenant", 101, serviceTicket.grantId(), NOW.plusSeconds(60)),
+                serviceResolution(ISSUER.toString(), 102, serviceTicket.grantId(), NOW.plusSeconds(60)),
+                serviceResolution(ISSUER.toString(), 101, "8" + "2".repeat(62), NOW.plusSeconds(60)),
+                serviceResolution(ISSUER.toString(), 101, serviceTicket.grantId(), NOW))) {
+            add(200, mapper.writeValueAsBytes(response));
+            assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> serviceClient.resolveService(serviceTicket));
+        }
+        String valid = mapper.writeValueAsString(serviceResolution(ISSUER.toString(), 101, serviceTicket.grantId(), NOW.plusSeconds(60)));
+        add(200, valid.replace("\"subject\":\"worker\"", "\"subject\":\"impostor\"").getBytes(StandardCharsets.UTF_8));
+        assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> serviceClient.resolveService(serviceTicket));
+        var serviceIssue = new ServiceExecutionGrantContract.IssueRequest("worker-token-sentinel", issue.purpose(), INTENT,
+                issue.bindingSha256(), false, issue.deadlineAt());
+        add(403, "{\"error\":\"access_denied\"}".getBytes(StandardCharsets.UTF_8));
+        assertThrows(HttpExecutionGrantClient.ExecutionGrantDeniedException.class, () -> serviceClient.issueService(serviceIssue));
+        assertEquals(6, requests.size());
     }
 
     @Test void rejects_mismatched_issuer_tenant_grant_or_expiry_from_authority() throws Exception {
@@ -203,6 +255,13 @@ class HttpExecutionGrantClientTest {
         return new ExecutionGrantContract.Resolution(id, issuer, tenant, "alice", "https://api.example/tianji",
                 new ExecutionGrantContract.Source("service", "agent", "platform", "tianji", "test"), issue.purpose(),
                 INTENT, issue.bindingSha256(), true, expiry, issue.deadlineAt(), Set.of("agent:run"));
+    }
+
+    private ServiceExecutionGrantContract.Resolution serviceResolution(String issuer, long tenant, String id, Instant expiry) {
+        var source = new ServiceExecutionGrantContract.Source("service", "agent", "platform", "tianji", "test", "https://api.example/tianji");
+        var worker = new ServiceExecutionGrantContract.Source("worker", "process", "platform", "process", "test", "https://api.example/process");
+        return new ServiceExecutionGrantContract.Resolution(id, issuer, tenant, "worker", source.resourceUri(), source, worker,
+                issue.purpose(), INTENT, issue.bindingSha256(), true, expiry, issue.deadlineAt(), Set.of("agent:run"));
     }
 
     @SuppressWarnings("unchecked") private static HttpResponse<byte[]> response(HttpRequest request, int status, String contentType) {

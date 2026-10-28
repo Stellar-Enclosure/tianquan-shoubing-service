@@ -30,7 +30,7 @@ class NativeProtocolPermissionMetadataTest {
             assertThatThrownBy(()->method.invoke(null)).isInstanceOf(InvocationTargetException.class).hasCauseInstanceOf(UnsupportedOperationException.class);
         }
         var advisor=new Rbac3MethodAuthorizationManager(mock(AuthorizationService.class));
-        for(Class<?> controller:List.of(TenantLoginController.class,OAuthConsentController.class,OAuthLogoutController.class,OAuthPasswordChangeController.class,OAuthAuthorityController.class,OAuthExecutionGrantController.class)) {
+        for(Class<?> controller:List.of(TenantLoginController.class,OAuthConsentController.class,OAuthLogoutController.class,OAuthPasswordChangeController.class,OAuthAuthorityController.class,OAuthExecutionGrantController.class,OAuthServiceExecutionGrantController.class)) {
             for(var method:controller.getDeclaredMethods()) if(AnnotatedElementUtils.findMergedAnnotation(method,RequestMapping.class)!=null) {
                 assertThat(method.getAnnotation(PermissionResource.class)).isNull();assertThat(advisor.supports(method,controller)).isFalse();
             }
@@ -55,8 +55,11 @@ class NativeProtocolPermissionMetadataTest {
                 Map.entry("OAuthLogoutController.form","logoutPage"),Map.entry("OAuthLogoutController.logout","logout"),Map.entry("OAuthPasswordChangeController.form","passwordChangePage"),
                 Map.entry("OAuthPasswordChangeController.change","passwordChange"),Map.entry("OAuthAuthorityController.resolve","securityState"),Map.entry("OAuthAuthorityController.append","auditAppend"),
                 Map.entry("OAuthExecutionGrantController.issue","executionGrantIssue"),Map.entry("OAuthExecutionGrantController.resolve","executionGrantResolve"),
-                Map.entry("OAuthExecutionGrantController.revoke","executionGrantRevoke"));
-        for(Class<?> controller:List.of(TenantLoginController.class,OAuthConsentController.class,OAuthLogoutController.class,OAuthPasswordChangeController.class,OAuthAuthorityController.class,OAuthExecutionGrantController.class)) {
+                Map.entry("OAuthExecutionGrantController.revoke","executionGrantRevoke"),
+                Map.entry("OAuthServiceExecutionGrantController.issue","serviceExecutionGrantIssue"),
+                Map.entry("OAuthServiceExecutionGrantController.resolve","serviceExecutionGrantResolve"),
+                Map.entry("OAuthServiceExecutionGrantController.revoke","serviceExecutionGrantRevoke"));
+        for(Class<?> controller:List.of(TenantLoginController.class,OAuthConsentController.class,OAuthLogoutController.class,OAuthPasswordChangeController.class,OAuthAuthorityController.class,OAuthExecutionGrantController.class,OAuthServiceExecutionGrantController.class)) {
             for(var method:controller.getDeclaredMethods()) {
                 var mapping=AnnotatedElementUtils.findMergedAnnotation(method,RequestMapping.class);if(mapping==null)continue;
                 String declaration=declarations.get(controller.getSimpleName()+"."+method.getName());assertThat(declaration).isNotNull();
@@ -68,6 +71,11 @@ class NativeProtocolPermissionMetadataTest {
         }
         assertThat(NativeProtocolPermissionMetadata.class.getMethod("oidcDiscovery").getAnnotation(PermissionResource.class).access()).isEqualTo(ResourceAccess.PUBLIC);
         assertThat(NativeProtocolPermissionMetadata.class.getMethod("token").getAnnotation(PermissionResource.class).access()).isEqualTo(ResourceAccess.INTERNAL);
+        for(String operation:List.of("Issue", "Resolve", "Revoke")) {
+            var resource=NativeProtocolPermissionMetadata.class.getMethod("serviceExecutionGrant"+operation).getAnnotation(PermissionResource.class);
+            assertThat(resource.allowedPrincipals()).containsExactly(PermissionManifest.PrincipalType.SERVICE);
+            assertThat(resource.oauthScopes()).containsExactly("tianquan-shoubing:service-execution-grant:"+operation.toLowerCase(Locale.ROOT));
+        }
     }
     private List<String> paths(String method)throws Exception{return Arrays.asList(NativeProtocolPermissionMetadata.class.getMethod(method).getAnnotation(RequestMapping.class).path());}
 }

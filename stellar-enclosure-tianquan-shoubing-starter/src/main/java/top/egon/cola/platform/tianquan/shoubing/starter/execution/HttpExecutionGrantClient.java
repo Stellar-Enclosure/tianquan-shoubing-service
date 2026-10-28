@@ -25,6 +25,7 @@ import java.util.concurrent.TimeoutException;
 import org.springframework.http.MediaType;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
 import top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ServiceExecutionGrantContract;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceTokenRequest;
@@ -93,6 +94,30 @@ public final class HttpExecutionGrantClient {
     public void revoke(ExecutionGrantContract.RevokeRequest request) {
         Objects.requireNonNull(request, "request");
         post(ExecutionGrantContract.REVOKE_PATH, request, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, Void.class);
+    }
+
+    public ServiceExecutionGrantContract.Issued issueService(ServiceExecutionGrantContract.IssueRequest request) {
+        Objects.requireNonNull(request, "request");
+        var result = post(ServiceExecutionGrantContract.ISSUE_PATH, request, IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE,
+                ServiceExecutionGrantContract.Issued.class);
+        if (!result.expiresAt().isAfter(clock.instant()) || result.expiresAt().isAfter(request.deadlineAt())) throw unavailable();
+        return result;
+    }
+
+    public ServiceExecutionGrantContract.Resolution resolveService(ServiceExecutionGrantContract.Ticket ticket) {
+        Objects.requireNonNull(ticket, "ticket");
+        var result = post(ServiceExecutionGrantContract.RESOLVE_PATH, new ServiceExecutionGrantContract.ResolveRequest(ticket),
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE, ServiceExecutionGrantContract.Resolution.class);
+        if (!result.grantId().equals(ticket.grantId()) || !result.issuer().equals(issuer.toASCIIString())
+                || result.tenantId() != tenantId || !result.expiresAt().isAfter(clock.instant())
+                || result.expiresAt().isAfter(result.intentDeadlineAt())) throw unavailable();
+        return result;
+    }
+
+    public void revokeService(ServiceExecutionGrantContract.Ticket ticket) {
+        Objects.requireNonNull(ticket, "ticket");
+        post(ServiceExecutionGrantContract.REVOKE_PATH, new ServiceExecutionGrantContract.RevokeRequest(ticket),
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE, Void.class);
     }
 
     private <T> T post(String path, Object requestBody, String requiredScope, Class<T> type) {

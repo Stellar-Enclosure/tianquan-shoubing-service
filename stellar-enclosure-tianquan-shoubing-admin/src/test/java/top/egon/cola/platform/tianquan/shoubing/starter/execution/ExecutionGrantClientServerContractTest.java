@@ -21,15 +21,19 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.security.oauth2.core.OAuth2AccessToken;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.test.web.servlet.MockMvc;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.OAuthExecutionGrantController;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.OAuthServiceExecutionGrantController;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthAuthorityAuthenticationFilter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthAuthorityService;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthExecutionGrantService;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthServiceExecutionGrantService;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceIdentityPrincipal;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
 import top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ServiceExecutionGrantContract;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceTokenRequest;
@@ -77,6 +81,69 @@ class ExecutionGrantClientServerContractTest {
                     value.audience(), value.context(), value.tenantId(), value.scopes());
         });
         when(oauth.authorizeBounded(any(), anyString(), any())).thenReturn(new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "service-proof", now, now.plusSeconds(300)));
+        var http = transport(mvc);
+        var client = new HttpExecutionGrantClient(URI.create("https://idp.example"), issuer, context, oauth, mapper,
+                Duration.ofSeconds(1), http, Clock.fixed(now, ZoneOffset.UTC));
+        assertEquals(issued, client.issue(request));
+        assertEquals(resolution, client.resolve(ticket));
+        var revoke = new ExecutionGrantContract.RevokeRequest("user-proof", ticket);
+        client.revoke(revoke);
+        verify(grants).revoke(caller, revoke);
+        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE);
+        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE);
+        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE);
+    }
+
+    @Test void service_client_and_authority_exchange_the_same_bound_service_intent() throws Exception {
+        Instant now = Instant.parse("2026-10-29T00:00:00Z");
+        URI issuer = URI.create("https://idp.example/tenants/101");
+        var scopes = Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE, IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE);
+        var principal = new ServiceIdentityPrincipal("service", "101", "service", "123", URI.create("https://api.example/idp"), 1L,
+                scopes, "platform", "tianji", "test", "credential", now, now.plusSeconds(300), "agent", ServiceTokenContext.TENANT);
+        var realm = TrustedRealmBO.builder().issuer(issuer).realmKey("tenant:101").realmType(RealmTypeEnum.TENANT)
+                .storagePartitionId(101L).businessTenantId(101L).trustVersion(0L).build();
+        var caller = new OAuthAuthorityService.Caller(principal, realm, 12L, URI.create("https://api.example/tianji"));
+        var authority = mock(OAuthAuthorityService.class);
+        when(authority.authenticateService(eq("service-proof"), anyString())).thenReturn(caller);
+        var grants = mock(OAuthServiceExecutionGrantService.class);
+        var mapper = new ObjectMapper().findAndRegisterModules();
+        var mvc = MockMvcBuilders.standaloneSetup(new OAuthServiceExecutionGrantController(grants))
+                .addFilters(new OAuthAuthorityAuthenticationFilter(authority, mapper)).build();
+        String id = "8" + "1".repeat(62);
+        var ticket = new ServiceExecutionGrantContract.Ticket(id, "ENC:v1:key:nonce:sealed-fixture");
+        var request = new ServiceExecutionGrantContract.IssueRequest("worker-proof", "TEST_RUN", "00000000-0000-0000-0000-000000000123",
+                "c".repeat(64), true, now.plusSeconds(600));
+        var issued = new ServiceExecutionGrantContract.Issued(ticket, now.plusSeconds(300));
+        var source = new ServiceExecutionGrantContract.Source("service", "agent", "platform", "tianji", "test", "https://api.example/tianji");
+        var worker = new ServiceExecutionGrantContract.Source("worker", "process", "platform", "process", "test", "https://api.example/process");
+        var resolution = new ServiceExecutionGrantContract.Resolution(id, issuer.toString(), 101, "worker", source.resourceUri(),
+                source, worker, request.purpose(), request.intentId(), request.bindingSha256(), true,
+                issued.expiresAt(), request.deadlineAt(), Set.of("agent:run"));
+        when(grants.issue(caller, request)).thenReturn(issued);
+        when(grants.resolve(caller, new ServiceExecutionGrantContract.ResolveRequest(ticket))).thenReturn(resolution);
+        var oauth = mock(IdpServiceOAuth2Client.class);
+        var context = new IdpServiceTokenRequest("registration", "agent", URI.create("https://api.example/idp"),
+                ServiceTokenContext.TENANT, "101", scopes);
+        when(oauth.authorizationKey(any())).thenAnswer(inv -> {
+            IdpServiceTokenRequest value = inv.getArgument(0);
+            return new ServiceAuthorizationKey(issuer.toString(), value.registrationId(), "service", 1, value.appId(),
+                    value.audience(), value.context(), value.tenantId(), value.scopes());
+        });
+        when(oauth.authorizeBounded(any(), anyString(), any())).thenReturn(new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER,
+                "service-proof", now, now.plusSeconds(300)));
+        var client = new HttpExecutionGrantClient(URI.create("https://idp.example"), issuer, context, oauth, mapper,
+                Duration.ofSeconds(1), transport(mvc), Clock.fixed(now, ZoneOffset.UTC));
+        assertEquals(issued, client.issueService(request));
+        assertEquals(resolution, client.resolveService(ticket));
+        client.revokeService(ticket);
+        verify(grants).revoke(caller, new ServiceExecutionGrantContract.RevokeRequest(ticket));
+        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE);
+        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE);
+        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE);
+    }
+
+    private static HttpClient transport(MockMvc mvc) {
         var http = mock(HttpClient.class);
         when(http.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
         when(http.<byte[]>sendAsync(any(), any())).thenAnswer(inv -> {
@@ -95,16 +162,7 @@ class ExecutionGrantClientServerContractTest {
             subscriber.onNext(List.of(ByteBuffer.wrap(actual.getContentAsByteArray()))); subscriber.onComplete();
             return subscriber.getBody().thenApply(bytes -> { when(response.body()).thenReturn(bytes); return response; }).toCompletableFuture();
         });
-        var client = new HttpExecutionGrantClient(URI.create("https://idp.example"), issuer, context, oauth, mapper,
-                Duration.ofSeconds(1), http, Clock.fixed(now, ZoneOffset.UTC));
-        assertEquals(issued, client.issue(request));
-        assertEquals(resolution, client.resolve(ticket));
-        var revoke = new ExecutionGrantContract.RevokeRequest("user-proof", ticket);
-        client.revoke(revoke);
-        verify(grants).revoke(caller, revoke);
-        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE);
-        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE);
-        verify(authority).authenticateService("service-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE);
+        return http;
     }
 
     private static byte[] readBody(HttpRequest request) {

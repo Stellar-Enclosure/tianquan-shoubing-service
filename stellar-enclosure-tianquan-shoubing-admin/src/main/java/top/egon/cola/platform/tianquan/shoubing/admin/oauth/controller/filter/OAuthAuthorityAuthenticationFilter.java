@@ -24,6 +24,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthAuthorityService;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 import top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ServiceExecutionGrantContract;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpAuthenticationToken;
 
 /** Owner-local SERVICE authentication; no remote state/audit callback can recursively enter this chain. */
@@ -104,8 +105,9 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
     private Object grantBody(byte[] body, Class<?> type) throws IOException {
         var value = grantMapper.readTree(body);
         if (value == null || !value.isObject()) throw new IllegalArgumentException("EXECUTION_GRANT_BODY_INVALID");
-        if (type == ExecutionGrantContract.IssueRequest.class) {
-            if (value.size() != 6 || !value.path("userToken").isTextual() || !value.path("purpose").isTextual()
+        if (type == ExecutionGrantContract.IssueRequest.class || type == ServiceExecutionGrantContract.IssueRequest.class) {
+            String tokenField = type == ExecutionGrantContract.IssueRequest.class ? "userToken" : "serviceToken";
+            if (value.size() != 6 || !value.path(tokenField).isTextual() || !value.path("purpose").isTextual()
                     || !value.path("intentId").isTextual() || !value.path("bindingSha256").isTextual()
                     || !value.path("sessionRequired").isBoolean()
                     || !(value.path("deadlineAt").isTextual() || value.path("deadlineAt").isNumber())) {
@@ -113,7 +115,7 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
             }
         } else {
             var ticket = value.path("ticket");
-            if (value.size() != (type == ExecutionGrantContract.ResolveRequest.class ? 1 : 2)
+            if (value.size() != (type == ExecutionGrantContract.RevokeRequest.class ? 2 : 1)
                     || !ticket.isObject() || ticket.size() != 2 || !ticket.path("grantId").isTextual()
                     || !ticket.path("ciphertext").isTextual()
                     || type == ExecutionGrantContract.RevokeRequest.class && !value.path("userToken").isTextual()) {
@@ -130,6 +132,9 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
             case ExecutionGrantContract.ISSUE_PATH -> IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE;
             case ExecutionGrantContract.RESOLVE_PATH -> IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE;
             case ExecutionGrantContract.REVOKE_PATH -> IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE;
+            case ServiceExecutionGrantContract.ISSUE_PATH -> IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE;
+            case ServiceExecutionGrantContract.RESOLVE_PATH -> IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE;
+            case ServiceExecutionGrantContract.REVOKE_PATH -> IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE;
             default -> null;
         };
     }
@@ -139,6 +144,9 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
             case ExecutionGrantContract.ISSUE_PATH -> ExecutionGrantContract.IssueRequest.class;
             case ExecutionGrantContract.RESOLVE_PATH -> ExecutionGrantContract.ResolveRequest.class;
             case ExecutionGrantContract.REVOKE_PATH -> ExecutionGrantContract.RevokeRequest.class;
+            case ServiceExecutionGrantContract.ISSUE_PATH -> ServiceExecutionGrantContract.IssueRequest.class;
+            case ServiceExecutionGrantContract.RESOLVE_PATH -> ServiceExecutionGrantContract.ResolveRequest.class;
+            case ServiceExecutionGrantContract.REVOKE_PATH -> ServiceExecutionGrantContract.RevokeRequest.class;
             default -> null;
         };
     }
