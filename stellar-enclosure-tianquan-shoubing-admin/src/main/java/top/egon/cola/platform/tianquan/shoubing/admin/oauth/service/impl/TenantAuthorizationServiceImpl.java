@@ -97,12 +97,13 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
     public void save(OAuth2Authorization source) {
         OAuth2Authorization authorization = Objects.requireNonNull(source, "authorization");
         TrustedRealmBO trustedRealm = tenantIssuerService.resolveCurrentIssuer();
-        realmRepository.findByRealmKeyForUpdate(trustedRealm)
-                .orElseThrow(() -> new IllegalStateException("OAUTH_AUTHORIZATION_REALM_NOT_FOUND"));
+        if (!realmRepository.fenceObservedVersion(trustedRealm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before authorization save");
+        }
         OAuthClientBO client = loadClient(trustedRealm, authorization.getRegisteredClientId());
-        client = clientRepository.findByClientIdForUpdate(trustedRealm, client.getClientId())
-                .filter(value -> value.getStatus() != null && "ACTIVE".equals(value.getStatus().name()))
-                .orElseThrow(() -> new IllegalStateException("OAUTH_AUTHORIZATION_CLIENT_NOT_FOUND"));
+        if (!clientRepository.fenceObservedVersion(trustedRealm, client)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth client changed before authorization save");
+        }
         String principalType = AuthorizationGrantType.CLIENT_CREDENTIALS.equals(
                 authorization.getAuthorizationGrantType()) ? "SERVICE" : "USER";
         OAuthSecuritySnapshotBO currentSnapshot = securityProjection.snapshotForAuthorization(

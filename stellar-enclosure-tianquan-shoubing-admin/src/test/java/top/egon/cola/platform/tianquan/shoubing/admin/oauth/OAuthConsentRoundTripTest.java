@@ -1175,6 +1175,8 @@ class OAuthConsentRoundTripTest {
         final List<OutboxMessage> events = new ArrayList<>();
         final List<OAuthAuditBO> audits = new ArrayList<>();
         final List<top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEvent> identityEvents = new ArrayList<>();
+        final Set<String> fencedRealms = new java.util.HashSet<>();
+        final Set<String> fencedClients = new java.util.HashSet<>();
         boolean mustChangePassword;
         final OAuthAuthorizationConverter authorizationConverter = Mappers.getMapper(OAuthAuthorizationConverter.class);
         final OAuthTokenConverter tokenConverter = Mappers.getMapper(OAuthTokenConverter.class);
@@ -1327,7 +1329,14 @@ class OAuthConsentRoundTripTest {
             when(issuers.resolveCurrentIssuer()).thenAnswer(i -> realm(URI.create(
                     AuthorizationServerContextHolder.getContext().getIssuer())));
             when(realmRepository.findByRealmKeyForUpdate(any())).thenAnswer(i -> Optional.of(realmFact(i.getArgument(0))));
-            when(realmRepository.fenceObservedVersion(any())).thenReturn(true);
+            when(realmRepository.fenceObservedVersion(any())).thenAnswer(i -> {
+                TrustedRealmBO realm = i.getArgument(0);
+                return fencedRealms.add(realm.getRealmKey());
+            });
+            when(clientRepository.fenceObservedVersion(any(), any())).thenAnswer(i -> {
+                TrustedRealmBO realm = i.getArgument(0); OAuthClientBO client = i.getArgument(1);
+                return fencedClients.add(realm.getRealmKey() + ":" + client.getId());
+            });
             when(realmRepository.findByIssuer(any())).thenAnswer(i -> Optional.of(realmFact(i.getArgument(0))));
             when(signingKeyRepository.findByStatuses(any(), anySet(), anyLong(), anyInt())).thenAnswer(i -> {
                 if (failSigning) { throw new TransientDataAccessResourceException("fixture signing key lookup failure"); }
@@ -1464,6 +1473,7 @@ class OAuthConsentRoundTripTest {
         @Override protected boolean isExistingTransaction(Object transaction) { return ((FixtureTransaction) transaction).active; }
         @Override protected void doBegin(Object transaction, org.springframework.transaction.TransactionDefinition definition) {
             FixtureTransaction state = (FixtureTransaction) transaction; state.active = true;
+            fixture.fencedRealms.clear(); fixture.fencedClients.clear();
             state.authorizations = new LinkedHashMap<>(fixture.authorizations); state.tokens = new LinkedHashMap<>(fixture.tokens);
             state.consents = new LinkedHashMap<>(fixture.consents);
             state.deviceSessions = new LinkedHashMap<>(fixture.deviceSessions);

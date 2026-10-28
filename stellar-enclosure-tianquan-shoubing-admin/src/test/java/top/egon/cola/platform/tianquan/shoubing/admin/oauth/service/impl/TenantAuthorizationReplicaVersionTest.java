@@ -18,7 +18,6 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthorizationBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
-import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.SasAuthorizationConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.SasRegisteredClientConverter;
@@ -49,9 +48,9 @@ class TenantAuthorizationReplicaVersionTest {
         var clients = mock(OAuthClientRepository.class); var transactions = mock(PlatformTransactionManager.class);
         var client = OAuthClientBO.builder().id(501L).clientId("client-501").status(OAuthClient.Status.ACTIVE).build();
         when(issuers.resolveCurrentIssuer()).thenReturn(realm);
-        when(realms.findByRealmKeyForUpdate(realm)).thenReturn(Optional.of(OAuthRealmBO.builder().build()));
+        when(realms.fenceObservedVersion(realm)).thenReturn(true);
         when(clients.findById(realm, 501L)).thenReturn(Optional.of(client));
-        when(clients.findByClientIdForUpdate(realm, "client-501")).thenReturn(Optional.of(client));
+        when(clients.fenceObservedVersion(realm, client)).thenReturn(true);
         when(authorizations.findById(realm, 700L)).thenReturn(Optional.of(OAuthAuthorizationBO.builder().id(700L).version(2L).build()));
         when(transactions.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         var service = new TenantAuthorizationServiceImpl(issuers, realms, authorizations, mock(OAuthAuthenticationRepository.class),
@@ -70,6 +69,8 @@ class TenantAuthorizationReplicaVersionTest {
                 .isInstanceOf(OptimisticLockingFailureException.class);
         verify(transactions).rollback(any());
         verify(authorizations).findById(realm, 700L);
+        verify(realms, never()).findByRealmKeyForUpdate(any());
+        verify(clients, never()).findByClientIdForUpdate(any(), anyString());
         verify(authorizations, never()).findByIdForUpdate(any(), anyLong());
         verify(authorizations, never()).save(any(), any(), anyLong());
         verifyNoInteractions(tokens);
