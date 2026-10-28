@@ -114,6 +114,14 @@ class OAuthSecurityProjectionComponentTest {
         verify(realms, never()).findByRealmKeyForUpdate(any());
     }
 
+    @Test void recoveryUsesTheCommittedWriteResultWhileTheReplicaStillMissesIt() {
+        rows.clear();
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self")).thenReturn(Optional.empty());
+        assertEquals(0L, component.recover(REALM));
+        verify(states, times(1)).findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self");
+        verify(states).save(eq(REALM), argThat(value -> value.getTargetType() == OAuthSecurityTargetEnum.REALM), eq(0L));
+    }
+
     @Test void incompleteReplicaCannotInitializeGenerations() {
         rows.clear();
         when(realms.fenceRecovery(eq(REALM), any(), anyList(), eq(true))).thenReturn(false);
