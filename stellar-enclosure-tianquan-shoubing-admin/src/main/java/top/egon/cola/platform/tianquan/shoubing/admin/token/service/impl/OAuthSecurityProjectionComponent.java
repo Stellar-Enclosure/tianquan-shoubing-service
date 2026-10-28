@@ -104,12 +104,26 @@ public class OAuthSecurityProjectionComponent {
     @Transactional
     public OAuthSecuritySnapshotBO snapshotForAuthorization(TrustedRealmBO realm, Long clientPk,
             String principalType, String subject) {
+        return snapshotForAuthorization(realm, clientPk, principalType, subject, false);
+    }
+
+    /** Caller has fenced this realm in the enclosing transaction. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public OAuthSecuritySnapshotBO snapshotForFencedRealm(TrustedRealmBO realm, Long clientPk,
+            String principalType, String subject) {
+        return snapshotForAuthorization(realm, clientPk, principalType, subject, true);
+    }
+
+    private OAuthSecuritySnapshotBO snapshotForAuthorization(TrustedRealmBO realm, Long clientPk,
+            String principalType, String subject, boolean realmFenced) {
         Objects.requireNonNull(realm, "realm").validateTrustedPartition();
         boolean user = "USER".equals(principalType);
         if (clientPk == null || clientPk <= 0 || !List.of("USER", "SERVICE").contains(principalType)
                 || user != (subject != null && !subject.isBlank())) { throw unavailable("OAUTH_SECURITY_SNAPSHOT_INPUT_INVALID"); }
         // Every generation mutation uses this same realm-first lock order.
-        realmRepository.findByRealmKeyForUpdate(realm).orElseThrow(() -> unavailable("OAUTH_SECURITY_REALM_STATE_MISSING"));
+        if (!realmFenced) {
+            realmRepository.findByRealmKeyForUpdate(realm).orElseThrow(() -> unavailable("OAUTH_SECURITY_REALM_STATE_MISSING"));
+        }
         var realmState = enabled(realm, OAuthSecurityTargetEnum.REALM, "self");
         var clientState = enabled(realm, OAuthSecurityTargetEnum.CLIENT, Long.toString(clientPk));
         long revision = Math.max(realmState.getRevision(), clientState.getRevision());

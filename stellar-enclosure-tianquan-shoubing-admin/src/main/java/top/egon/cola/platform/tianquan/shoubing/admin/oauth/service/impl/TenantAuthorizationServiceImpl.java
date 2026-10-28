@@ -106,7 +106,7 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
         }
         String principalType = AuthorizationGrantType.CLIENT_CREDENTIALS.equals(
                 authorization.getAuthorizationGrantType()) ? "SERVICE" : "USER";
-        OAuthSecuritySnapshotBO currentSnapshot = securityProjection.snapshotForAuthorization(
+        OAuthSecuritySnapshotBO currentSnapshot = securityProjection.snapshotForFencedRealm(
                 trustedRealm, client.getId(), principalType,
                 "USER".equals(principalType) ? authorization.getPrincipalName() : null);
         Long authorizationId = parseSasStorageId(authorization.getId());

@@ -1358,6 +1358,7 @@ class OAuthConsentRoundTripTest {
             when(clientRepository.findById(any(), anyLong())).thenAnswer(i -> ((Long) i.getArgument(1)) == 501L
                     ? Optional.of(client(i.getArgument(0))) : Optional.empty());
             when(projection.snapshotForAuthorization(any(), anyLong(), anyString(), anyString())).thenReturn(snapshot());
+            when(projection.snapshotForFencedRealm(any(), anyLong(), anyString(), anyString())).thenReturn(snapshot());
             when(memberships.resolve(anyString(), anyString())).thenAnswer(i -> new TenantMembershipPort.TenantMembership(
                     i.getArgument(0), i.getArgument(1), "Fixture tenant", TenantMembershipPort.MembershipStatus.ACTIVE));
             when(identities.authenticate(anyString(), any(char[].class), anyString(), any(Instant.class))).thenAnswer(i ->

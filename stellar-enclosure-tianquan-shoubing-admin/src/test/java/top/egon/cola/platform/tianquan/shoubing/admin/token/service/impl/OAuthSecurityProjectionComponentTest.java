@@ -66,6 +66,14 @@ class OAuthSecurityProjectionComponentTest {
         verify(realms).findByRealmKeyForUpdate(REALM);
     }
 
+    @Test void alreadyFencedRealmDoesNotRepeatTheLockingRead() {
+        var snapshot = component.snapshotForFencedRealm(REALM, 501L, "USER", "alice");
+        assertEquals(1L, snapshot.getRealmGeneration());
+        assertEquals(2L, snapshot.getClientGeneration());
+        assertEquals(3L, snapshot.getSubjectGeneration());
+        verify(realms, never()).findByRealmKeyForUpdate(any());
+    }
+
     @Test void currentSnapshotReadsOneRepositorySnapshotAndRejectsRevocation() {
         var expected = component.snapshotForAuthorization(REALM, 501L, "USER", "alice");
         assertDoesNotThrow(() -> component.requireCurrentSnapshot(REALM, 501L, "USER", "alice", expected));
