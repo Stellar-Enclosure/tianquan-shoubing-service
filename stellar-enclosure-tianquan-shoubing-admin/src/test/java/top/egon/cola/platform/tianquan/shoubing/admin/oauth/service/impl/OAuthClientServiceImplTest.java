@@ -48,6 +48,7 @@ import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -121,6 +122,9 @@ class OAuthClientServiceImplTest {
         verify(clients).save(eq(tenantA), any(OAuthClientBO.class), eq(0L));
         verify(revocations).revokeClient(eq(tenantA), argThat(command -> command.getClientPk() == 501L
                 && command.getReasonCode().equals("CLIENT_CREATED")));
+        verify(events).appendForTenant(eq(tenantA.getStoragePartitionId()),
+                argThat(event -> "IDENTITY_OAUTH_CLIENT_CREATED".equals(event.eventType())));
+        verify(events, never()).append(any());
         var initialGrant = org.mockito.ArgumentCaptor.forClass(OAuthGrantBO.class);
         verify(grants).save(eq(tenantA), initialGrant.capture(), eq(0L));
         assertThat(initialGrant.getValue().getAllowedScopes()).isEmpty();
@@ -169,10 +173,26 @@ class OAuthClientServiceImplTest {
                 .isTrue();
         verify(revocations).revokeClient(eq(tenantA), argThat(command -> command.getClientPk() == 40L
                 && command.getReasonCode().equals("CLIENT_SECRET_ROTATED")));
+        verify(events).appendForTenant(eq(tenantA.getStoragePartitionId()),
+                argThat(event -> "IDENTITY_OAUTH_CLIENT_SECRET_ROTATED".equals(event.eventType())));
+        verify(events, never()).append(any());
         InOrder lockOrder = inOrder(realms, clients);
         lockOrder.verify(realms).findByRealmKey(tenantA);
         lockOrder.verify(clients).findByClientId(tenantA, "orders-service");
         verify(clients, never()).findByClientId(eq(tenantB), eq("orders-service"));
+    }
+
+    @Test
+    void failedTenantAuditDoesNotReturnRotatedSecret() {
+        OAuthClientBO current = confidential("orders-service", 40L, 2L, 3L);
+        when(clients.findByClientId(tenantA, "orders-service")).thenReturn(Optional.of(current));
+        when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
+        doThrow(new IllegalStateException("audit outbox unavailable"))
+                .when(events).appendForTenant(eq(tenantA.getStoragePartitionId()), any());
+
+        assertThatThrownBy(() -> service.rotateSecret(tenantA, "orders-service", new RotateClientSecretDTO(2L), "admin-1"))
+                .hasMessage("audit outbox unavailable");
+        verify(views, never()).toRotatedTarget(any(), any(), any(), any());
     }
 
     @Test

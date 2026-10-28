@@ -155,7 +155,7 @@ public class OAuthClientServiceImpl implements OAuthClientService {
                 saveUserDelegationGrant(realm, saved, resource);
             }
         }
-        appendAudit("IDENTITY_OAUTH_CLIENT_CREATED", operator, "CLIENT_CREATED:" + saved.getClientId(), now);
+        appendAudit(realm, "IDENTITY_OAUTH_CLIENT_CREATED", operator, "CLIENT_CREATED:" + saved.getClientId(), now);
 
         return views.toCreatedTarget(saved, realm.getIssuer(), secret == null ? null : secret.plaintext());
     }
@@ -193,7 +193,7 @@ public class OAuthClientServiceImpl implements OAuthClientService {
         OAuthClientBO saved = clients.save(realm, changed, client.getVersion());
         tokenRevocationService.revokeClient(realm, clientRevokeCommand(saved, "CLIENT_SECRET_ROTATED"));
         Instant now = clock.instant();
-        appendAudit("IDENTITY_OAUTH_CLIENT_SECRET_ROTATED", operator,
+        appendAudit(realm, "IDENTITY_OAUTH_CLIENT_SECRET_ROTATED", operator,
                 "SECRET_ROTATED:" + saved.getClientId(), now);
         return views.toRotatedTarget(saved, realm.getIssuer(), secret.plaintext(), now);
     }
@@ -503,8 +503,9 @@ public class OAuthClientServiceImpl implements OAuthClientService {
                 plaintext, secretEncoder.encode(plaintext), plaintext.substring(plaintext.length() - 4));
     }
 
-    private void appendAudit(String eventType, String operator, String target, Instant occurredAt) {
-        securityEvents.append(new IdentitySecurityEvent(eventType, operator, target, "ADMIN_API", occurredAt));
+    private void appendAudit(TrustedRealmBO realm, String eventType, String operator, String target, Instant occurredAt) {
+        securityEvents.appendForTenant(realm.getStoragePartitionId(),
+                new IdentitySecurityEvent(eventType, operator, target, "ADMIN_API", occurredAt));
     }
 
     private static OAuthClientBO.OAuthClientBOBuilder copy(OAuthClientBO value) {
