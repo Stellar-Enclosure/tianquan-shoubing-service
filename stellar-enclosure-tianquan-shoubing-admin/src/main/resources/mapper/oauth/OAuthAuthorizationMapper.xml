@@ -92,11 +92,16 @@
     </update>
 
     <update id="deleteVersionedById">
-        UPDATE tianquan_oauth.oauth_authorization
-        SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,
+        UPDATE tianquan_oauth.oauth_authorization a
+        SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = a.version + 1,
             update_user_id = #{po.updateUserId}, update_time = #{po.updateTime}
-        WHERE tenant_id = #{tenantId} AND id = #{po.id}
-          AND version = #{expectedVersion} AND deleted_at IS NULL
+        WHERE a.tenant_id = #{tenantId} AND a.id = #{po.id}
+          AND a.version = #{expectedVersion} AND a.deleted_at IS NULL
+        <if test="cutoff != null">
+          AND a.retain_until &lt;= #{cutoff}
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_token t
+              WHERE t.tenant_id = #{tenantId} AND t.authorization_pk = #{po.id} AND t.deleted_at IS NULL)
+        </if>
     </update>
     <select id="selectByInteractionId" resultMap="OAuthAuthorizationPOResultMap">
         SELECT <include refid="Columns"/> FROM tianquan_oauth.oauth_authorization

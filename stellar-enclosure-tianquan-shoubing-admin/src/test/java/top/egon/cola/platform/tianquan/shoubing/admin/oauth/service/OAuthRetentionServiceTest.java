@@ -1,6 +1,7 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.oauth.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -16,7 +17,6 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -76,6 +76,7 @@ class OAuthRetentionServiceTest {
         TransactionStatus transactionStatus = mock(TransactionStatus.class);
         when(transactionStatus.isNewTransaction()).thenReturn(true);
         when(transactionManager.getTransaction(any())).thenReturn(transactionStatus);
+        when(realmRepository.fenceObservedVersion(any())).thenReturn(true);
         when(outboxStore.countBacklog()).thenReturn(0L);
         service = new OAuthRetentionServiceImpl(auditRepository, revocationRepository, tokenRepository,
                 authorizationRepository, realmRepository, managementRealmResolver, outboxStore, interactions, authentications, receipts, deadLetters, inboxes, clock,
@@ -142,7 +143,6 @@ class OAuthRetentionServiceTest {
         when(revocationRepository.findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500))).thenReturn(List.of());
         when(authorizationRepository.findExpiredBefore(eq(TENANT), eq(NOW), eq(0L), eq(500)))
                 .thenReturn(List.of(expiredAuthorization));
-        when(authorizationRepository.findByIdForUpdate(TENANT, 30L)).thenReturn(Optional.of(expiredAuthorization));
         when(tokenRepository.findByAuthorization(eq(TENANT), eq(30L), any(), anyLong(), anyInt()))
                 .thenAnswer(invocation -> invocation.getArgument(2) == OAuthTokenTypeEnum.REFRESH
                         && refreshTokenPresent.get() ? List.of(refreshToken) : List.of());
@@ -150,14 +150,44 @@ class OAuthRetentionServiceTest {
             refreshTokenPresent.set(false);
             return true;
         });
-        when(authorizationRepository.deleteVersionedById(TENANT, 30L, 8L)).thenReturn(true);
+        when(authorizationRepository.deleteRetainedWithoutTokens(TENANT, 30L, 8L, NOW)).thenReturn(true);
 
         int deleted = service.cleanExpired(TENANT);
 
         assertThat(deleted).isEqualTo(2);
         InOrder order = inOrder(tokenRepository, authorizationRepository);
         order.verify(tokenRepository).deleteVersionedById(TENANT, 31L, 3L);
-        order.verify(authorizationRepository).deleteVersionedById(TENANT, 30L, 8L);
+        order.verify(authorizationRepository).deleteRetainedWithoutTokens(TENANT, 30L, 8L, NOW);
+        verify(authorizationRepository, never()).findByIdForUpdate(any(), any());
+    }
+
+    @Test
+    void hiddenPrimaryTokenPreventsAuthorizationCleanupAfterReplicaMiss() {
+        OAuthAuthorizationBO candidate = OAuthAuthorizationBO.builder().id(30L).version(8L)
+                .absoluteExpiresAt(NOW.minusSeconds(86400)).retainUntil(NOW.minusSeconds(1)).build();
+        when(authorizationRepository.findExpiredBefore(TENANT, NOW, 0L, 500)).thenReturn(List.of(candidate));
+        when(authorizationRepository.deleteRetainedWithoutTokens(TENANT, 30L, 8L, NOW)).thenReturn(false);
+
+        assertThat(service.cleanExpired(TENANT)).isZero();
+
+        verify(realmRepository).fenceObservedVersion(TENANT);
+        verify(authorizationRepository).deleteRetainedWithoutTokens(TENANT, 30L, 8L, NOW);
+        verify(authorizationRepository, never()).findByIdForUpdate(any(), any());
+        verify(authorizationRepository, never()).deleteVersionedById(any(), any(), anyLong());
+    }
+
+    @Test
+    void failedRealmFenceAbortsCleanupBeforeDeletingFamilyRows() {
+        OAuthAuthorizationBO candidate = OAuthAuthorizationBO.builder().id(30L).version(8L)
+                .absoluteExpiresAt(NOW.minusSeconds(86400)).retainUntil(NOW.minusSeconds(1)).build();
+        when(authorizationRepository.findExpiredBefore(TENANT, NOW, 0L, 500)).thenReturn(List.of(candidate));
+        when(realmRepository.fenceObservedVersion(TENANT)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.cleanExpired(TENANT))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(tokenRepository, never()).deleteVersionedById(any(), any(), anyLong());
+        verify(authorizationRepository, never()).deleteRetainedWithoutTokens(any(), any(), anyLong(), any());
+        verify(transactionManager).rollback(any());
     }
 
     @Test

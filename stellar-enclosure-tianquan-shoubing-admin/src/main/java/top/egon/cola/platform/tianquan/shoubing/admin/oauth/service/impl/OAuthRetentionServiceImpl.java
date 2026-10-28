@@ -25,6 +25,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealm
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.OAuthRetentionService;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthRevocationBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthTokenBO;
@@ -205,6 +206,9 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
     private int purgeAuthorizationFamilies(TrustedRealmBO realm, Instant cutoff, long deadline) {
         List<OAuthAuthorizationBO> expired =
                 authorizationRepository.findExpiredBefore(realm, cutoff, 0L, BATCH_SIZE);
+        if (!expired.isEmpty() && !OAuthTransactionFences.realm(realmRepository, realm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before retention cleanup");
+        }
         int deleted = 0;
         for (OAuthAuthorizationBO candidate : expired) {
             if (deadlineReached(deadline)) {
@@ -213,9 +217,8 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
             if (candidate.getId() == null) {
                 throw new IllegalStateException("OAUTH_RETENTION_AUTHORIZATION_ID_MISSING");
             }
-            OAuthAuthorizationBO current = authorizationRepository.findByIdForUpdate(realm, candidate.getId())
-                    .orElse(null);
-            if (current == null || current.getRetainUntil() == null || current.getRetainUntil().isAfter(cutoff)) {
+            OAuthAuthorizationBO current = candidate;
+            if (current.getRetainUntil() == null || current.getRetainUntil().isAfter(cutoff)) {
                 continue;
             }
             boolean familyComplete = true;
@@ -255,24 +258,14 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
                     break;
                 }
             }
-            if (!familyComplete || deadlineReached(deadline)
-                    || hasActiveFamilyTokens(realm, current.getId())) {
+            if (!familyComplete || deadlineReached(deadline)) {
                 continue;
             }
-            if (authorizationRepository.deleteVersionedById(realm, current.getId(), current.getVersion())) {
+            if (authorizationRepository.deleteRetainedWithoutTokens(realm, current.getId(), current.getVersion(), cutoff)) {
                 deleted++;
             }
         }
         return deleted;
-    }
-
-    private boolean hasActiveFamilyTokens(TrustedRealmBO realm, Long authorizationId) {
-        for (OAuthTokenTypeEnum tokenType : OAuthTokenTypeEnum.values()) {
-            if (!tokenRepository.findByAuthorization(realm, authorizationId, tokenType, 0L, 1).isEmpty()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static TrustedRealmBO trustedRealm(OAuthRealmBO realm) {

@@ -226,7 +226,23 @@ public class OAuthAuthorizationRepositoryImpl extends EgonColaRepository<OAuthAu
             value.setVersion(expectedVersion);
             value.setUpdateUserId(userIdProvider.currentUserId());
             value.setUpdateTime(clock.instant().truncatedTo(ChronoUnit.MICROS));
-            return baseMapper.deleteVersionedById(tenantId, value, expectedVersion) == 1;
+            return baseMapper.deleteVersionedById(tenantId, value, expectedVersion, null) == 1;
+        });
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean deleteRetainedWithoutTokens(TrustedRealmBO trustedRealm, Long id, long expectedVersion, Instant cutoff) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(cutoff, "cutoff");
+        return withTrustedStoragePartition(trustedRealm, tenantId -> {
+            OAuthAuthorizationPO value = new OAuthAuthorizationPO();
+            value.setId(id);
+            value.setTenantId(tenantId);
+            value.setVersion(expectedVersion);
+            value.setUpdateUserId(userIdProvider.currentUserId());
+            value.setUpdateTime(clock.instant().truncatedTo(ChronoUnit.MICROS));
+            return baseMapper.deleteVersionedById(tenantId, value, expectedVersion, cutoff) == 1;
         });
     }
 

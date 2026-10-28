@@ -55,4 +55,7 @@ public interface OAuthAuthorizationRepository {
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @Positive Long id,
             @PositiveOrZero long expectedVersion);
+
+    boolean deleteRetainedWithoutTokens(@NotNull @Valid TrustedRealmBO trustedRealm, @Positive Long id,
+            @PositiveOrZero long expectedVersion, @NotNull Instant cutoff);
 }

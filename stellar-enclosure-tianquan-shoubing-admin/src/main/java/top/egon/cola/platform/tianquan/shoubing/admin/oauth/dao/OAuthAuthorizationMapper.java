@@ -93,5 +93,6 @@ public interface OAuthAuthorizationMapper extends EgonColaMapper<OAuthAuthorizat
             @Param("po") @NotNull(groups = EgonColaModelValidationGroups.Delete.class)
             @Valid OAuthAuthorizationPO entity,
             @Param("expectedVersion") @NotNull(groups = EgonColaModelValidationGroups.Delete.class)
-            @PositiveOrZero(groups = EgonColaModelValidationGroups.Delete.class) Long expectedVersion);
+            @PositiveOrZero(groups = EgonColaModelValidationGroups.Delete.class) Long expectedVersion,
+            @Param("cutoff") java.time.Instant cutoff);
 }
