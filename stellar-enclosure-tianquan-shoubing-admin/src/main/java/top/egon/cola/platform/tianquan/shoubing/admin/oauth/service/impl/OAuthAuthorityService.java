@@ -253,6 +253,82 @@ public class OAuthAuthorityService {
                 stored.scopes(), validUntil);
     }
 
+    /** Captures a verified SERVICE subject without retaining its bearer credential. */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    StoredServiceExecutionProof captureExecutionService(Caller caller, URI resource, String serviceToken) {
+        requireExecutionPrimary();
+        Objects.requireNonNull(caller, "caller");
+        Objects.requireNonNull(caller.realm(), "realm").validateTrustedPartition();
+        var principal = Objects.requireNonNull(caller.principal(), "principal");
+        Instant now = clock.instant();
+        if (caller.clientPk() <= 0 || caller.sourceResource() == null || resource == null
+                || !caller.sourceResource().toASCIIString().equals(resource.toASCIIString())
+                || principal.scopeContext() != ServiceTokenContext.TENANT
+                || !Objects.equals(principal.tenantId(), tenant(caller.realm()))
+                || !principal.resourceUri().toASCIIString().equals(properties.getResourceUri().toASCIIString())
+                || !principal.scopes().contains(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)
+                || !principal.expiresAt().isAfter(now) || caller.realmGeneration() == null || caller.realmGeneration() < 0
+                || caller.clientGeneration() == null || caller.clientGeneration() < 0
+                || caller.authorizationId() == null || caller.authorizationId() <= 0 || caller.tokenDigest() == null
+                || !caller.tokenDigest().matches("[0-9a-f]{64}") || caller.tokenRetainUntil() == null
+                || !caller.tokenRetainUntil().isAfter(now) || caller.signingKeyId() == null
+                || !caller.signingKeyId().matches("[A-Za-z0-9_-]{1,128}")) {
+            throw denied("EXECUTION_SERVICE_SOURCE_NOT_BOUND");
+        }
+        var source = new ExecutionGrantEnvelope.ServiceBinding(caller.clientPk(), principal.clientId(), principal.appId(),
+                principal.sourceBizCode(), principal.sourceAppCode(), principal.sourceEnvironment(),
+                caller.sourceResource().toASCIIString());
+        requireCurrentServiceFacts(caller.realm(), new CurrentServiceEvidence(source, caller.realmGeneration(),
+                caller.clientGeneration(), caller.authorizationId(), caller.tokenDigest(), principal.tokenId(),
+                caller.tokenRetainUntil(), caller.signingKeyId()), IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE);
+
+        VerifiedAccess proof = verifier.verify(serviceToken, resource, null, false);
+        if (!"SERVICE".equals(proof.text("principal_type"))
+                || !caller.realm().getIssuer().toASCIIString().equals(proof.realm().getIssuer().toASCIIString())
+                || !Objects.equals(caller.realm().getBusinessTenantId(), proof.realm().getBusinessTenantId())
+                || !Objects.equals(caller.realm().getTrustVersion(), proof.realm().getTrustVersion())
+                || proof.claims().getExpirationTime() == null
+                || !proof.claims().getExpirationTime().toInstant().isAfter(clock.instant())) {
+            throw denied("EXECUTION_SERVICE_REALM_NOT_BOUND");
+        }
+        CurrentFacts facts = current(proof, serviceToken);
+        var workerSource = resources.findBySource(managementRealms.platformRealm(), proof.text("source_biz"),
+                        proof.text("source_app"), proof.text("source_env"))
+                .filter(value -> value.getStatus() == ResourceServerStatus.ACTIVE
+                        && Objects.equals(value.getManagementClientId(), facts.client().getClientId())
+                        && Objects.equals(proof.text("app_id"), facts.client().getAppId()))
+                .orElseThrow(() -> invalid("EXECUTION_SERVICE_SOURCE_INVALID"));
+        var stored = new StoredServiceExecutionProof(proof.realm().getIssuer().toASCIIString(),
+                proof.realm().getBusinessTenantId(), proof.realm().getTrustVersion(), proof.claims().getSubject(),
+                resource.toASCIIString(), number(proof, "resource_version"), proof.clientPk(), facts.client().getClientId(),
+                proof.text("app_id"), proof.text("source_biz"), proof.text("source_app"), proof.text("source_env"),
+                workerSource.getResourceUri().toASCIIString(), proof.text("credential_id"), proof.authorizationId(),
+                Digests.sha256Hex(serviceToken), proof.claims().getJWTID(), proof.keyId(), scopes(proof),
+                facts.version().getRealm(), facts.version().getClient(), facts.token().getRetainUntil());
+        recheckExecutionService(caller.realm(), stored);
+        Instant finished = clock.instant();
+        if (!principal.expiresAt().isAfter(finished) || !proof.claims().getExpirationTime().toInstant().isAfter(finished)) {
+            throw invalid("EXECUTION_SERVICE_PROOF_EXPIRED");
+        }
+        return stored;
+    }
+
+    /** Call only with evidence loaded from an owner-controlled, run-bound execution grant. */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    ExecutionServiceCurrent recheckExecutionService(TrustedRealmBO realm, StoredServiceExecutionProof stored) {
+        requireExecutionPrimary();
+        Objects.requireNonNull(stored, "stored").requireRealm(realm);
+        var source = new ExecutionGrantEnvelope.ServiceBinding(stored.clientPk(), stored.clientId(), stored.appId(),
+                stored.businessCode(), stored.applicationCode(), stored.environment(), stored.sourceResourceUri());
+        var evidence = new CurrentServiceEvidence(source, stored.realmGeneration(), stored.clientGeneration(),
+                stored.authorizationId(), stored.tokenDigest(), stored.tokenJti(), stored.tokenRetainUntil(), stored.signingKeyId());
+        Instant tokenRetainUntil = requireCurrentServiceFacts(realm, evidence, stored.scopes(), URI.create(stored.resourceUri()), stored);
+        Instant validUntil = tokenRetainUntil.isBefore(stored.tokenRetainUntil()) ? tokenRetainUntil : stored.tokenRetainUntil();
+        if (!validUntil.isAfter(clock.instant())) throw invalid("EXECUTION_SERVICE_PROOF_EXPIRED");
+        return new ExecutionServiceCurrent(stored.issuer(), stored.tenantId(), stored.subject(), stored.resourceUri(),
+                stored.sourceResourceUri(), stored.scopes(), validUntil);
+    }
+
     /** Rechecks the authenticated SERVICE in the same primary transaction as the grant operation. */
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     void requireExecutionService(Caller caller, ExecutionGrantEnvelope.ServiceBinding binding,
@@ -277,23 +353,33 @@ public class OAuthAuthorityService {
     }
 
     private void requireCurrentServiceFacts(TrustedRealmBO realm, CurrentServiceEvidence evidence, String requiredScope) {
+        if (requiredScope == null || !requiredScope.matches("[A-Za-z0-9:._-]{1,128}")) {
+            throw invalid("EXECUTION_SERVICE_PROOF_INVALID");
+        }
+        requireCurrentServiceFacts(realm, evidence, Set.of(requiredScope), properties.getResourceUri(), null);
+    }
+
+    private Instant requireCurrentServiceFacts(TrustedRealmBO realm, CurrentServiceEvidence evidence,
+            Set<String> requiredScopes, URI targetResource, StoredServiceExecutionProof subject) {
         var binding = evidence.binding();
         Instant now = clock.instant();
-        if (requiredScope == null || !requiredScope.matches("[A-Za-z0-9:._-]{1,128}")
+        if (requiredScopes == null || requiredScopes.isEmpty() || targetResource == null
                 || !evidence.tokenRetainUntil().isAfter(now)) throw invalid("EXECUTION_SERVICE_PROOF_INVALID");
         verifier.requireRecordedKey(realm, evidence.signingKeyId());
         OAuthClientBO client = clients.findById(realm, binding.clientPk())
                 .filter(value -> value.getStatus() == OAuthClient.Status.ACTIVE && value.getPurpose() == OAuthClientPurposeEnum.SERVICE
                         && binding.clientId().equals(value.getClientId()) && binding.appId().equals(value.getAppId())
-                        && value.getAllowedScopes().contains(requiredScope))
+                        && value.getAllowedScopes().containsAll(requiredScopes)
+                        && (subject == null || value.getCredentialVersion() != null && value.getCredentialVersion() >= 0
+                        && subject.credentialId().equals(value.getId() + ":" + value.getCredentialVersion())))
                 .orElseThrow(() -> invalid("EXECUTION_SERVICE_CLIENT_INACTIVE"));
         OAuthAuthorizationBO family = authorizations.findById(realm, evidence.authorizationId())
                 .filter(value -> ("ACTIVE".equals(value.getStatus()) || "EXPIRED".equals(value.getStatus())
                             && value.getAbsoluteExpiresAt() != null && !value.getAbsoluteExpiresAt().isAfter(now))
                         && value.getRevokedAt() == null && Objects.equals(value.getClientPk(), client.getId())
                         && "SERVICE".equals(value.getPrincipalType()) && binding.clientId().equals(value.getPrincipalName())
-                        && value.getAudiences().equals(List.of(properties.getResourceUri().toASCIIString()))
-                        && value.getAuthorizedScopes().contains(requiredScope))
+                        && value.getAudiences().equals(List.of(targetResource.toASCIIString()))
+                        && value.getAuthorizedScopes().containsAll(requiredScopes))
                 .orElseThrow(() -> invalid("EXECUTION_SERVICE_AUTHORIZATION_INVALID"));
         OAuthTokenBO token = tokens.findByTokenDigest(realm, evidence.tokenDigest())
                 .filter(value -> value.getTokenType() == OAuthTokenTypeEnum.ACCESS && value.getRevokedAt() == null
@@ -306,12 +392,14 @@ public class OAuthAuthorityService {
                         && binding.resourceUri().equals(value.getResourceUri().toASCIIString())
                         && binding.clientId().equals(value.getManagementClientId()))
                 .orElseThrow(() -> invalid("EXECUTION_SERVICE_SOURCE_INVALID"));
-        var target = resources.findByResourceUri(managementRealms.platformRealm(), properties.getResourceUri())
-                .filter(value -> value.getStatus() == ResourceServerStatus.ACTIVE)
+        var target = resources.findByResourceUri(managementRealms.platformRealm(), targetResource)
+                .filter(value -> value.getStatus() == ResourceServerStatus.ACTIVE
+                        && (subject == null || subject.resourceUri().equals(value.getResourceUri().toASCIIString())
+                        && subject.resourceVersion() == value.getVersion()))
                 .orElseThrow(() -> invalid("EXECUTION_SERVICE_TARGET_INVALID"));
         grants.findGrant(realm, client.getId(), target.getResourceServerId(), ResourceGrantType.CLIENT_CREDENTIALS)
                 .filter(value -> value.getStatus() == ClientResourceGrant.Status.ACTIVE
-                        && value.getResourceVersion() == target.getVersion() && value.getAllowedScopes().contains(requiredScope))
+                        && value.getResourceVersion() == target.getVersion() && value.getAllowedScopes().containsAll(requiredScopes))
                 .orElseThrow(() -> invalid("EXECUTION_SERVICE_GRANT_INVALID"));
         generation(realm, OAuthSecurityTargetEnum.REALM, "self", evidence.realmGeneration());
         generation(realm, OAuthSecurityTargetEnum.CLIENT, Long.toString(client.getId()), evidence.clientGeneration());
@@ -328,7 +416,7 @@ public class OAuthAuthorityService {
         if (metadata == null || metadata.getSchemaVersion() != 1 || metadata.isInvalidated() || claims == null
                 || claims.getTokenUse() != OAuthTokenTypeEnum.ACCESS || claims.getIssuer() == null
                 || !realm.getIssuer().toASCIIString().equals(claims.getIssuer().toASCIIString())
-                || !Set.of(properties.getResourceUri()).equals(claims.getAudience())
+                || !Set.of(targetResource).equals(claims.getAudience())
                 || !binding.clientId().equals(claims.getSubject()) || !"SERVICE".equals(claims.getPrincipalType())
                 || !"TENANT".equals(claims.getScopeContext()) || !realm.getBusinessTenantId().equals(claims.getTenantId())
                 || !binding.clientId().equals(claims.getClientId()) || !binding.appId().equals(claims.getAppId())
@@ -336,12 +424,16 @@ public class OAuthAuthorityService {
                 || !Long.toString(family.getId()).equals(claims.getAuthorizationId()) || !evidence.tokenJti().equals(claims.getJti())
                 || !binding.businessCode().equals(claims.getSourceBiz()) || !binding.applicationCode().equals(claims.getSourceApp())
                 || !binding.environment().equals(claims.getSourceEnv()) || claims.getScope() == null
-                || !claims.getScope().contains(requiredScope) || claims.getResourceVersion() == null
+                || !claims.getScope().containsAll(requiredScopes) || claims.getResourceVersion() == null
                 || claims.getResourceVersion() != target.getVersion() || version == null
                 || version.getRealm() != evidence.realmGeneration() || version.getClient() != evidence.clientGeneration()
-                || version.getSubject() != null) {
+                || version.getSubject() != null || subject != null && (!subject.scopes().equals(claims.getScope())
+                || !subject.credentialId().equals(claims.getCredentialId())
+                || claims.getAudience().size() != 1
+                || !subject.resourceUri().equals(claims.getAudience().iterator().next().toASCIIString()))) {
             throw invalid("EXECUTION_SERVICE_PROOF_MISMATCH");
         }
+        return token.getRetainUntil();
     }
 
     private void requireExecutionLifetime(CurrentFacts facts) {
@@ -547,5 +639,9 @@ public class OAuthAuthorityService {
             OAuthResourceBO resource, OAuthSecurityVersionBO version, OAuthTokenBO token) { }
     record ExecutionUserCurrent(String issuer, long tenantId, String subject, String resource, Set<String> scopes, Instant validUntil) {
         @Override public String toString() { return "ExecutionUserCurrent[redacted]"; }
+    }
+    record ExecutionServiceCurrent(String issuer, long tenantId, String subject, String resource,
+                                   String sourceResource, Set<String> scopes, Instant validUntil) {
+        @Override public String toString() { return "ExecutionServiceCurrent[redacted]"; }
     }
 }

@@ -96,6 +96,7 @@ class OAuthExecutionUserProofTest {
     private final Clock clock = mock(Clock.class);
     private final AtomicLong subjectGeneration = new AtomicLong(3);
     private final AtomicLong serviceGeneration = new AtomicLong(2);
+    private final AtomicLong workerGeneration = new AtomicLong(2);
     private OAuthAuthorityService service;
     private OAuthAuthorizationBO family;
     private OAuthAuthenticationBO authentication;
@@ -207,7 +208,8 @@ class OAuthExecutionUserProofTest {
             OAuthSecurityTargetEnum type = call.getArgument(1);
             long generation = switch (type) {
                 case REALM -> 1;
-                case CLIENT -> "11".equals(call.getArgument(2)) ? serviceGeneration.get() : 2;
+                case CLIENT -> "11".equals(call.getArgument(2)) ? serviceGeneration.get()
+                        : "31".equals(call.getArgument(2)) ? workerGeneration.get() : 2;
                 case SUBJECT -> subjectGeneration.get();
                 default -> -1;
             };
@@ -465,6 +467,224 @@ class OAuthExecutionUserProofTest {
         when(keys.findByKid(realm, "key-1")).thenReturn(Optional.empty());
         assertThrows(OAuth2AuthenticationException.class, () -> recordedVerifier.requireRecordedKey(realm, "key-1"));
     }
+
+    @Test
+    void service_subject_is_captured_without_bearer_and_rechecked_after_normal_token_expiry() throws Exception {
+        var worker = worker();
+        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
+        assertEquals(Digests.sha256Hex("worker-proof"), stored.tokenDigest());
+        assertEquals("worker-service", stored.subject());
+        assertEquals("https://api.example/process", stored.sourceResourceUri());
+        assertEquals("31:7", stored.credentialId());
+        assertFalse(stored.toString().contains("worker"));
+        var mapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        String serialized = mapper.writeValueAsString(stored);
+        assertFalse(serialized.contains("worker-proof"));
+        assertEquals(stored, mapper.readValue(serialized, StoredServiceExecutionProof.class));
+
+        worker.family().setStatus("EXPIRED");
+        when(clock.instant()).thenReturn(NOW.plusSeconds(900));
+        var current = service.recheckExecutionService(realm, stored);
+        assertEquals("worker-service", current.subject());
+        assertEquals(101L, current.tenantId());
+        assertEquals(TARGET.toASCIIString(), current.resource());
+        assertEquals("https://api.example/process", current.sourceResource());
+        assertEquals(Set.of("agent:submit", "agent:run"), current.scopes());
+        assertEquals(NOW.plusSeconds(86_400), current.validUntil());
+        assertFalse(current.toString().contains("worker"));
+        verify(verifier, times(1)).verify("worker-proof", TARGET, null, false);
+        verify(verifier, atLeastOnce()).requireRecordedKey(realm, "worker-key");
+    }
+
+    @Test
+    void real_authorization_converter_preserves_service_proof_metadata() {
+        worker();
+        var registered = RegisteredClient.withId("31").clientId("worker-service").clientSecret("synthetic-secret")
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+                .scope("agent:submit").scope("agent:run").build();
+        var claims = new java.util.LinkedHashMap<String, Object>();
+        claims.put("iss", ISSUER);
+        claims.put("aud", List.of(TARGET));
+        claims.put("sub", "worker-service");
+        claims.put("scope", "agent:run agent:submit");
+        claims.put("tenant_id", "101");
+        claims.put("principal_type", "SERVICE");
+        claims.put("jti", "501");
+        claims.put("iat", NOW);
+        claims.put("nbf", NOW);
+        claims.put("exp", NOW.plusSeconds(300));
+        claims.put("client_id", "worker-service");
+        claims.put("authorization_id", "51");
+        claims.put("client_registration_id", "31");
+        claims.put("scope_context", "TENANT");
+        claims.put("source_biz", "ops");
+        claims.put("source_app", "process");
+        claims.put("source_env", "test");
+        claims.put("app_id", "worker");
+        claims.put("credential_id", "31:7");
+        claims.put("resource_version", 1L);
+        claims.put("security_version", Map.of("realm", 1L, "client", 2L));
+        var access = new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "synthetic-service-token", NOW,
+                NOW.plusSeconds(300), Set.of("agent:submit", "agent:run"));
+        var authorization = OAuth2Authorization.withRegisteredClient(registered)
+                .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS).principalName("worker-service")
+                .authorizedScopes(Set.of("agent:submit", "agent:run"))
+                .attribute(SasAuthorizationConverter.ATTRIBUTES_ATTRIBUTE, OAuthAuthorizationAttributesBO.builder().build())
+                .token(access, metadata -> metadata.put(OAuth2Authorization.Token.CLAIMS_METADATA_NAME, claims)).build();
+        var mapper = new ObjectMapper().findAndRegisterModules().disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        OAuthTokenBO converted = org.mapstruct.factory.Mappers.getMapper(SasAuthorizationConverter.class)
+                .toSource(authorization, null, mapper).getTokens().getFirst();
+        converted.setAuthorizationPk(51L).setRetainUntil(NOW.plusSeconds(86_400));
+        when(tokens.findByTokenDigest(realm, Digests.sha256Hex("worker-proof"))).thenReturn(Optional.of(converted));
+        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
+        assertEquals("worker-service", service.recheckExecutionService(realm, stored).subject());
+    }
+
+    @Test
+    void service_capture_requires_a_current_bound_issuing_service_and_primary() {
+        worker();
+        var authorized = caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        assertThrows(AccessDeniedException.class, () -> service.captureExecutionService(caller(Set.of("other")), TARGET, "worker-proof"));
+        assertThrows(AccessDeniedException.class, () -> service.captureExecutionService(authorized,
+                URI.create("https://API.example/orders"), "worker-proof"));
+        var unguarded = new OAuthAuthorityService(verifier, authorizations, clients, tokens, authentications, states,
+                revocations, resources, grants, users, memberships, management, mock(OAuthAuditDeliveryService.class),
+                new IdpStarterProperties(), clock);
+        var failure = assertThrows(OAuth2AuthenticationException.class,
+                () -> unguarded.captureExecutionService(authorized, TARGET, "worker-proof"));
+        assertEquals("temporarily_unavailable", failure.getError().getErrorCode());
+        serviceClient.setStatus(OAuthClient.Status.DISABLED);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.captureExecutionService(authorized, TARGET, "worker-proof"));
+        verify(verifier, never()).verify("worker-proof", TARGET, null, false);
+    }
+
+    @Test
+    void service_capture_rejects_expired_subject_or_wrong_realm_and_type() {
+        worker();
+        var authorized = caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        when(clock.instant()).thenReturn(NOW.plusSeconds(300));
+        assertThrows(AccessDeniedException.class, () -> service.captureExecutionService(authorized, TARGET, "worker-proof"));
+        when(clock.instant()).thenReturn(NOW);
+        var subject = verifier.verify("worker-proof", TARGET, null, false);
+        var changedRealm = TrustedRealmBO.builder().issuer(ISSUER).realmKey("tenant:101").realmType(RealmTypeEnum.TENANT)
+                .storagePartitionId(101L).businessTenantId(101L).trustVersion(3L).build();
+        when(verifier.verify("worker-proof", TARGET, null, false))
+                .thenReturn(new OAuthAuthorityTokenVerifier.VerifiedAccess(changedRealm, subject.claims(), "worker-key"));
+        assertThrows(AccessDeniedException.class, () -> service.captureExecutionService(authorized, TARGET, "worker-proof"));
+        when(verifier.verify("worker-proof", TARGET, null, false)).thenReturn(proof());
+        assertThrows(AccessDeniedException.class, () -> service.captureExecutionService(authorized, TARGET, "worker-proof"));
+    }
+
+    @Test
+    void service_recheck_rejects_revoked_or_changed_authority_and_credentials() {
+        var worker = worker();
+        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
+        worker.token().setRevokedAt(NOW);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.token().setRevokedAt(null);
+        worker.family().setStatus("REVOKED");
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.family().setStatus("ACTIVE");
+        worker.client().setStatus(OAuthClient.Status.DISABLED);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.client().setStatus(OAuthClient.Status.ACTIVE);
+        worker.client().setCredentialVersion(8L);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.client().setCredentialVersion(7L);
+        workerGeneration.incrementAndGet();
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        workerGeneration.decrementAndGet();
+        for (var revoked : List.of(Map.entry(OAuthSecurityTargetEnum.JTI, "501"),
+                Map.entry(OAuthSecurityTargetEnum.AUTHORIZATION, "51"), Map.entry(OAuthSecurityTargetEnum.KID, "worker-key"))) {
+            when(revocations.findByTarget(realm, revoked.getKey(), revoked.getValue()))
+                    .thenReturn(Optional.of(mock(OAuthRevocationBO.class)));
+            assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+            when(revocations.findByTarget(realm, revoked.getKey(), revoked.getValue())).thenReturn(Optional.empty());
+        }
+        worker.token().setRetainUntil(NOW);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+    }
+
+    @Test
+    void service_recheck_binds_source_target_scopes_and_original_token_metadata() {
+        var worker = worker();
+        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
+        worker.source().setStatus(ResourceServerStatus.DISABLED);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.source().setStatus(ResourceServerStatus.ACTIVE).setManagementClientId("other");
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.source().setManagementClientId("worker-service");
+        worker.source().setResourceUri(URI.create("https://API.example/process"));
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.source().setResourceUri(URI.create("https://api.example/process"));
+        resource.setVersion(2);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        resource.setVersion(1);
+        worker.client().setAllowedScopes(List.of("agent:submit"));
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.client().setAllowedScopes(List.of("agent:submit", "agent:run"));
+        worker.family().setAuthorizedScopes(List.of("agent:submit"));
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.family().setAuthorizedScopes(List.of("agent:submit", "agent:run"));
+        worker.grant().setAllowedScopes(List.of("agent:submit"));
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.grant().setAllowedScopes(List.of("agent:submit", "agent:run"));
+        worker.claims().setCredentialId("31:8");
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.claims().setCredentialId("31:7").setScope(Set.of("agent:submit", "agent:run", "other"));
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        worker.claims().setScope(Set.of("agent:submit", "agent:run"))
+                .setAudience(Set.of(URI.create("https://API.example/orders")));
+        assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
+        assertThrows(IllegalArgumentException.class, () -> service.recheckExecutionService(
+                TrustedRealmBO.builder().issuer(ISSUER).realmKey("tenant:101").realmType(RealmTypeEnum.TENANT)
+                        .storagePartitionId(101L).businessTenantId(101L).trustVersion(3L).build(), stored));
+    }
+
+    private WorkerProof worker() {
+        var client = OAuthClientBO.builder().id(31L).clientId("worker-service").appId("worker")
+                .credentialVersion(7L).purpose(OAuthClientPurposeEnum.SERVICE).status(OAuthClient.Status.ACTIVE)
+                .allowedScopes(List.of("agent:submit", "agent:run")).build();
+        var family = OAuthAuthorizationBO.builder().id(51L).clientPk(31L).principalName("worker-service")
+                .principalType("SERVICE").audiences(List.of(TARGET.toASCIIString()))
+                .authorizedScopes(List.of("agent:submit", "agent:run")).status("ACTIVE")
+                .absoluteExpiresAt(NOW.plusSeconds(300)).build();
+        var claims = SignedTokenClaimsBO.builder().issuer(ISSUER).audience(Set.of(TARGET)).subject("worker-service")
+                .scope(Set.of("agent:submit", "agent:run")).tenantId(101L).principalType("SERVICE").jti("501")
+                .issuedAt(NOW).notBefore(NOW).expiresAt(NOW.plusSeconds(300)).clientId("worker-service")
+                .authorizationId("51").clientRegistrationId("31").scopeContext("TENANT")
+                .sourceBiz("ops").sourceApp("process").sourceEnv("test").appId("worker").credentialId("31:7")
+                .resourceVersion(1L).securityVersion(OAuthSecurityVersionBO.builder().realm(1).client(2).build())
+                .tokenUse(OAuthTokenTypeEnum.ACCESS).build();
+        var token = OAuthTokenBO.builder().id(52L).authorizationPk(51L).jti("501").tokenType(OAuthTokenTypeEnum.ACCESS)
+                .retainUntil(NOW.plusSeconds(86_400)).metadata(OAuthTokenMetadataBO.builder().claims(claims).build()).build();
+        var source = OAuthResourceBO.builder().resourceServerId("process").resourceUri(URI.create("https://api.example/process"))
+                .bizCode("ops").appCode("process").environment("test").managementClientId("worker-service")
+                .version(1).status(ResourceServerStatus.ACTIVE).build();
+        var grant = OAuthGrantBO.builder().clientPk(31L).resourceServerId("orders")
+                .grantType(ResourceGrantType.CLIENT_CREDENTIALS).status(ClientResourceGrant.Status.ACTIVE)
+                .allowedScopes(List.of("agent:submit", "agent:run")).resourceVersion(1L).build();
+        when(clients.findById(realm, 31L)).thenReturn(Optional.of(client));
+        when(authorizations.findById(realm, 51L)).thenReturn(Optional.of(family));
+        when(tokens.findByTokenDigest(realm, Digests.sha256Hex("worker-proof"))).thenReturn(Optional.of(token));
+        when(resources.findBySource(platform, "ops", "process", "test")).thenReturn(Optional.of(source));
+        when(grants.findGrant(realm, 31L, "orders", ResourceGrantType.CLIENT_CREDENTIALS)).thenReturn(Optional.of(grant));
+        var jwt = new JWTClaimsSet.Builder().issuer(ISSUER.toASCIIString()).subject("worker-service")
+                .audience(TARGET.toASCIIString()).issueTime(Date.from(NOW)).expirationTime(Date.from(NOW.plusSeconds(300)))
+                .jwtID("501").claim("client_registration_id", "31").claim("authorization_id", "51")
+                .claim("client_id", "worker-service").claim("principal_type", "SERVICE").claim("tenant_id", "101")
+                .claim("scope_context", "TENANT").claim("scope", "agent:run agent:submit")
+                .claim("security_version", Map.of("realm", 1, "client", 2)).claim("resource_version", 1L)
+                .claim("source_biz", "ops").claim("source_app", "process").claim("source_env", "test")
+                .claim("app_id", "worker").claim("credential_id", "31:7").build();
+        when(verifier.verify("worker-proof", TARGET, null, false))
+                .thenReturn(new OAuthAuthorityTokenVerifier.VerifiedAccess(realm, jwt, "worker-key"));
+        return new WorkerProof(client, family, token, claims, source, grant);
+    }
+
+    private record WorkerProof(OAuthClientBO client, OAuthAuthorizationBO family, OAuthTokenBO token,
+                               SignedTokenClaimsBO claims, OAuthResourceBO source, OAuthGrantBO grant) { }
 
     private OAuthAuthorityService.Caller caller(Set<String> scopes) {
         var principal = new ServiceIdentityPrincipal("orders-service", "101", "orders-service", "301", AUTHORITY,
