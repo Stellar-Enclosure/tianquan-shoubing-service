@@ -120,7 +120,10 @@ class OAuthAuthorityServiceTest {
     }
 
     @Test void serviceBindingAndCurrentUserFactsProduceOnlyMinimalBoundState() {
-        var response = service.resolve(caller(), request(IdentityStatePurpose.ACCESS_VALIDATION));
+        var authenticated = caller();
+        assertEquals(1L, authenticated.realmGeneration());
+        assertEquals(2L, authenticated.clientGeneration());
+        var response = service.resolve(authenticated, request(IdentityStatePurpose.ACCESS_VALIDATION));
         assertTrue(response.isEligible()); assertEquals("22", response.getAuthorizationId());
         assertEquals("900", response.getAuthenticationJti()); assertEquals("0", response.getRefreshGeneration());
         assertEquals(NOW.plusSeconds(28_800).getEpochSecond(), response.getAuthorizationExpiresAt());

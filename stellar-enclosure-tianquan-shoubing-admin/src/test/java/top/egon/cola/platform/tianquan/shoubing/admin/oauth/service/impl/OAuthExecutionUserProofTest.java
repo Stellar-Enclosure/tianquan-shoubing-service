@@ -95,6 +95,7 @@ class OAuthExecutionUserProofTest {
     private final OAuthManagementRealmResolver management = mock(OAuthManagementRealmResolver.class);
     private final Clock clock = mock(Clock.class);
     private final AtomicLong subjectGeneration = new AtomicLong(3);
+    private final AtomicLong serviceGeneration = new AtomicLong(2);
     private OAuthAuthorityService service;
     private OAuthAuthorizationBO family;
     private OAuthAuthenticationBO authentication;
@@ -102,6 +103,10 @@ class OAuthExecutionUserProofTest {
     private OAuthClientBO client;
     private OAuthGrantBO resourceGrant;
     private OAuthResourceBO resource;
+    private OAuthClientBO serviceClient;
+    private OAuthAuthorizationBO serviceFamily;
+    private OAuthTokenBO serviceToken;
+    private OAuthGrantBO serviceGrant;
 
     @BeforeEach
     void setUp() {
@@ -134,6 +139,7 @@ class OAuthExecutionUserProofTest {
                 .realmGeneration(1L).subjectGeneration(3L).status("ACTIVE").acr("PASSWORD")
                 .authenticatedAt(NOW).expiresAt(NOW.plusSeconds(28_800)).build();
         resource = OAuthResourceBO.builder().resourceServerId("orders").resourceUri(TARGET)
+                .bizCode("trade").appCode("orders").environment("test").managementClientId("orders-service")
                 .version(1).status(ResourceServerStatus.ACTIVE).build();
         resourceGrant = OAuthGrantBO.builder().clientPk(12L).resourceServerId("orders")
                 .grantType(ResourceGrantType.USER_DELEGATION).status(ClientResourceGrant.Status.ACTIVE)
@@ -144,11 +150,37 @@ class OAuthExecutionUserProofTest {
         when(authentications.findByJtiDigest(realm, Digests.sha256Hex("900"))).thenReturn(Optional.of(authentication));
         when(resources.findByResourceUri(platform, TARGET)).thenReturn(Optional.of(resource));
         when(grants.findGrant(realm, 12L, "orders", ResourceGrantType.USER_DELEGATION)).thenReturn(Optional.of(resourceGrant));
+        serviceClient = OAuthClientBO.builder().id(11L).clientId("orders-service").appId("orders")
+                .purpose(OAuthClientPurposeEnum.SERVICE).status(OAuthClient.Status.ACTIVE)
+                .allowedScopes(List.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)).build();
+        serviceFamily = OAuthAuthorizationBO.builder().id(21L).clientPk(11L).principalName("orders-service")
+                .principalType("SERVICE").audiences(List.of(AUTHORITY.toString()))
+                .authorizedScopes(List.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE))
+                .status("ACTIVE").absoluteExpiresAt(NOW.plusSeconds(300)).build();
+        var serviceClaims = SignedTokenClaimsBO.builder().issuer(ISSUER).audience(Set.of(AUTHORITY))
+                .subject("orders-service").scope(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)).tenantId(101L)
+                .principalType("SERVICE").jti("301").issuedAt(NOW).notBefore(NOW).expiresAt(NOW.plusSeconds(300))
+                .clientId("orders-service").authorizationId("21").clientRegistrationId("11").scopeContext("TENANT")
+                .sourceBiz("trade").sourceApp("orders").sourceEnv("test").appId("orders").credentialId("credential")
+                .resourceVersion(1L).securityVersion(OAuthSecurityVersionBO.builder().realm(1).client(2).build())
+                .tokenUse(OAuthTokenTypeEnum.ACCESS).build();
+        serviceToken = OAuthTokenBO.builder().id(31L).authorizationPk(21L).jti("301").tokenType(OAuthTokenTypeEnum.ACCESS)
+                .retainUntil(NOW.plusSeconds(86_400)).metadata(OAuthTokenMetadataBO.builder().claims(serviceClaims).build()).build();
+        serviceGrant = OAuthGrantBO.builder().clientPk(11L).resourceServerId("idp")
+                .grantType(ResourceGrantType.CLIENT_CREDENTIALS).status(ClientResourceGrant.Status.ACTIVE)
+                .allowedScopes(List.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)).resourceVersion(1L).build();
+        when(clients.findById(realm, 11L)).thenReturn(Optional.of(serviceClient));
+        when(authorizations.findById(realm, 21L)).thenReturn(Optional.of(serviceFamily));
+        when(tokens.findByTokenDigest(realm, "e".repeat(64))).thenReturn(Optional.of(serviceToken));
+        when(resources.findBySource(platform, "trade", "orders", "test")).thenReturn(Optional.of(resource));
+        when(resources.findByResourceUri(platform, AUTHORITY)).thenReturn(Optional.of(OAuthResourceBO.builder()
+                .resourceServerId("idp").resourceUri(AUTHORITY).version(1).status(ResourceServerStatus.ACTIVE).build()));
+        when(grants.findGrant(realm, 11L, "idp", ResourceGrantType.CLIENT_CREDENTIALS)).thenReturn(Optional.of(serviceGrant));
         when(states.findByTarget(eq(realm), any(), anyString())).thenAnswer(call -> {
             OAuthSecurityTargetEnum type = call.getArgument(1);
             long generation = switch (type) {
                 case REALM -> 1;
-                case CLIENT -> 2;
+                case CLIENT -> "11".equals(call.getArgument(2)) ? serviceGeneration.get() : 2;
                 case SUBJECT -> subjectGeneration.get();
                 default -> -1;
             };
@@ -324,6 +356,54 @@ class OAuthExecutionUserProofTest {
     }
 
     @Test
+    void issuing_service_is_rechecked_after_its_access_token_expires() {
+        var caller = caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        var user = service.captureExecutionUser(caller, TARGET, "user-proof");
+        var envelope = envelope(user);
+        assertDoesNotThrow(() -> service.requireExecutionService(caller, envelope.source(), user,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        when(clock.instant()).thenReturn(NOW.plusSeconds(900));
+        serviceFamily.setStatus("EXPIRED");
+        assertDoesNotThrow(() -> service.requireRecordedExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        verify(verifier, atLeastOnce()).requireRecordedKey(realm, "source-key");
+    }
+
+    @Test
+    void issuing_service_revocation_client_rotation_and_scope_changes_invalidate_the_recorded_source() {
+        var caller = caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        var envelope = envelope(service.captureExecutionUser(caller, TARGET, "user-proof"));
+        serviceToken.setRevokedAt(NOW);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        serviceToken.setRevokedAt(null);
+        serviceGeneration.incrementAndGet();
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        serviceGeneration.decrementAndGet();
+        serviceClient.setStatus(OAuthClient.Status.DISABLED);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        serviceClient.setStatus(OAuthClient.Status.ACTIVE);
+        serviceGrant.setStatus(ClientResourceGrant.Status.DISABLED);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        serviceGrant.setStatus(ClientResourceGrant.Status.ACTIVE);
+        serviceToken.getMetadata().getClaims().setAppId("other-app");
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        serviceToken.getMetadata().getClaims().setAppId("orders");
+        serviceFamily.setStatus("REVOKED");
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        serviceFamily.setStatus("ACTIVE");
+        when(revocations.findByTarget(realm, OAuthSecurityTargetEnum.JTI, "301"))
+                .thenReturn(Optional.of(mock(OAuthRevocationBO.class)));
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+    }
+
+    @Test
     void recorded_proof_survives_normal_key_rotation_but_not_compromise_or_missing_key() {
         OAuthSigningKeyRepository keys = mock(OAuthSigningKeyRepository.class);
         var key = OAuthSigningKeyBO.builder().kid("key-1").status(OAuthKeyStatusEnum.ACTIVE).build();
@@ -346,7 +426,20 @@ class OAuthExecutionUserProofTest {
         var principal = new ServiceIdentityPrincipal("orders-service", "101", "orders-service", "301", AUTHORITY,
                 1, scopes, "trade", "orders", "test", "credential", NOW.minusSeconds(1), NOW.plusSeconds(600),
                 "orders", ServiceTokenContext.TENANT);
-        return new OAuthAuthorityService.Caller(principal, realm, 11, TARGET);
+        return new OAuthAuthorityService.Caller(principal, realm, 11, TARGET, 1L, 2L, 21L,
+                "e".repeat(64), NOW.plusSeconds(86_400), "source-key");
+    }
+
+    private ExecutionGrantEnvelope envelope(StoredUserExecutionProof user) {
+        var source = new ExecutionGrantEnvelope.ServiceBinding(11, "orders-service", "orders", "trade",
+                "orders", "test", TARGET.toASCIIString());
+        var verifier = new ExecutionGrantEnvelope.ServiceBinding(20, "rbac-service", "rbac", "platform",
+                "jianshen", "test", "https://api.example/jianshen");
+        String intent = "d4c0f428-12ca-487c-a600-303883a19031";
+        String purpose = "TIANJI_AGENT_RUN_EXECUTION";
+        return new ExecutionGrantEnvelope(1, OpaqueExecutionGrantCodec.grantId(user, source, purpose, intent),
+                source, verifier, 1, 2, 21, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                purpose, intent, "c".repeat(64), false, NOW, NOW.plusSeconds(3_600), user);
     }
 
     private OAuthAuthorityTokenVerifier.VerifiedAccess proof() {

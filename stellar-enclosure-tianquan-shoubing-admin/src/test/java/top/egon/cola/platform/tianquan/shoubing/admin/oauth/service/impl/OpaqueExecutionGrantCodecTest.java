@@ -110,11 +110,15 @@ class OpaqueExecutionGrantCodecTest {
                 envelope.user(), "scope:issue", NOW));
         assertFalse(source.matches(sourceCaller, envelope.user(), "scope:resolve", NOW));
         assertFalse(source.matches(new OAuthAuthorityService.Caller(sourceCaller.principal(), realm,
-                sourceCaller.clientPk(), URI.create("https://API.example/tianji")), envelope.user(), "scope:issue", NOW));
+                sourceCaller.clientPk(), URI.create("https://API.example/tianji"), 1L, 2L, 33L,
+                "e".repeat(64), NOW.plusSeconds(86_400), "source-key"), envelope.user(), "scope:issue", NOW));
         var otherRealm = TrustedRealmBO.builder().issuer(URI.create("https://idp.example/tenants/102"))
                 .realmKey("tenant:102").realmType(RealmTypeEnum.TENANT).storagePartitionId(102L)
                 .businessTenantId(102L).trustVersion(2L).build();
         assertFalse(source.matches(new OAuthAuthorityService.Caller(sourceCaller.principal(), otherRealm,
+                sourceCaller.clientPk(), sourceCaller.sourceResource(), 1L, 2L, 33L,
+                "e".repeat(64), NOW.plusSeconds(86_400), "source-key"), envelope.user(), "scope:issue", NOW));
+        assertFalse(source.matches(new OAuthAuthorityService.Caller(sourceCaller.principal(), realm,
                 sourceCaller.clientPk(), sourceCaller.sourceResource()), envelope.user(), "scope:issue", NOW));
     }
 
@@ -136,20 +140,24 @@ class OpaqueExecutionGrantCodecTest {
     void a_grant_cannot_outlive_the_original_authority_or_change_its_resource() {
         var value = envelope(INTENT, "c".repeat(64));
         assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, value.grantId(),
-                value.source(), value.verifier(), PURPOSE, INTENT, value.bindingSha256(), false, NOW,
+                value.source(), value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), false, NOW,
                 NOW.plusSeconds(28_801), value.user()));
         assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, value.grantId(),
-                value.source(), value.verifier(), PURPOSE, INTENT, value.bindingSha256(), false, NOW.minusSeconds(1),
+                value.source(), value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), false, NOW.minusSeconds(1),
                 NOW.plusSeconds(3_600), value.user()));
         assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, value.grantId(),
-                value.source(), value.source(), PURPOSE, INTENT, value.bindingSha256(), false, NOW,
+                value.source(), value.source(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), false, NOW,
                 NOW.plusSeconds(3_600), value.user()));
         var wrongResource = new ExecutionGrantEnvelope.ServiceBinding(15, "agent-service", "agent", "platform",
                 "tianji", "test", "https://api.example/other");
         String id = OpaqueExecutionGrantCodec.grantId(value.user(), wrongResource, PURPOSE, INTENT);
         assertNotEquals(value.grantId(), id);
         assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, id, wrongResource,
-                value.verifier(), PURPOSE, INTENT, value.bindingSha256(), false, NOW, NOW.plusSeconds(3_600), value.user()));
+                value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), false, NOW, NOW.plusSeconds(3_600), value.user()));
     }
 
     private static ExecutionGrantEnvelope envelope(String intent, String binding) {
@@ -163,7 +171,8 @@ class OpaqueExecutionGrantCodecTest {
         var verifier = new ExecutionGrantEnvelope.ServiceBinding(20, "rbac-service", "rbac", "platform",
                 "jianshen", "test", "https://api.example/jianshen");
         String id = OpaqueExecutionGrantCodec.grantId(user, source, PURPOSE, intent);
-        return new ExecutionGrantEnvelope(1, id, source, verifier, PURPOSE, intent, binding, false,
+        return new ExecutionGrantEnvelope(1, id, source, verifier, 1, 2, 33, "e".repeat(64), "301",
+                NOW.plusSeconds(86_400), "source-key", PURPOSE, intent, binding, false,
                 NOW, NOW.plusSeconds(3_600), user);
     }
 
@@ -172,6 +181,7 @@ class OpaqueExecutionGrantCodecTest {
         var principal = new ServiceIdentityPrincipal(binding.clientId(), "101", binding.clientId(), "301",
                 URI.create("https://api.example/idp"), 1, scopes, binding.businessCode(), binding.applicationCode(),
                 binding.environment(), "credential", NOW.minusSeconds(60), expiresAt, appId, ServiceTokenContext.TENANT);
-        return new OAuthAuthorityService.Caller(principal, realm, binding.clientPk(), URI.create(binding.resourceUri()));
+        return new OAuthAuthorityService.Caller(principal, realm, binding.clientPk(), URI.create(binding.resourceUri()), 1L, 2L,
+                33L, "e".repeat(64), NOW.plusSeconds(86_400), "source-key");
     }
 }

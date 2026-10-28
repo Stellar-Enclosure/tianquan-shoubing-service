@@ -10,7 +10,9 @@ import java.util.UUID;
 
 /** Immutable, encrypted identity evidence and the exact services and run it is allowed to bind. */
 record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding source, ServiceBinding verifier,
-        String purpose, String intentId, String bindingSha256, boolean sessionRequired,
+        long sourceRealmGeneration, long sourceClientGeneration, long sourceAuthorizationId, String sourceTokenDigest,
+        String sourceTokenJti, Instant sourceTokenRetainUntil, String sourceSigningKeyId, String purpose, String intentId,
+        String bindingSha256, boolean sessionRequired,
         Instant notBefore, Instant expiresAt, StoredUserExecutionProof user) {
 
     ExecutionGrantEnvelope {
@@ -18,6 +20,10 @@ record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding 
         verifier = Objects.requireNonNull(verifier, "verifier");
         user = Objects.requireNonNull(user, "user");
         if (schemaVersion != 1 || grantId == null || !grantId.matches("9[0-9]{62}")
+                || sourceRealmGeneration < 0 || sourceClientGeneration < 0
+                || sourceAuthorizationId <= 0 || sourceTokenDigest == null || !sourceTokenDigest.matches("[0-9a-f]{64}")
+                || sourceTokenJti == null || !sourceTokenJti.matches("[1-9][0-9]{0,18}") || sourceTokenRetainUntil == null
+                || sourceSigningKeyId == null || !sourceSigningKeyId.matches("[A-Za-z0-9_-]{1,128}")
                 || purpose == null || !purpose.matches("[A-Z][A-Z0-9_]{0,95}") || !uuid(intentId)
                 || bindingSha256 == null || !bindingSha256.matches("[0-9a-f]{64}")
                 || notBefore == null || expiresAt == null || !expiresAt.isAfter(notBefore)
@@ -28,6 +34,7 @@ record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding 
                 || expiresAt.isAfter(Instant.ofEpochSecond(user.authenticationExpiresAt()))
                 || expiresAt.isAfter(Instant.ofEpochSecond(user.authorizationExpiresAt()))
                 || expiresAt.isAfter(user.tokenRetainUntil())
+                || expiresAt.isAfter(sourceTokenRetainUntil)
                 || !grantId.equals(OpaqueExecutionGrantCodec.grantId(user, source, purpose, intentId))) {
             throw new IllegalArgumentException("EXECUTION_GRANT_ENVELOPE_INVALID");
         }
@@ -57,6 +64,12 @@ record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding 
                     && user.issuer().equals(caller.realm().getIssuer().toASCIIString())
                     && Long.valueOf(user.tenantId()).equals(caller.realm().getBusinessTenantId())
                     && user.issuerTrustVersion() == caller.realm().getTrustVersion()
+                    && caller.realmGeneration() != null && caller.realmGeneration() >= 0
+                    && caller.clientGeneration() != null && caller.clientGeneration() >= 0
+                    && caller.authorizationId() != null && caller.authorizationId() > 0
+                    && caller.tokenDigest() != null && caller.tokenDigest().matches("[0-9a-f]{64}")
+                    && caller.tokenRetainUntil() != null && caller.tokenRetainUntil().isAfter(now)
+                    && caller.signingKeyId() != null && caller.signingKeyId().matches("[A-Za-z0-9_-]{1,128}")
                     && principal.scopeContext() == ServiceTokenContext.TENANT
                     && Long.toString(user.tenantId()).equals(principal.tenantId())
                     && principal.expiresAt().isAfter(now) && principal.scopes().contains(scope);
