@@ -40,6 +40,11 @@ public class OAuthSecurityStateBO {
     private boolean enabled;
     @Min(0)
     private long revision;
+    @Min(0)
+    private long directorySubjectRevision;
+    @JsonIgnore
+    @ToString.Exclude
+    private String directorySubjectFingerprint;
     @NotBlank
     @Size(max = 128)
     private String reasonCode;

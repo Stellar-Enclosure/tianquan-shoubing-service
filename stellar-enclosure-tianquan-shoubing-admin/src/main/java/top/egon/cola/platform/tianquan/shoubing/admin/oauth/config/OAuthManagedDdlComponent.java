@@ -32,6 +32,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @RequiredArgsConstructor
 public class OAuthManagedDdlComponent {
 
+    private java.util.Set<String> compatibleRouteFingerprints = java.util.Set.of();
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setStorageProperties(@Qualifier("outboxMpStorageProperties")
+            top.egon.cola.component.outbox.autoconfigure.OutboxMpStorageProperties properties) {
+        this.compatibleRouteFingerprints = java.util.Set.copyOf(properties.getPreviousRouteFingerprints());
+    }
+
     private static final String SCHEMA = "tianquan_oauth";
     private static final String MANIFEST_RESOURCE = "db/egon-mp/repository-manifest.json";
 
@@ -47,26 +55,41 @@ public class OAuthManagedDdlComponent {
 
     public void initialize(Map<String, DataSource> physicalDataSources, byte[] nativeRules) {
         if (physicalDataSources == null || shardingProperties.getDataSources() == null) {
-            throw new IllegalStateException("OAUTH_SINGLE_PRIMARY_REQUIRED");
+            throw new IllegalStateException("OAUTH_PRIMARY_DATASOURCE_REQUIRED");
         }
-        var primary = OutboxStorageTopology.singlePrimary(shardingProperties);
+        var primaries = OutboxStorageTopology.primaries(shardingProperties);
         var configured = shardingProperties.getDataSources().stream().map(source -> source.name())
                 .collect(java.util.stream.Collectors.toSet());
-        DataSource primaryDataSource = physicalDataSources.get(primary.name());
-        if (!physicalDataSources.keySet().equals(configured) || primaryDataSource == null) {
+        if (!physicalDataSources.keySet().equals(configured)
+                || primaries.values().stream().anyMatch(primary -> physicalDataSources.get(primary.name()) == null)) {
             throw new IllegalStateException("OAUTH_PRIMARY_DATASOURCE_REQUIRED");
         }
 
         TopologyBO topology = topologyValidator.validate(shardingProperties, nativeRules);
         EgonColaDdlManifestBO manifest = loadManifest();
-        DataSource scopedDataSource = new SchemaScopedDataSource(primaryDataSource, SCHEMA);
-        EgonColaDdlTargetBO target = new EgonColaDdlTargetBO(
-                primary.name(), SCHEMA, EgonColaDdlTargetBO.RoleEnum.MASTER_DATA,
-                scopedDataSource, manifest, topology.fingerprint());
-        List<EgonColaDdlResult> results = ddlRunner.run(List.of(target));
-        stateSchemaValidator.validate(scopedDataSource);
-        log.info("OAuth managed DDL ready: schema={} scripts={} routeFingerprint={}",
-                SCHEMA, results.size(), topology.fingerprint());
+        List<EgonColaDdlTargetBO> targets = primaries.values().stream()
+                .sorted(java.util.Comparator.comparing(EgonColaShardingProperties.PhysicalDataSourceProperties::name))
+                .map(primary -> new EgonColaDdlTargetBO(primary.name(), SCHEMA, EgonColaDdlTargetBO.RoleEnum.MASTER_DATA,
+                        new SchemaScopedDataSource(physicalDataSources.get(primary.name()), SCHEMA), manifest, topology.fingerprint(),
+                        compatibleRouteFingerprints))
+                .toList();
+        List<EgonColaDdlResult> results = ddlRunner.run(targets);
+        if (results == null || results.size() != targets.size() * manifest.scripts().size()) {
+            throw new IllegalStateException("OAUTH_DDL_MANIFEST_INCOMPLETE");
+        }
+        for (int index = 0; index < results.size(); index++) {
+            var result = Objects.requireNonNull(results.get(index), "DDL result");
+            var target = targets.get(index / manifest.scripts().size());
+            var script = manifest.scripts().get(index % manifest.scripts().size());
+            if (!target.alias().equals(result.alias()) || !SCHEMA.equals(result.schema())
+                    || !script.version().equals(result.version()) || !script.sha256().equals(result.checksum())
+                    || result.status() == null) {
+                throw new IllegalStateException("OAUTH_DDL_RESULT_MISMATCH");
+            }
+        }
+        targets.forEach(target -> stateSchemaValidator.validate(target.dataSource()));
+        log.info("OAuth managed DDL ready: schema={} primaries={} results={} routeFingerprint={}",
+                SCHEMA, targets.size(), results.size(), topology.fingerprint());
     }
 
     private EgonColaDdlManifestBO loadManifest() {

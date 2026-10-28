@@ -84,6 +84,8 @@ class TokenRevocationServiceTest {
     private final TransactionalOutbox outbox = mock(TransactionalOutbox.class);
     private final OAuthSecurityProjectionComponent projection = mock(OAuthSecurityProjectionComponent.class);
     private final OAuthManagementRealmResolver managementRealms = mock(OAuthManagementRealmResolver.class);
+    private final top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl.SubjectRevocationTaskRepository subjectTasks =
+            mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl.SubjectRevocationTaskRepository.class);
     private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private TokenRevocationServiceImpl service;
@@ -105,6 +107,7 @@ class TokenRevocationServiceTest {
         service = new TokenRevocationServiceImpl(
                 realms, clients, authorizations, tokens, states, revocations, audits,
                 outbox, projection, managementRealms, clock, Duration.ofSeconds(30), transactionManager);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "subjectTasks", subjectTasks);
     }
 
     @AfterEach
@@ -554,6 +557,7 @@ class TokenRevocationServiceTest {
         assertThat(subjectState.getGeneration()).isZero();
         assertThat(subjectState.getTargetKey()).isEqualTo("alice");
         verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
+        verify(subjectTasks).enqueueForSubject(eq(REALM), any(), eq("alice"), anyLong(), eq(true), eq("USER_CREATED"));
     }
 
     @Test
@@ -602,6 +606,86 @@ class TokenRevocationServiceTest {
         assertThat(changes.getValue().getGeneration()).isEqualTo(4L);
         verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
         verify(states, never()).advanceRealmIfSubjectAbsent(any(), anyLong(), anyLong(), anyString(), anyLong(), any());
+    }
+
+    @Test
+    void olderSubjectTaskIsConfirmedOnPrimaryWithoutReapplyingIt() {
+        var task = subjectTask(5L, false);
+        var current = securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L)
+                .setDirectorySubjectRevision(8L).setDirectorySubjectFingerprint("a".repeat(64));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice")).thenReturn(Optional.of(current));
+        when(states.fenceSubjectAtLeast(eq(REALM), eq(current), eq(5L), anyString(), any())).thenReturn(true);
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        service.applySubjectTask(REALM, task);
+        verify(states).fenceSubjectAtLeast(eq(REALM), eq(current), eq(5L), anyString(), any());
+        verify(states, never()).save(any(), any(), anyLong());
+        verify(outbox, never()).enqueue(any());
+    }
+
+    @Test
+    void sameSourceRevisionWithDifferentContentIsNotAcknowledged() {
+        var task = subjectTask(5L, false);
+        var current = securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L)
+                .setDirectorySubjectRevision(5L).setDirectorySubjectFingerprint("a".repeat(64));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice")).thenReturn(Optional.of(current));
+        when(states.fenceSubjectAtLeast(eq(REALM), eq(current), eq(5L), anyString(), any())).thenReturn(false);
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        assertThatThrownBy(() -> service.applySubjectTask(REALM, task))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(outbox, never()).enqueue(any());
+    }
+
+    @Test
+    void failureToPersistFanoutRollsBackSourceRevocation() {
+        TrustedRealmBO platform = TrustedRealmBO.builder().issuer(URI.create("https://idp.example/platform"))
+                .realmKey("platform").realmType(RealmTypeEnum.PLATFORM).storagePartitionId(9000L).trustVersion(0L).build();
+        OAuthRealmBO registered = realmRow();
+        when(managementRealms.platformRealm()).thenReturn(platform);
+        when(realms.findAllByStoragePartition(platform)).thenReturn(List.of(registered));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 2L, 7L)));
+        when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), anyLong())).thenAnswer(call -> call.getArgument(1));
+        org.mockito.Mockito.doThrow(new org.springframework.dao.OptimisticLockingFailureException("history delayed"))
+                .when(subjectTasks).enqueueForSubject(any(), any(), anyString(), anyLong(), org.mockito.ArgumentMatchers.anyBoolean(), anyString());
+        var tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> service.revokeSubject(
+                new OAuthSubjectRevokeCommand("alice", "USER_DISABLED"))))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(transactionManager).rollback(any());
+    }
+
+    @Test
+    void newerSubjectTaskAdvancesGenerationAndPublishesInTheTargetTransaction() {
+        var task = subjectTask(9L, false);
+        var current = securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 8L)
+                .setDirectorySubjectRevision(5L).setDirectorySubjectFingerprint("a".repeat(64));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice")).thenReturn(Optional.of(current));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 8L)));
+        when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), anyLong())).thenAnswer(call -> call.getArgument(1));
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        service.applySubjectTask(REALM, task);
+        var captured = ArgumentCaptor.forClass(OAuthSecurityStateBO.class);
+        verify(states, org.mockito.Mockito.times(2)).save(eq(REALM), captured.capture(), anyLong());
+        var subject = captured.getAllValues().get(1);
+        assertThat(subject.getDirectorySubjectRevision()).isEqualTo(9L);
+        assertThat(subject.getDirectorySubjectFingerprint()).matches("[0-9a-f]{64}");
+        assertThat(subject.getGeneration()).isEqualTo(4L);
+        assertThat(subject.isEnabled()).isFalse();
+        verify(outbox).enqueue(any());
+        verify(realms, never()).findByRealmKeyForUpdate(any());
+        verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
+    }
+
+    private static top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.SubjectRevocationTaskBO subjectTask(long revision, boolean enabled) {
+        var task = new top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.SubjectRevocationTaskBO();
+        task.setTargetTenantId("1001"); task.setIdentitySub("alice"); task.setSourceRevision(revision);
+        task.setSubjectEnabled(enabled); task.setReasonCode("USER_DISABLED"); return task;
     }
 
     private static OAuthSecurityStateBO securityState(

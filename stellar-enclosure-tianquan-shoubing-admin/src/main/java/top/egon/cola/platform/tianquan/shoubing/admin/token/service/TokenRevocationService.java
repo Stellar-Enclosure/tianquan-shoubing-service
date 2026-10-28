@@ -22,6 +22,9 @@ public interface TokenRevocationService {
 
     void revokeSubject(@NotNull @Valid OAuthSubjectRevokeCommand command);
 
+    void applySubjectTask(@NotNull @Valid TrustedRealmBO trustedRealm,
+            @NotNull top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.SubjectRevocationTaskBO task);
+
     void revokeClient(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotNull @Valid OAuthClientRevokeCommand command);

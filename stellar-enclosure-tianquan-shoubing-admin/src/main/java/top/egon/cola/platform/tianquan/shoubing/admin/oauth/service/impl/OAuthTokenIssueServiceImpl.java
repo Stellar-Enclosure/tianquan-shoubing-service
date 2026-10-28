@@ -58,6 +58,14 @@ import top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceServer;
 @Validated
 public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
 
+    private top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity outboxIdentity =
+            top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.singleGroup();
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setOutboxIdentity(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity identity) {
+        this.outboxIdentity = Objects.requireNonNull(identity, "identity");
+    }
+
     private static final Set<String> IDENTITY_SCOPES = Set.of("openid", "profile", "email", "address", "phone", "offline_access");
 
     private static final String INVALID_GRANT = "invalid_grant";
@@ -442,7 +450,8 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
             String subject,
             String resource,
             String eventType) {
-        String eventId = SnowflakeIdGenerator.nextId();
+        var scope = outboxIdentity.forTenant("oauth_audit", realm.getStoragePartitionId());
+        String eventId = scope.messageId(SnowflakeIdGenerator.nextId());
         String clientRef = Digests.sha256Hex(Long.toString(clientPk));
         String subjectRef = subject == null ? null : Digests.sha256Hex(subject);
         var occurredAt = clock.instant();
@@ -472,7 +481,7 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
         auditEvent.put("occurredAt", occurredAt);
         outbox.enqueue(OutboxMessage.builder()
                 .messageId(eventId)
-                .idempotencyKey("oauth-audit:" + eventId)
+                .idempotencyKey(scope.idempotencyKey("oauth-audit:" + eventId))
                 .channel(AUDIT_OUTBOX_CHANNEL)
                 .destination(AUDIT_OUTBOX_DESTINATION)
                 .payload(auditEvent)

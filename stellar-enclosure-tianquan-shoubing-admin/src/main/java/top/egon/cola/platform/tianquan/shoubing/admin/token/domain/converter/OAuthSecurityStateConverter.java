@@ -20,6 +20,8 @@ public interface OAuthSecurityStateConverter extends BaseConverter<OAuthSecurity
     @Mapping(target = "generation", source = "generation")
     @Mapping(target = "enabled", source = "enabled")
     @Mapping(target = "revision", source = "revision")
+    @Mapping(target = "directorySubjectRevision", source = "directorySubjectRevision")
+    @Mapping(target = "directorySubjectFingerprint", source = "directorySubjectFingerprint")
     @Mapping(target = "reasonCode", source = "reasonCode")
     OAuthSecurityStateBO toTarget(OAuthSecurityStatePO source);
 
@@ -32,6 +34,8 @@ public interface OAuthSecurityStateConverter extends BaseConverter<OAuthSecurity
     @Mapping(target = "generation", source = "generation")
     @Mapping(target = "enabled", source = "enabled")
     @Mapping(target = "revision", source = "revision")
+    @Mapping(target = "directorySubjectRevision", source = "directorySubjectRevision")
+    @Mapping(target = "directorySubjectFingerprint", source = "directorySubjectFingerprint")
     @Mapping(target = "reasonCode", source = "reasonCode")
     OAuthSecurityStatePO toSource(OAuthSecurityStateBO target);
 }

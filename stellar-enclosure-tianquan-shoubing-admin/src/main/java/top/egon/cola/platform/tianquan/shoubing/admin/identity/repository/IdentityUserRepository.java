@@ -20,6 +20,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.identity.dao.IdentityUserD
 import top.egon.cola.platform.tianquan.shoubing.admin.identity.domain.converter.IdentityUserConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.identity.domain.po.IdentityUserPO;
 import top.egon.cola.platform.tianquan.shoubing.admin.identity.repo.IdentityDirectoryContext;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUser;
 
 import java.time.Clock;
@@ -60,6 +61,8 @@ public class IdentityUserRepository extends EgonColaRepository<IdentityUserDAO, 
     @Transactional(readOnly = true)
     public Optional<IdentityUser> findByIdentitySub(@NotBlank @Size(max = 64) String identitySub) {
         String value = required(identitySub, "identitySub");
+        IdentityUser written = OAuthTransactionFences.identityUser(directoryContext.directoryPartitionId(), value);
+        if (written != null) return Optional.of(written);
         return directoryContext.withPlatformDirectoryPartition(() ->
                 Optional.ofNullable(baseMapper.selectByExternalKey(
                                 directoryContext.directoryPartitionId(), value))
@@ -89,7 +92,9 @@ public class IdentityUserRepository extends EgonColaRepository<IdentityUserDAO, 
                 if (!super.save(inserted)) {
                     throw new IllegalStateException("IDENTITY_USER_INSERT_NOT_APPLIED");
                 }
-                return converter.toTarget(inserted);
+                IdentityUser saved = converter.toTarget(inserted);
+                OAuthTransactionFences.identityUserWritten(partitionId, saved);
+                return saved;
             }
 
             requireExpectedVersion(user.id(), current.getVersion(), expectedVersion, user.version());
@@ -102,7 +107,9 @@ public class IdentityUserRepository extends EgonColaRepository<IdentityUserDAO, 
             if (baseMapper.updateExpectedVersion(partitionId, update, expectedVersion) != 1) {
                 throw stale(user.id(), expectedVersion, current.getVersion());
             }
-            return converter.toTarget(update);
+            IdentityUser saved = converter.toTarget(update);
+            OAuthTransactionFences.identityUserWritten(partitionId, saved);
+            return saved;
         });
     }
 

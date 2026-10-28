@@ -67,22 +67,38 @@ class OAuthTransactionFencesTest {
         assertThat(OAuthTransactionFences.client(clients, realm, client)).isTrue();
         var sync = TransactionSynchronizationManager.getSynchronizations().getFirst();
         Object point = new Object();
+        var identity = new top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUser(
+                "alice", "alice", "alice", "Alice", top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.ACTIVE,
+                0, null, null, 0L);
+        OAuthTransactionFences.identityUserWritten(9000L, identity);
         sync.savepoint(point);
+        OAuthTransactionFences.identityUserWritten(9000L, identity.withStatus(
+                top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.DISABLED));
+        assertThat(OAuthTransactionFences.identityUser(9000L, "alice").status())
+                .isEqualTo(top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.DISABLED);
+        assertThat(OAuthTransactionFences.identityUser(9001L, "alice")).isNull();
         assertThat(OAuthTransactionFences.grant(clients, realm, client, grant)).isTrue();
         OAuthTransactionFences.clientWritten(realm, client);
         assertThat(OAuthTransactionFences.isClientWritten(realm, client)).isTrue();
         var subject = top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO.builder()
                 .id(51L).version(0L).targetType(top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum.SUBJECT)
-                .targetKey("alice").generation(2L).revision(7L).enabled(true).reasonCode("CREATED").build();
+                .targetKey("alice").generation(2L).revision(7L).directorySubjectRevision(12L)
+                .directorySubjectFingerprint("a".repeat(64)).enabled(true).reasonCode("CREATED").build();
         OAuthTransactionFences.securityStateWritten(realm, subject);
         assertThat(OAuthTransactionFences.securityState(realm, subject.getTargetType(), "alice").getGeneration()).isEqualTo(2L);
+        assertThat(OAuthTransactionFences.securityState(realm, subject.getTargetType(), "alice").getDirectorySubjectRevision()).isEqualTo(12L);
+        assertThat(OAuthTransactionFences.securityState(realm, subject.getTargetType(), "alice").getDirectorySubjectFingerprint()).isEqualTo("a".repeat(64));
         sync.savepointRollback(point);
+        assertThat(OAuthTransactionFences.identityUser(9000L, "alice")).isEqualTo(identity);
         assertThat(OAuthTransactionFences.isClientWritten(realm, client)).isFalse();
         assertThat(OAuthTransactionFences.securityState(realm, subject.getTargetType(), "alice")).isNull();
         assertThat(OAuthTransactionFences.grant(clients, realm, client, grant)).isTrue();
         verify(clients, times(2)).fenceGrantObservedVersion(realm, client, 5L, grant);
         sync.suspend();
         assertThat(TransactionSynchronizationManager.hasResource(OAuthTransactionFences.class)).isFalse();
+        TransactionSynchronizationManager.setActualTransactionActive(false);
+        assertThat(OAuthTransactionFences.identityUser(9000L, "alice")).isNull();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
         sync.resume();
         assertThat(TransactionSynchronizationManager.hasResource(OAuthTransactionFences.class)).isTrue();
         sync.savepointRollback(new Object());

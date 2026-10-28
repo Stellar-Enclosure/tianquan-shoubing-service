@@ -183,7 +183,7 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
     @Transactional
     public OAuthAuthenticationJwtService.Issued completeLogin(HttpServletRequest request, String subject) {
         var realm = realm(request);
-        realms.findByRealmKeyForUpdate(realm).orElseThrow(OAuthBrowserInteractionComponent::rejected);
+        fenceRealm(realm);
         var interaction = require(request, true);
         if (!"PENDING".equals(interaction.getState()) || !"AUTHORIZATION".equals(interaction.getPurpose())) { throw rejected(); }
         var issued = authenticationJwts.issue(realm, interaction.getClientPk(), subject, interaction.getBrowserBindingDigest());
@@ -219,7 +219,7 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
     @Transactional
     public void requirePasswordChange(HttpServletRequest request, HttpServletResponse response, String subject) {
         var realm = realm(request);
-        realms.findByRealmKeyForUpdate(realm).orElseThrow(OAuthBrowserInteractionComponent::rejected);
+        fenceRealm(realm);
         var original = require(request, true);
         if (!"AUTHORIZATION".equals(original.getPurpose()) || !"PENDING".equals(original.getState())) { throw rejected(); }
         String id = secret();
@@ -239,7 +239,7 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
     @Transactional
     public String changeRequiredPassword(HttpServletRequest request, char[] oldPassword, char[] newPassword) {
         var realm = realm(request);
-        realms.findByRealmKeyForUpdate(realm).orElseThrow(OAuthBrowserInteractionComponent::rejected);
+        fenceRealm(realm);
         var interaction = require(request, true);
         if (!"PASSWORD_CHANGE".equals(interaction.getPurpose()) || !"PENDING".equals(interaction.getState())
                 || interaction.getRestrictedSubject() == null || interaction.getAuthenticationJtiDigest() != null) { throw rejected(); }
@@ -248,6 +248,12 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
         interaction.setVersion(version + 1).setState("CONSUMED").setConsumedAt(clock.instant());
         interactions.save(realm, interaction, version);
         return realm.getIssuer().getRawPath() + "/oauth2/authorize?" + query(parameters(realm, interaction));
+    }
+
+    private void fenceRealm(TrustedRealmBO realm) {
+        if (!top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences.activeRealm(realms, realm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before browser interaction");
+        }
     }
 
     @Transactional

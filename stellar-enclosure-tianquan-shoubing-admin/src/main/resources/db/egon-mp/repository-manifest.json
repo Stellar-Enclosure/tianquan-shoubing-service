@@ -25,6 +25,11 @@
       "version": "20261028_001",
       "path": "db/egon-mp/V20261028_001__coordinate_oauth_grant_writes.sql",
       "sha256": "4aa6eeed522b092a484849238de3117baf8fee3de752e335edca85c7404fa34f"
+    },
+    {
+      "version": "20261028_002",
+      "path": "db/egon-mp/V20261028_002__subject_revocation_fanout.sql",
+      "sha256": "b71c431fa3f51a5bd135927ca45e61ee000936d34ee5c0a607b0289ada604167"
     }
   ]
 }

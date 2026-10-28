@@ -4,6 +4,8 @@ import java.time.Clock;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import top.egon.cola.component.common.mybatis.autoconfigure.EgonColaMybatisPlusProperties;
 import top.egon.cola.component.common.mybatis.business.EgonColaUserIdProvider;
 import top.egon.cola.platform.tianquan.shoubing.admin.identity.dao.IdentityCredentialDAO;
@@ -57,5 +59,62 @@ class IdentityDirectoryReplicaWriteTest {
         verify(credentials).updateExpectedVersion(eq(9000L), any(), eq(0L));
         verify(users, never()).selectForUpdate(anyLong(), anyString());
         verify(credentials, never()).selectForUpdate(anyLong(), anyString());
+    }
+
+    @Test void identityPublicationSeesOnlyTheSuccessfulWriteInItsOwnTransaction() {
+        var old = new IdentityUser("alice", "alice", "alice", "Alice", IdentityUserStatus.ACTIVE, 0, null, null, 0L);
+        var oldRow = Mappers.getMapper(IdentityUserConverter.class).toSource(old);
+        oldRow.setId(11L);
+        when(users.selectByExternalKey(9000L, "alice")).thenReturn(oldRow);
+        when(users.updateExpectedVersion(eq(9000L), any(), eq(0L))).thenReturn(1);
+        when(actor.currentUserId()).thenReturn("service:test");
+        var publisher = new top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.service.IdentityOutboxPublisher(
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository.class),
+                mock(top.egon.cola.component.outbox.api.TransactionalOutbox.class), userRepository,
+                new com.fasterxml.jackson.databind.ObjectMapper(),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver.class),
+                Clock.systemUTC());
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            var disabled = old.withStatus(IdentityUserStatus.DISABLED);
+            userRepository.save(disabled, 0L);
+            assertThatCode(() -> publisher.publish(new top.egon.cola.platform.tianquan.shoubing.contract.IdentityUserState(
+                    "alice", top.egon.cola.platform.tianquan.shoubing.contract.IdentityUserState.Status.DISABLED, Instant.EPOCH)))
+                    .doesNotThrowAnyException();
+            assertThat(userRepository.findByIdentitySub("alice")).contains(disabled);
+            verify(users, times(1)).selectByExternalKey(9000L, "alice");
+        } finally {
+            TransactionSynchronizationManager.getSynchronizations().forEach(sync -> sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+        assertThat(userRepository.findByIdentitySub("alice")).contains(old);
+        verify(users, times(2)).selectByExternalKey(9000L, "alice");
+    }
+
+    @Test void insertedIdentityIsVisibleWithoutReadingAnUncommittedRowFromTheReplica() {
+        var created = new IdentityUser("alice", "alice", "alice", "Alice", IdentityUserStatus.ACTIVE, 0, null, null, 0L);
+        var priorBinding = top.egon.cola.component.common.mybatis.model.EgonColaModelValidationUtils.current();
+        var factory = priorBinding == null ? jakarta.validation.Validation.buildDefaultValidatorFactory() : null;
+        var binding = priorBinding == null ? top.egon.cola.component.common.mybatis.model.EgonColaModelValidationUtils.initialize(
+                new top.egon.cola.component.common.core.validation.ValidationUtils(factory.getValidator()), this) : priorBinding;
+        when(users.insert(any(IdentityUserPO.class))).thenAnswer(invocation -> {
+            ((IdentityUserPO) invocation.getArgument(0)).setId(11L);
+            return 1;
+        });
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            userRepository.save(created, 0L);
+            assertThat(userRepository.findByIdentitySub("alice")).contains(created);
+            verify(users, times(1)).selectByExternalKey(9000L, "alice");
+        } finally {
+            TransactionSynchronizationManager.getSynchronizations().forEach(sync -> sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+            if (factory != null) { binding.close(); factory.close(); }
+        }
+        assertThat(userRepository.findByIdentitySub("alice")).isEmpty();
     }
 }

@@ -6,6 +6,8 @@ rules:
       - oauth_primary.tianquan_oauth.oauth_identity_credential
       - oauth_primary.tianquan_oauth.oauth_identity_tenant
       - oauth_primary.tianquan_oauth.oauth_identity_membership
+      - oauth_primary.tianquan_oauth.oauth_subject_tenant_history
+      - oauth_primary.tianquan_oauth.oauth_subject_revocation_task
       - oauth_primary.tianquan_oauth.oauth_realm
       - oauth_primary.tianquan_oauth.oauth_client
       - oauth_primary.tianquan_oauth.oauth_grant

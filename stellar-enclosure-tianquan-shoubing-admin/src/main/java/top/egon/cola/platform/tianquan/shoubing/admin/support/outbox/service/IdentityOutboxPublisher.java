@@ -35,6 +35,14 @@ import top.egon.cola.platform.tianquan.shoubing.core.port.IdentityUserStatePort;
 @Slf4j
 public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentitySecurityEventPort, IdentityStateProjection {
 
+    private top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity outboxIdentity =
+            top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.singleGroup();
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setOutboxIdentity(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity identity) {
+        this.outboxIdentity = Objects.requireNonNull(identity, "identity");
+    }
+
     private static final String AUDIT_CHANNEL = "oauth-audit";
     private static final String AUDIT_DESTINATION = "oauth.audit.identity.v1";
     private static final Pattern SAFE_SUBJECT = Pattern.compile("[A-Za-z0-9._~-]{1,64}");
@@ -73,7 +81,8 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
         String reason = eventValue(value.reason(), "reason");
         String sourceBucket = eventValue(value.sourceBucket(), "sourceBucket");
         Objects.requireNonNull(value.occurredAt(), "occurredAt");
-        String eventId = nextId();
+        var scope = outboxIdentity.forPlatform("oauth_audit");
+        String eventId = scope.messageId(nextId());
         String traceId = MDC.get("traceId");
         if (traceId != null && !traceId.matches("[A-Za-z0-9._~-]{1,128}")) {
             traceId = null;
@@ -115,7 +124,7 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
         }
         outbox.enqueue(OutboxMessage.builder()
                 .messageId(eventId)
-                .idempotencyKey("identity-audit:" + eventId)
+                .idempotencyKey(scope.idempotencyKey("identity-audit:" + eventId))
                 .channel(AUDIT_CHANNEL)
                 .destination(AUDIT_DESTINATION)
                 .payload(streamEvent)

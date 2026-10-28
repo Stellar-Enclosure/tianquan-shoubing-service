@@ -110,6 +110,20 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceSubjectAtLeast(TrustedRealmBO realm, OAuthSecurityStateBO subject, long sourceRevision, String fingerprint, Instant now) {
+        Objects.requireNonNull(subject, "subject");
+        if (subject.getId() == null || subject.getId() <= 0 || subject.getVersion() < 0 || sourceRevision <= 0
+                || subject.getTargetType() != OAuthSecurityTargetEnum.SUBJECT || fingerprint == null
+                || !fingerprint.matches("[0-9a-f]{64}") || now == null) {
+            throw new IllegalArgumentException("OAUTH_SUBJECT_FENCE_INVALID");
+        }
+        String key = requireStateTarget(subject.getTargetType(), subject.getTargetKey());
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceSubjectAtLeast(tenant, subject.getId(),
+                subject.getVersion(), key, sourceRevision, fingerprint, now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Optional<OAuthSecurityStateBO> findByTarget(
             TrustedRealmBO trustedRealm,
@@ -159,6 +173,11 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
             OAuthSecurityStateBO state,
             long expectedVersion) {
         Objects.requireNonNull(state, "state");
+        if (state.getDirectorySubjectRevision() == 0 ? state.getDirectorySubjectFingerprint() != null
+                : state.getTargetType() != OAuthSecurityTargetEnum.SUBJECT || state.getDirectorySubjectFingerprint() == null
+                    || !state.getDirectorySubjectFingerprint().matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("OAUTH_SUBJECT_SOURCE_FINGERPRINT_INVALID");
+        }
         String targetKey = requireStateTarget(state.getTargetType(), state.getTargetKey());
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
@@ -185,6 +204,9 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
                         || !Objects.equals(state.getId(), current.getId())
                         || state.getGeneration() < current.getGeneration()
                         || state.getRevision() < current.getRevision()
+                        || state.getDirectorySubjectRevision() < current.getDirectorySubjectRevision()
+                        || state.getDirectorySubjectRevision() == current.getDirectorySubjectRevision()
+                            && !Objects.equals(state.getDirectorySubjectFingerprint(), current.getDirectorySubjectFingerprint())
                         || (state.isEnabled() != current.getEnabled()
                                 && state.getGeneration() <= current.getGeneration())
                         || (state.getGeneration() > current.getGeneration()

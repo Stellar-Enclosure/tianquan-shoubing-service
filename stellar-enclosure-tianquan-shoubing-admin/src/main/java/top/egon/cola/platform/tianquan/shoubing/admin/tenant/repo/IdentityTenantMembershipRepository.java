@@ -109,13 +109,13 @@ public class IdentityTenantMembershipRepository
         }
         return directoryContext.withPlatformDirectoryPartition(actor, () -> {
             Long partitionId = directoryContext.directoryPartitionId();
-            IdentityTenantMembershipPO current = baseMapper.selectForUpdate(
+            IdentityTenantMembershipPO current = baseMapper.selectByTenantAndIdentitySub(
                     partitionId, tenantId, identitySub);
             IdentityTenantMembershipPO value = converter.toSource(membership);
             value.setTenantId(partitionId);
             if (current == null) {
                 if (membership.getVersion() != 0L) {
-                    throw stale(membershipId, membership.getVersion() - 1L, -1L);
+                    throw new org.springframework.dao.TransientDataAccessResourceException("identity membership is not yet visible");
                 }
                 if (!super.save(value)) {
                     throw new IllegalStateException("IDENTITY_MEMBERSHIP_INSERT_NOT_APPLIED");

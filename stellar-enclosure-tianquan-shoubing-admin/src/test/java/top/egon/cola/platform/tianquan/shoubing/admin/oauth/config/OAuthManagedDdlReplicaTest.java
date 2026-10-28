@@ -23,6 +23,7 @@ class OAuthManagedDdlReplicaTest {
     @Test
     void managedDdlTargetsThePrimaryAndNeverOpensAReplica() throws Exception {
         var runner = mock(EgonColaPostgreDdlRunner.class);
+        completeResults(runner);
         var topologyValidator = mock(EgonColaShardingTopologyValidator.class);
         var schemaValidator = mock(OAuthStateSchemaValidator.class);
         var primary = mock(DataSource.class);
@@ -55,21 +56,64 @@ class OAuthManagedDdlReplicaTest {
     }
 
     @Test
-    void missingPhysicalReplicaAndMultiplePrimaryGroupsFailBeforeDdl() {
+    void missingPhysicalReplicaFailsBeforeDdl() {
         var runner = mock(EgonColaPostgreDdlRunner.class);
+        completeResults(runner);
         var validator = mock(EgonColaShardingTopologyValidator.class);
         var schema = mock(OAuthStateSchemaValidator.class);
         var properties = topology();
         var component = new OAuthManagedDdlComponent(runner, validator, properties, new ObjectMapper(), schema);
         assertThatThrownBy(() -> component.initialize(Map.of("oauth_primary", mock(DataSource.class)), new byte[0]))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("OAUTH_PRIMARY_DATASOURCE_REQUIRED");
+        verifyNoInteractions(runner, validator, schema);
+    }
+
+    @Test
+    void eachPrimaryIsMigratedAndValidatedWithoutOpeningReplicas() {
+        var runner = mock(EgonColaPostgreDdlRunner.class);
+        completeResults(runner);
+        var validator = mock(EgonColaShardingTopologyValidator.class);
+        var schema = mock(OAuthStateSchemaValidator.class);
+        var properties = topology();
         properties.setDataSources(List.of(source("oauth_primary", "oauth", DataSourceRoleEnum.PRIMARY),
                 source("oauth_replica", "oauth", DataSourceRoleEnum.REPLICA),
                 source("other_primary", "other", DataSourceRoleEnum.PRIMARY),
                 source("other_replica", "other", DataSourceRoleEnum.REPLICA)));
-        assertThatThrownBy(() -> component.initialize(Map.of(), new byte[0]))
-                .isInstanceOf(IllegalStateException.class).hasMessageContaining("OUTBOX_SINGLE_PRIMARY_REQUIRED");
-        verifyNoInteractions(runner, validator, schema);
+        byte[] yaml = new byte[0];
+        when(validator.validate(properties, yaml)).thenReturn(new EgonColaShardingTopologyValidator.TopologyBO(
+                yaml, Map.of(), Map.of(), Set.of(), "b".repeat(64)));
+        var first = mock(DataSource.class); var second = mock(DataSource.class);
+        var replicaA = mock(DataSource.class); var replicaB = mock(DataSource.class);
+        var component = new OAuthManagedDdlComponent(runner, validator, properties, new ObjectMapper(), schema);
+        component.setStorageProperties(new top.egon.cola.component.outbox.autoconfigure.OutboxMpStorageProperties()
+                .setPreviousRouteFingerprints(List.of("c".repeat(64))));
+        component.initialize(Map.of("oauth_primary", first, "oauth_replica", replicaA,
+                "other_primary", second, "other_replica", replicaB), yaml);
+        @SuppressWarnings("unchecked") var captured = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(runner).run(captured.capture());
+        List<EgonColaDdlTargetBO> targets = captured.getValue();
+        assertThat(targets).extracting(EgonColaDdlTargetBO::alias).containsExactly("oauth_primary", "other_primary");
+        assertThat(targets).allSatisfy(target -> {
+            assertThat(target.role()).isEqualTo(EgonColaDdlTargetBO.RoleEnum.MASTER_DATA);
+            assertThat(target.compatibleRouteFingerprints()).containsExactly("c".repeat(64));
+            verify(schema).validate(target.dataSource());
+        });
+        verifyNoInteractions(replicaA, replicaB);
+    }
+
+    @Test
+    void missingMigrationReceiptsFailBeforeSchemaIsDeclaredReady() {
+        var runner = mock(EgonColaPostgreDdlRunner.class);
+        var validator = mock(EgonColaShardingTopologyValidator.class);
+        var schema = mock(OAuthStateSchemaValidator.class);
+        var properties = topology(); byte[] yaml = new byte[0];
+        when(validator.validate(properties, yaml)).thenReturn(new EgonColaShardingTopologyValidator.TopologyBO(
+                yaml, Map.of(), Map.of(), Set.of(), "b".repeat(64)));
+        when(runner.run(anyList())).thenReturn(List.of());
+        var component = new OAuthManagedDdlComponent(runner, validator, properties, new ObjectMapper(), schema);
+        assertThatThrownBy(() -> component.initialize(Map.of("oauth_primary", mock(DataSource.class),
+                "oauth_replica", mock(DataSource.class)), yaml)).hasMessageContaining("OAUTH_DDL_MANIFEST_INCOMPLETE");
+        verifyNoInteractions(schema);
     }
 
     private static EgonColaShardingProperties topology() {
@@ -82,5 +126,15 @@ class OAuthManagedDdlReplicaTest {
     private static PhysicalDataSourceProperties source(String name, String group, DataSourceRoleEnum role) {
         return new PhysicalDataSourceProperties(name, group, role, "org.postgresql.Driver",
                 "jdbc:postgresql://localhost/test", "test", "");
+    }
+
+    private static void completeResults(EgonColaPostgreDdlRunner runner) {
+        when(runner.run(anyList())).thenAnswer(call -> {
+            List<EgonColaDdlTargetBO> targets = call.getArgument(0);
+            return targets.stream().flatMap(target -> target.manifest().scripts().stream().map(script ->
+                    new top.egon.cola.component.common.mybatis.ddl.EgonColaDdlResult(target.alias(), target.schema(),
+                            script.version(), script.sha256(), top.egon.cola.component.common.mybatis.ddl.EgonColaDdlResult.StatusEnum.SKIPPED,
+                            java.time.Duration.ZERO))).toList();
+        });
     }
 }

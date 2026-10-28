@@ -78,7 +78,7 @@ class TenantMembershipServiceImplTest {
 
     @Test
     void upsertsMembershipAndResolvesEffectiveStatusFromAllThreeAuthorities() {
-        when(memberships.findByTenantIdAndIdentitySubForUpdate("10001", "user-1"))
+        when(memberships.findByTenantIdAndIdentitySub("10001", "user-1"))
                 .thenReturn(Optional.empty());
         TenantMembershipService.MembershipView created = service.upsert(
                 new TenantMembershipService.UpsertMembershipCommand(
@@ -96,7 +96,7 @@ class TenantMembershipServiceImplTest {
         );
         assertThat(created.version()).isZero();
         verify(memberships).save(any(IdentityTenantMembershipBO.class));
-        verify(memberships).findByTenantIdAndIdentitySubForUpdate("10001", "user-1");
+        verify(memberships).findByTenantIdAndIdentitySub("10001", "user-1");
 
         IdentityTenantMembershipBO membership =
                 IdentityTenantMembershipBO.create(

@@ -322,6 +322,28 @@ class OAuthOidcProtocolContractTest {
     }
 
     @Test
+    void subjectSecurityOutboxCanConfirmADisabledTenantRealm() throws Exception {
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        TenantIssuerService issuers = mock(TenantIssuerService.class);
+        OAuthSecurityProjectionComponent projection = mock(OAuthSecurityProjectionComponent.class);
+        var handler = new OAuthSecurityDeliveryHandler(mapper, issuers, projection, mock(OAuthRevocationRepository.class));
+        var resolver = mock(OAuthManagementRealmResolver.class);
+        var realm = trustedTenant();
+        when(resolver.resolveTenantForRevocation("1001")).thenReturn(realm);
+        org.springframework.test.util.ReflectionTestUtils.setField(handler, "managementRealms", resolver);
+        String eventId = "security-subject-1";
+        String payload = mapper.writeValueAsString(Map.of("eventId", eventId, "schemaVersion", 1,
+                "issuer", realm.getIssuer().toASCIIString(), "realmKey", realm.getRealmKey(), "revision", 8,
+                "targetType", "SUBJECT", "targetKey", "alice", "generation", 2,
+                "reasonCode", "USER_DISABLED", "occurredAt", NOW.toString()));
+        var result = handler.deliver(new DeliveryContext(eventId, OAuthSecurityDeliveryHandler.CHANNEL,
+                OAuthSecurityDeliveryHandler.DESTINATION, payload, "application/json", "1", Map.of(), null, 1, 5, NOW));
+        assertEquals(DeliveryResult.Kind.SUCCESS, result.kind());
+        verify(projection).applyProjection(eq(realm), any(OAuthSecurityChangedEvent.class));
+        verify(issuers, org.mockito.Mockito.never()).resolveExactIssuer(any());
+    }
+
+    @Test
     void mapsSavedAuthorizationRequestToTypedPkceAndOidcAttributes() {
         String state = "state-that-must-not-be-persisted";
         String nonce = "nonce-that-must-not-be-logged-or-serialized";

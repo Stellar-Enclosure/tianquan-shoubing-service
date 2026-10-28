@@ -62,6 +62,20 @@ import top.egon.cola.platform.tianquan.shoubing.core.oauth.OAuthClient;
 @Validated
 public class TokenRevocationServiceImpl implements TokenRevocationService {
 
+    private top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity outboxIdentity =
+            top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.singleGroup();
+    private top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl.SubjectRevocationTaskRepository subjectTasks;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setOutboxIdentity(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity identity) {
+        this.outboxIdentity = Objects.requireNonNull(identity, "identity");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setSubjectTasks(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl.SubjectRevocationTaskRepository tasks) {
+        this.subjectTasks = Objects.requireNonNull(tasks, "tasks");
+    }
+
     private static final int TOKEN_PAGE_SIZE = 500;
 
     @Qualifier("oAuthRealmRepository")
@@ -215,7 +229,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                     current.getExpiresAt(), current.getReasonCode(), current.getRevokedAt());
         }
         if (enqueue) {
-            enqueue(event);
+            enqueue(realm, event);
         }
         registerProjectionAfterCommit(List.of(new ProjectionChange(realm, event, targetType)));
     }
@@ -257,7 +271,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 realmState.setVersion(Math.addExact(realmState.getVersion(), 1L)).setRevision(revision);
                 OAuthTransactionFences.securityStateWritten(realm, realmState);
             } else {
-                saveRealmRevision(realm, realmState, revision);
+                realmState = saveRealmRevision(realm, realmState, revision);
             }
             OAuthSecurityStateBO changed = securityState(
                     subjectState, OAuthSecurityTargetEnum.SUBJECT, input.getSubject(),
@@ -267,7 +281,9 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
             OAuthSecurityChangedEvent event = event(realm, revision, OAuthSecurityTargetEnum.SUBJECT,
                     input.getSubject(), saved.getGeneration(), null, input.getReasonCode(), now);
             saveAuditIfAbsent(realm, event, "SUBJECT_REVOKED");
-            enqueue(event);
+            enqueue(realm, event);
+            Objects.requireNonNull(subjectTasks, "subjectTasks").enqueueForSubject(realm, realmState,
+                    input.getSubject(), revision, saved.isEnabled(), input.getReasonCode());
             projections.add(new ProjectionChange(realm, event, null));
         }
         registerProjectionAfterCommit(projections);
@@ -315,7 +331,59 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         OAuthSecurityChangedEvent event = event(realm, revision, OAuthSecurityTargetEnum.CLIENT,
                 Long.toString(client.getId()), saved.getGeneration(), null, input.getReasonCode(), now);
         saveAuditIfAbsent(realm, event, "CLIENT_SECURITY_CHANGED");
-        enqueue(event);
+        enqueue(realm, event);
+        registerProjectionAfterCommit(List.of(new ProjectionChange(realm, event, null)));
+    }
+
+    @Override
+    @Transactional(transactionManager = "transactionManager", timeout = 60)
+    public void applySubjectTask(TrustedRealmBO trustedRealm,
+            top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.SubjectRevocationTaskBO task) {
+        TrustedRealmBO realm = requireRealm(trustedRealm);
+        Objects.requireNonNull(task, "task");
+        if (realm.getBusinessTenantId() == null || task.getTargetTenantId() == null
+                || !Long.toString(realm.getBusinessTenantId()).equals(task.getTargetTenantId())
+                || task.getIdentitySub() == null || !task.getIdentitySub().matches("[A-Za-z0-9._~-]{1,64}")
+                || task.getSourceRevision() == null || task.getSourceRevision() <= 0
+                || task.getSubjectEnabled() == null || task.getReasonCode() == null
+                || !task.getReasonCode().matches("[A-Z0-9_]{1,128}")) {
+            throw new IllegalArgumentException("OAUTH_SUBJECT_TASK_INVALID");
+        }
+        if (!OAuthTransactionFences.realm(realmRepository, realm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before subject propagation");
+        }
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        OAuthSecurityStateBO current = stateRepository.findByTarget(realm, OAuthSecurityTargetEnum.SUBJECT,
+                task.getIdentitySub()).orElse(null);
+        String fingerprint = Digests.sha256Hex("subject-task-v1:" + task.getIdentitySub() + ":" + task.getTargetTenantId()
+                + ":" + task.getSourceRevision() + ":" + task.getSubjectEnabled() + ":" + task.getReasonCode());
+        if (current != null && current.getDirectorySubjectRevision() >= task.getSourceRevision()) {
+            if (!stateRepository.fenceSubjectAtLeast(realm, current, task.getSourceRevision(), fingerprint, now)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth subject propagation changed");
+            }
+            return;
+        }
+        OAuthSecurityStateBO realmState = requiredState(realm, OAuthSecurityTargetEnum.REALM, "self");
+        long revision = nextRevision(realmState, null, current);
+        if (current == null) {
+            if (!stateRepository.advanceRealmIfSubjectAbsent(realm, realmState.getId(), realmState.getVersion(),
+                    task.getIdentitySub(), revision, now)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth subject is not yet safe to initialize");
+            }
+            realmState.setVersion(Math.addExact(realmState.getVersion(), 1L)).setRevision(revision);
+            OAuthTransactionFences.securityStateWritten(realm, realmState);
+        } else {
+            saveRealmRevision(realm, realmState, revision);
+        }
+        long generation = current == null ? 0L : Math.addExact(current.getGeneration(), 1L);
+        OAuthSecurityStateBO changed = securityState(current, OAuthSecurityTargetEnum.SUBJECT, task.getIdentitySub(),
+                generation, task.getSubjectEnabled(), revision, task.getReasonCode())
+                .setDirectorySubjectRevision(task.getSourceRevision()).setDirectorySubjectFingerprint(fingerprint);
+        OAuthSecurityStateBO saved = stateRepository.save(realm, changed, current == null ? 0L : current.getVersion());
+        OAuthSecurityChangedEvent event = event(realm, revision, OAuthSecurityTargetEnum.SUBJECT, task.getIdentitySub(),
+                saved.getGeneration(), null, task.getReasonCode(), now);
+        saveAuditIfAbsent(realm, event, "SUBJECT_REVOKED");
+        enqueue(realm, event);
         registerProjectionAfterCommit(List.of(new ProjectionChange(realm, event, null)));
     }
 
@@ -397,12 +465,13 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         auditRepository.save(realm, audit, 0L);
     }
 
-    private void enqueue(OAuthSecurityChangedEvent event) {
+    private void enqueue(TrustedRealmBO realm, OAuthSecurityChangedEvent event) {
         String idempotencyKey = "oauth-security:" + event.realmKey() + ":" + event.targetType()
                 + ":" + event.targetKey() + ":" + event.revision();
+        var scope = outboxIdentity.forTenant("oauth_security_state", realm.getStoragePartitionId());
         outbox.enqueue(OutboxMessage.builder()
                 .messageId(event.eventId())
-                .idempotencyKey(idempotencyKey)
+                .idempotencyKey(scope.idempotencyKey(idempotencyKey))
                 .channel(OAuthSecurityChangedEvent.OUTBOX_CHANNEL)
                 .destination(OAuthSecurityChangedEvent.OUTBOX_DESTINATION)
                 .payload(event)
@@ -422,7 +491,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         String idempotencyKey = "oauth-security:" + realm.getRealmKey() + ":" + targetType.getCode()
                 + ":" + targetKey + ":" + revision;
         return new OAuthSecurityChangedEvent(
-                Digests.sha256Hex(idempotencyKey),
+                outboxIdentity.forTenant("oauth_security_state", realm.getStoragePartitionId()).messageId(Digests.sha256Hex(idempotencyKey)),
                 1,
                 realm.getIssuer(),
                 realm.getRealmKey(),
@@ -444,8 +513,8 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 .orElseThrow(() -> unavailable("OAUTH_SECURITY_STATE_MISSING"));
     }
 
-    private void saveRealmRevision(TrustedRealmBO realm, OAuthSecurityStateBO current, long revision) {
-        stateRepository.save(realm, securityState(
+    private OAuthSecurityStateBO saveRealmRevision(TrustedRealmBO realm, OAuthSecurityStateBO current, long revision) {
+        return stateRepository.save(realm, securityState(
                 current, OAuthSecurityTargetEnum.REALM, "self", current.getGeneration(),
                 current.isEnabled(), revision, current.getReasonCode()), current.getVersion());
     }
@@ -466,6 +535,8 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 .generation(generation)
                 .enabled(enabled)
                 .revision(revision)
+                .directorySubjectRevision(current == null ? 0L : current.getDirectorySubjectRevision())
+                .directorySubjectFingerprint(current == null ? null : current.getDirectorySubjectFingerprint())
                 .reasonCode(reasonCode)
                 .build();
     }

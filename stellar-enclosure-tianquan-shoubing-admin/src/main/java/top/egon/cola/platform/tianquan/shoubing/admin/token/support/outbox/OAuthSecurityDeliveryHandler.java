@@ -26,6 +26,13 @@ import top.egon.cola.platform.tianquan.shoubing.core.audit.OAuthSecurityChangedE
 @RequiredArgsConstructor
 public final class OAuthSecurityDeliveryHandler implements DeliveryHandler {
 
+    private top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver managementRealms;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setManagementRealms(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver resolver) {
+        this.managementRealms = Objects.requireNonNull(resolver, "resolver");
+    }
+
     public static final String CHANNEL = OAuthSecurityChangedEvent.OUTBOX_CHANNEL;
     public static final String DESTINATION = OAuthSecurityChangedEvent.OUTBOX_DESTINATION;
     private static final Set<String> ALLOWED_FIELDS = Set.of(
@@ -65,8 +72,12 @@ public final class OAuthSecurityDeliveryHandler implements DeliveryHandler {
             if (!Objects.equals(delivery.messageId(), event.eventId())) {
                 throw new IllegalArgumentException("OAUTH_SECURITY_EVENT_MESSAGE_ID_MISMATCH");
             }
-            TrustedRealmBO trustedRealm = tenantIssuerService.resolveExactIssuer(event.issuer());
-            if (!Objects.equals(trustedRealm.getRealmKey(), event.realmKey())) {
+            TrustedRealmBO trustedRealm = "SUBJECT".equals(event.targetType()) && event.realmKey().startsWith("tenant:")
+                    ? Objects.requireNonNull(managementRealms, "managementRealms")
+                        .resolveTenantForRevocation(event.realmKey().substring("tenant:".length()))
+                    : tenantIssuerService.resolveExactIssuer(event.issuer());
+            if (!Objects.equals(trustedRealm.getRealmKey(), event.realmKey())
+                    || !trustedRealm.getIssuer().toASCIIString().equals(event.issuer().toASCIIString())) {
                 throw new IllegalArgumentException("OAUTH_SECURITY_EVENT_REALM_MISMATCH");
             }
             projectionComponent.applyProjection(trustedRealm, event);

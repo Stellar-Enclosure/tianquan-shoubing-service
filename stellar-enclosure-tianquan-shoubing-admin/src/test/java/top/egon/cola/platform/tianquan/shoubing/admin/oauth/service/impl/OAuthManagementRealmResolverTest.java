@@ -23,6 +23,8 @@ class OAuthManagementRealmResolverTest {
 
     private static final Instant NOW = Instant.parse("2026-10-08T00:00:00Z");
     private final TenantIssuerService issuers = mock(TenantIssuerService.class);
+    private final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository realmRows =
+            mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository.class);
     private OAuthManagementRealmResolver resolver;
 
     @BeforeEach
@@ -63,6 +65,20 @@ class OAuthManagementRealmResolverTest {
                 .isInstanceOf(AccessDeniedException.class);
         assertThatThrownBy(() -> resolver.resolve(principal("2002", "STRONG", NOW), "platform"))
                 .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void revocationCanResolveDisabledRealmAndReplicaMissIsRetryable() {
+        resolver.setRealmRepository(realmRows);
+        var row = top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO.builder()
+                .issuer(URI.create("https://auth.example/tenants/1001")).realmKey("tenant:1001")
+                .realmType(RealmTypeEnum.TENANT).storagePartitionId(1001L).businessTenantId(1001L)
+                .trustVersion(3L).status("DISABLED").build();
+        when(realmRows.findByRealmKey(org.mockito.ArgumentMatchers.any())).thenReturn(java.util.Optional.of(row), java.util.Optional.empty());
+        assertThat(resolver.resolveTenantForRevocation("1001").getTrustVersion()).isEqualTo(3L);
+        assertThatThrownBy(() -> resolver.resolveTenantForRevocation("1001"))
+                .isInstanceOf(org.springframework.dao.TransientDataAccessResourceException.class);
+        org.mockito.Mockito.verify(realmRows, org.mockito.Mockito.never()).findByRealmKeyForUpdate(org.mockito.ArgumentMatchers.any());
     }
 
     @Test

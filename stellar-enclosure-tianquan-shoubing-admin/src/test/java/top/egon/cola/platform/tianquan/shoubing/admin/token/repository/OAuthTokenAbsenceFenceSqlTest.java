@@ -147,7 +147,8 @@ class OAuthTokenAbsenceFenceSqlTest {
         var statement = configuration.getMappedStatement(OAuthSecurityStateMapper.class.getName() + ".advanceRealmIfSubjectAbsent");
         String sql = statement.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
         assertThat(sql).contains("s.tenant_id = ?", "s.id = ?", "s.version = ?", "subject_state.tenant_id = ?",
-                "subject_state.target_key = ?", "a.tenant_id = ?", "a.principal_name = ?", "a.principal_type = 'user'");
+                "subject_state.target_key = ?", "a.tenant_id = ?", "a.principal_name = ?", "a.principal_type = 'user'",
+                "auth.tenant_id = ?", "auth.subject = ?");
         var parser = new org.apache.shardingsphere.infra.parser.ShardingSphereSQLParserEngine(
                 org.apache.shardingsphere.infra.spi.type.typed.TypedSPILoader.getService(
                         org.apache.shardingsphere.database.connector.core.type.DatabaseType.class, "PostgreSQL"),
@@ -162,7 +163,7 @@ class OAuthTokenAbsenceFenceSqlTest {
             assertThatCode(() -> new EgonColaOriginalSqlGuardInterceptor(properties).intercept(invocation)).doesNotThrowAnyException();
             var handler = configuration.newStatementHandler(executor, statement, parameters, RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
             assertThatCode(() -> guard.beforePrepare(handler, null, null)).doesNotThrowAnyException();
-            assertThat(tables).contains("oauth_security_state", "oauth_authorization");
+            assertThat(tables).contains("oauth_security_state", "oauth_authorization", "oauth_authentication");
             var seed = configuration.getMappedStatement(OAuthSecurityStateMapper.class.getName() + ".fenceRealmIfSubjectAbsent");
             var seedSql = seed.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT);
             assertThat(seedSql).contains("s.version = ?", "subject_state.tenant_id = ?", "a.principal_name = ?")
@@ -173,6 +174,15 @@ class OAuthTokenAbsenceFenceSqlTest {
             assertThatCode(() -> new EgonColaOriginalSqlGuardInterceptor(properties).intercept(seedInvocation)).doesNotThrowAnyException();
             var seedHandler = configuration.newStatementHandler(executor, seed, parameters, RowBounds.DEFAULT, null, seed.getBoundSql(parameters));
             assertThatCode(() -> guard.beforePrepare(seedHandler, null, null)).doesNotThrowAnyException();
+            var duplicateParameters = Map.<String, Object>of("tenantId", 101L, "id", 42L, "expectedVersion", 4L,
+                    "subject", "alice", "sourceRevision", 7L, "fingerprint", "a".repeat(64), "now", Instant.parse("2026-10-28T00:00:00Z"),
+                    "actor", "service:tianquan-shoubing");
+            var duplicate = configuration.getMappedStatement(OAuthSecurityStateMapper.class.getName() + ".fenceSubjectAtLeast");
+            assertThat(duplicate.getBoundSql(duplicateParameters).getSql().toLowerCase(java.util.Locale.ROOT))
+                    .contains("directory_subject_revision > ?", "directory_subject_fingerprint = ?", "tenant_id = ?", "version = ?");
+            var duplicateHandler = configuration.newStatementHandler(executor, duplicate, duplicateParameters,
+                    RowBounds.DEFAULT, null, duplicate.getBoundSql(duplicateParameters));
+            assertThatCode(() -> guard.beforePrepare(duplicateHandler, null, null)).doesNotThrowAnyException();
         } finally {
             MDC.remove("tenantId");
         }

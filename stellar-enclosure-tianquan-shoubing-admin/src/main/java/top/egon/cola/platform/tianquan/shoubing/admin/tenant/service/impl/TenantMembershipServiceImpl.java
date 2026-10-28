@@ -71,7 +71,7 @@ public class TenantMembershipServiceImpl implements TenantMembershipService {
             throw new IllegalStateException("closed tenant cannot activate membership");
         }
         IdentityTenantMembershipBO membership = memberships
-                .findByTenantIdAndIdentitySubForUpdate(
+                .findByTenantIdAndIdentitySub(
                         tenant.getIdentityTenantId(), user.id())
                 .orElse(null);
         if (membership == null) {

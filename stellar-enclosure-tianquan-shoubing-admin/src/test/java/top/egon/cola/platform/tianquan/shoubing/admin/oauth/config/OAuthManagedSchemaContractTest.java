@@ -57,6 +57,7 @@ class OAuthManagedSchemaContractTest {
             "oauth_identity_credential",
             "oauth_identity_tenant",
             "oauth_identity_membership",
+            "oauth_subject_tenant_history", "oauth_subject_revocation_task",
             "oauth_realm",
             "oauth_client",
             "oauth_grant",
@@ -100,7 +101,7 @@ class OAuthManagedSchemaContractTest {
         JsonNode manifest = objectMapper.readTree(requiredResource(MANIFEST_RESOURCE));
 
         assertEquals("tianquan-oauth", manifest.path("family").asText());
-        assertEquals(5, manifest.path("scripts").size());
+        assertEquals(6, manifest.path("scripts").size());
         JsonNode script = manifest.path("scripts").get(0);
         assertEquals("20261008_001", script.path("version").asText());
         assertEquals(SQL_RESOURCE, script.path("path").asText());
@@ -129,8 +130,21 @@ class OAuthManagedSchemaContractTest {
                 .getDeclaredMethod("splitPostgreSqlStatements", String.class);
         splitter.setAccessible(true);
         assertEquals(2, ((java.util.List<?>) splitter.invoke(null, grantFenceSql)).size());
+        JsonNode fanout = manifest.path("scripts").get(5);
+        assertEquals("20261028_002", fanout.path("version").asText());
+        byte[] fanoutBytes = requiredResource(fanout.path("path").asText());
+        assertEquals(sha256(fanoutBytes), fanout.path("sha256").asText());
+        String fanoutSql = new String(fanoutBytes, StandardCharsets.UTF_8);
+        assertEquals(8, ((java.util.List<?>) splitter.invoke(null, fanoutSql)).size());
+        assertTrue(fanoutSql.indexOf("LOCK TABLE oauth_identity_membership IN SHARE ROW EXCLUSIVE MODE")
+                < fanoutSql.indexOf("SELECT DISTINCT tenant_id, identity_sub"));
+        assertTrue(fanoutSql.indexOf("SELECT DISTINCT tenant_id, identity_sub")
+                < fanoutSql.indexOf("BEFORE INSERT OR UPDATE OR DELETE ON oauth_identity_membership"));
+        assertTrue(fanoutSql.contains("SELECT DISTINCT tenant_id, identity_sub, CAST(identity_tenant_id AS BIGINT), NULL FROM oauth_identity_membership"));
+        assertTrue(fanoutSql.contains("UNIQUE (tenant_id, identity_sub, target_tenant_id, source_revision)"));
+        assertTrue(fanoutSql.contains("BEFORE INSERT OR UPDATE OR DELETE ON oauth_identity_membership"));
         String sql = new String(sqlBytes, StandardCharsets.UTF_8) + new String(statelessBytes, StandardCharsets.UTF_8)
-                + new String(deviceBytes, StandardCharsets.UTF_8);
+                + new String(deviceBytes, StandardCharsets.UTF_8) + new String(fanoutBytes, StandardCharsets.UTF_8);
         Matcher tableMatcher = Pattern.compile(
                 "(?im)^\\s*CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([a-z0-9_]+)\\b"
         ).matcher(sql);
@@ -202,6 +216,12 @@ class OAuthManagedSchemaContractTest {
             assertEquals(1, outbox.actualNodes().size());
             assertEquals(List.of(new EgonColaPhysicalTargetBO("oauth_primary", "egon_outbox", "egon_cola_outbox_message")),
                     outbox.actualNodes().get(new EgonColaRoutingProfileBO.PartitionKeyBO(0, 0)));
+            var identities = new top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity(topology.profiles(), 9000L);
+            for (String table : List.of("oauth_audit", "oauth_grant", "oauth_resource", "oauth_security_state",
+                    "oauth_identity_user", "oauth_identity_credential", "oauth_identity_membership", "oauth_realm",
+                    "oauth_subject_tenant_history", "oauth_subject_revocation_task")) {
+                assertEquals("legacy-id", identities.forTenant(table, 1001L).messageId("legacy-id"));
+            }
         }
     }
 

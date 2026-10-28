@@ -26,6 +26,13 @@ import top.egon.cola.platform.tianquan.shoubing.contract.IdentityPrincipal;
 @Validated
 public class OAuthManagementRealmResolver {
 
+    private top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository realmRepository;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setRealmRepository(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository repository) {
+        this.realmRepository = Objects.requireNonNull(repository, "repository");
+    }
+
     private static final Pattern TENANT_REALM = Pattern.compile("tenant:([1-9][0-9]{0,18})");
     private static final Duration PLATFORM_AUTHENTICATION_MAX_AGE = Duration.ofMinutes(5);
 
@@ -79,6 +86,25 @@ public class OAuthManagementRealmResolver {
     public TrustedRealmBO resolveTenantRealm(String tenantId) {
         long id = parseTenantId(requiredTenantId(tenantId));
         return tenantIssuerService.resolveExactIssuer(issuer("/tenants/" + id));
+    }
+
+    /** Revocation must also reach a disabled realm; absence on a replica remains retryable. */
+    public TrustedRealmBO resolveTenantForRevocation(String tenantId) {
+        long id = parseTenantId(requiredTenantId(tenantId));
+        URI expectedIssuer = issuer("/tenants/" + id);
+        TrustedRealmBO candidate = TrustedRealmBO.builder().issuer(expectedIssuer).realmKey("tenant:" + id)
+                .realmType(top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum.TENANT)
+                .storagePartitionId(id).businessTenantId(id).trustVersion(0L).build();
+        var row = Objects.requireNonNull(realmRepository, "realmRepository").findByRealmKey(candidate)
+                .orElseThrow(() -> new org.springframework.dao.TransientDataAccessResourceException("OAuth tenant realm is not yet visible"));
+        if (row.getIssuer() == null || !expectedIssuer.toASCIIString().equals(row.getIssuer().toASCIIString())
+                || !candidate.getRealmKey().equals(row.getRealmKey())
+                || row.getRealmType() != candidate.getRealmType() || !Objects.equals(row.getStoragePartitionId(), id)
+                || !Objects.equals(row.getBusinessTenantId(), id) || row.getTrustVersion() == null || row.getTrustVersion() < 0) {
+            throw new IllegalStateException("OAUTH_REVOCATION_REALM_IDENTITY_MISMATCH");
+        }
+        return TrustedRealmBO.builder().issuer(expectedIssuer).realmKey(candidate.getRealmKey()).realmType(candidate.getRealmType())
+                .storagePartitionId(id).businessTenantId(id).trustVersion(row.getTrustVersion()).build();
     }
 
     private void requirePlatformAdministrator(IdentityPrincipal principal, long principalTenantId) {

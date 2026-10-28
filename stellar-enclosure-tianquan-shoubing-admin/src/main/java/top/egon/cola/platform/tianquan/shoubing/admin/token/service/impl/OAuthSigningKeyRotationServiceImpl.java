@@ -46,6 +46,14 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.service.SigningKeySe
 @RequiredArgsConstructor
 public class OAuthSigningKeyRotationServiceImpl {
 
+    private top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity outboxIdentity =
+            top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.singleGroup();
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setOutboxIdentity(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity identity) {
+        this.outboxIdentity = Objects.requireNonNull(identity, "identity");
+    }
+
     private static final int RSA_KEY_SIZE = 3072;
     private static final int KEY_PAGE_SIZE = 8;
     private static final String CHANNEL = OAuthAuditOutboxDeliveryHandler.CHANNEL;
@@ -177,7 +185,8 @@ public class OAuthSigningKeyRotationServiceImpl {
     }
 
     private void recordRotation(TrustedRealmBO realm, String eventType, Instant occurredAt) {
-        String eventId = nextId();
+        var scope = outboxIdentity.forTenant("oauth_audit", realm.getStoragePartitionId());
+        String eventId = scope.messageId(nextId());
         OAuthAuditBO audit = OAuthAuditBO.builder()
                 .version(0L)
                 .eventId(eventId)
@@ -203,7 +212,7 @@ public class OAuthSigningKeyRotationServiceImpl {
         event.put("occurredAt", occurredAt.toString());
         outbox.enqueue(OutboxMessage.builder()
                 .messageId(eventId)
-                .idempotencyKey("oauth-audit:" + eventId)
+                .idempotencyKey(scope.idempotencyKey("oauth-audit:" + eventId))
                 .channel(CHANNEL)
                 .destination(DESTINATION)
                 .payload(event)

@@ -62,6 +62,20 @@ public class OAuthSecurityStatePO extends EgonModel<OAuthSecurityStatePO> {
             EgonColaModelValidationGroups.Persisted.class})
     private Long revision;
 
+    @TableField("directory_subject_revision")
+    @NotNull(groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
+            EgonColaModelValidationGroups.Persisted.class})
+    @Min(value = 0, groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
+            EgonColaModelValidationGroups.Persisted.class})
+    private Long directorySubjectRevision;
+
+    @JsonIgnore
+    @ToString.Exclude
+    @TableField("directory_subject_fingerprint")
+    @Size(max = 64, groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
+            EgonColaModelValidationGroups.Persisted.class})
+    private String directorySubjectFingerprint;
+
     @TableField("reason_code")
     @NotBlank(groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
             EgonColaModelValidationGroups.Persisted.class})

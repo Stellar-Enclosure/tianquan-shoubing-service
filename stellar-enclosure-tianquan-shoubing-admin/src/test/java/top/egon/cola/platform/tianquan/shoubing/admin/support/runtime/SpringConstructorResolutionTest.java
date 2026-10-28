@@ -47,6 +47,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.Identi
 import top.egon.cola.component.outbox.api.TransactionalOutbox;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
 import top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.service.IdentityOutboxPublisher;
+import top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -111,6 +112,7 @@ class SpringConstructorResolutionTest {
     @Test
     void createsIdentityUserServiceUsingItsProductionConstructor() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean("oauthOutboxIdentity", OAuthOutboxIdentity.class, OAuthOutboxIdentity::singleGroup);
             registerNamedMock(context, "identityPersistenceAdapter", IdentityPersistenceAdapter.class);
             registerNamedMock(context, "mpIdentityUserDirectory", IdentityUserDirectory.class);
             registerNamedMock(context, "springPasswordHashAdapter", PasswordHashPort.class);
@@ -152,6 +154,7 @@ class SpringConstructorResolutionTest {
         assertThat(generatedSpringBeanName("top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.converter"
                 + ".ClientResourceGrantViewConverterImpl")).isEqualTo("clientResourceGrantViewConverterImpl");
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean("oauthOutboxIdentity", OAuthOutboxIdentity.class, OAuthOutboxIdentity::singleGroup);
             registerNamedMock(context, "oAuthResourceRepository", OAuthResourceRepository.class);
             registerNamedMock(context, "oAuthGrantRepository", OAuthGrantRepository.class);
             registerNamedMock(context, "oAuthClientRepository", OAuthClientRepository.class);
@@ -171,6 +174,7 @@ class SpringConstructorResolutionTest {
     @Test
     void createsOAuthManagementRealmResolverUsingItsProductionConstructor() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            registerNamedMock(context, "oAuthRealmRepository", OAuthRealmRepository.class);
             context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("test-properties",
                     Map.of("egon.tianquan-shoubing.oauth.platform-management-tenant-id", "1001")));
             context.registerBean("oauthPublicOrigin", URI.class, () -> URI.create("https://idp.example.test"));
@@ -186,6 +190,8 @@ class SpringConstructorResolutionTest {
     @Test
     void createsResourceProjectionAdapterAndHandlerThroughNamedQualifiedBeans() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            registerNamedMock(context, "oAuthRealmRepository", OAuthRealmRepository.class);
+            context.registerBean("oauthOutboxIdentity", OAuthOutboxIdentity.class, OAuthOutboxIdentity::singleGroup);
             context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("test-properties",
                     Map.of("egon.tianquan-shoubing.oauth.platform-management-tenant-id", "1001")));
             context.registerBean("oauthPublicOrigin", URI.class, () -> URI.create("https://idp.example.test"));

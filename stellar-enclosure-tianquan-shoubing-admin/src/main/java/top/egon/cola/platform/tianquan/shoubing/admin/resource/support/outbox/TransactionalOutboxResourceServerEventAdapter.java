@@ -37,6 +37,14 @@ import org.springframework.beans.factory.annotation.Qualifier;
 @RequiredArgsConstructor
 public final class TransactionalOutboxResourceServerEventAdapter {
 
+    private top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity outboxIdentity =
+            top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.singleGroup();
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setOutboxIdentity(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity identity) {
+        this.outboxIdentity = Objects.requireNonNull(identity, "identity");
+    }
+
     /** Resource 生命周期投递通道；Resource lifecycle delivery channel. */
     public static final String CHANNEL = "identity-resource-runtime";
 
@@ -82,7 +90,8 @@ public final class TransactionalOutboxResourceServerEventAdapter {
         }
         String idempotencyKey = resource.getResourceServerId()
                 + ":disabled:" + resource.getVersion();
-        String eventId = sha256(idempotencyKey);
+        var scope = outboxIdentity.forPlatform("oauth_resource");
+        String eventId = scope.messageId(sha256(idempotencyKey));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("resourceServerId", resource.getResourceServerId());
         payload.put("bizCode", resource.getBizCode());
@@ -102,7 +111,7 @@ public final class TransactionalOutboxResourceServerEventAdapter {
 
         return outbox.enqueue(OutboxMessage.builder()
                         .messageId(eventId)
-                        .idempotencyKey(idempotencyKey)
+                        .idempotencyKey(scope.idempotencyKey(idempotencyKey))
                         .channel(CHANNEL)
                         .destination(DISABLED_DESTINATION)
                         .payload(envelope)
@@ -126,8 +135,8 @@ public final class TransactionalOutboxResourceServerEventAdapter {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("resourceServerId", aggregateId);
         payload.put("resourceVersion", resource.getVersion());
-        return enqueue(PROJECTION_CHANNEL, RESOURCE_PROJECTION_DESTINATION, idempotencyKey,
-                "IDENTITY_RESOURCE_SERVER", aggregateId, resource.getVersion(), payload);
+        return enqueue(outboxIdentity.forPlatform("oauth_resource"), PROJECTION_CHANNEL, RESOURCE_PROJECTION_DESTINATION,
+                idempotencyKey, "IDENTITY_RESOURCE_SERVER", aggregateId, resource.getVersion(), payload);
     }
 
     /**
@@ -167,13 +176,15 @@ public final class TransactionalOutboxResourceServerEventAdapter {
         payload.put("resourceServerId", resourceId);
         payload.put("grantType", ResourceGrantType.CLIENT_CREDENTIALS.name());
         payload.put("grantVersion", targetGrant.getVersion());
-        return enqueue(PROJECTION_CHANNEL, SERVICE_GRANT_PROJECTION_DESTINATION, idempotencyKey,
+        return enqueue(outboxIdentity.forTenant("oauth_grant", realm.getStoragePartitionId()), PROJECTION_CHANNEL,
+                SERVICE_GRANT_PROJECTION_DESTINATION, idempotencyKey,
                 "IDENTITY_SERVICE_RESOURCE_GRANT", aggregateId, targetGrant.getVersion(), payload);
     }
 
-    private String enqueue(String channel, String destination, String idempotencyKey, String aggregateType,
+    private String enqueue(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.Scope scope,
+            String channel, String destination, String idempotencyKey, String aggregateType,
             String aggregateId, long aggregateVersion, Map<String, Object> payload) {
-        String eventId = sha256(idempotencyKey);
+        String eventId = scope.messageId(sha256(idempotencyKey));
         Map<String, Object> envelope = new LinkedHashMap<>();
         envelope.put("eventId", eventId);
         envelope.put("eventType", destination);
@@ -185,7 +196,7 @@ public final class TransactionalOutboxResourceServerEventAdapter {
         envelope.put("payload", payload);
         return outbox.enqueue(OutboxMessage.builder()
                         .messageId(eventId)
-                        .idempotencyKey(idempotencyKey)
+                        .idempotencyKey(scope.idempotencyKey(idempotencyKey))
                         .channel(channel)
                         .destination(destination)
                         .payload(envelope)

@@ -1111,6 +1111,9 @@ class OAuthConsentRoundTripTest {
         @Bean("oAuthGrantRepository") OAuthGrantRepository grants(Fixture f) { return f.grantRepository; }
         @Bean("oAuthAuditRepository") OAuthAuditRepository audits(Fixture f) { return f.auditRepository; }
         @Bean("transactionalOutbox") TransactionalOutbox outbox(Fixture f) { return f.outbox; }
+        @Bean top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity oauthOutboxIdentity() {
+            return top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.singleGroup();
+        }
         @Bean("oauthSecurityProjectionComponent") OAuthSecurityProjectionComponent projection(Fixture f) { return f.projection; }
         @Bean("clientCredentialsAccessPolicy") ClientCredentialsAccessPolicy policy() { return mock(ClientCredentialsAccessPolicy.class); }
         @Bean("resourceServerStore") ResourceServerStore resources(Fixture f) { return f.resources; }

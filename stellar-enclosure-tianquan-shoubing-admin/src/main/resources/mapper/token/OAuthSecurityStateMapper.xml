@@ -16,12 +16,14 @@
         <result property="generation" column="generation"/>
         <result property="enabled" column="enabled"/>
         <result property="revision" column="revision"/>
+        <result property="directorySubjectRevision" column="directory_subject_revision"/>
+        <result property="directorySubjectFingerprint" column="directory_subject_fingerprint"/>
         <result property="reasonCode" column="reason_code"/>
     </resultMap>
 
     <sql id="Columns">
         id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
-        target_type, target_key, generation, enabled, revision, reason_code
+        target_type, target_key, generation, enabled, revision, directory_subject_revision, directory_subject_fingerprint, reason_code
     </sql>
 
     <select id="selectByTarget" resultMap="OAuthSecurityStatePOResultMap">
@@ -77,6 +79,8 @@
     <update id="updateExpectedVersion">
         UPDATE tianquan_oauth.oauth_security_state
         SET generation = #{po.generation}, enabled = #{po.enabled}, revision = #{po.revision},
+            directory_subject_revision = #{po.directorySubjectRevision},
+            directory_subject_fingerprint = #{po.directorySubjectFingerprint,jdbcType=VARCHAR},
             reason_code = #{po.reasonCode}, version = #{po.version},
             update_user_id = #{po.updateUserId}, update_time = #{po.updateTime}
         WHERE tenant_id = #{tenantId} AND id = #{po.id} AND target_type = #{po.targetType}
@@ -119,6 +123,8 @@
           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization a
               WHERE a.tenant_id = #{tenantId} AND a.principal_name = #{subject}
                 AND a.principal_type = 'USER' AND a.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authentication auth
+              WHERE auth.tenant_id = #{tenantId} AND auth.subject = #{subject} AND auth.deleted_at IS NULL)
     </update>
 
     <update id="fenceRealmIfSubjectAbsent">
@@ -132,6 +138,18 @@
           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization a
               WHERE a.tenant_id = #{tenantId} AND a.principal_name = #{subject}
                 AND a.principal_type = 'USER' AND a.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authentication auth
+              WHERE auth.tenant_id = #{tenantId} AND auth.subject = #{subject} AND auth.deleted_at IS NULL)
+    </update>
+
+    <update id="fenceSubjectAtLeast">
+        UPDATE tianquan_oauth.oauth_security_state
+        SET version = version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE tenant_id = #{tenantId} AND id = #{id} AND version = #{expectedVersion}
+          AND target_type = 'SUBJECT' AND target_key = #{subject}
+          AND (directory_subject_revision &gt; #{sourceRevision}
+               OR (directory_subject_revision = #{sourceRevision} AND directory_subject_fingerprint = #{fingerprint}))
+          AND deleted_at IS NULL
     </update>
 
     <update id="deleteVersionedById">

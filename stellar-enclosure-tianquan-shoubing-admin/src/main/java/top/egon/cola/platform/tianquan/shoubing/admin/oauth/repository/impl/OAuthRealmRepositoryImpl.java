@@ -64,7 +64,7 @@ public class OAuthRealmRepositoryImpl extends EgonColaRepository<OAuthRealmMappe
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = 30)
     public Optional<OAuthRealmBO> findByRealmKey(@NotNull @Valid TrustedRealmBO trustedRealm) {
         return withTrustedStoragePartition(trustedRealm, tenantId ->
                 Optional.ofNullable(baseMapper.selectByRealmKey(
