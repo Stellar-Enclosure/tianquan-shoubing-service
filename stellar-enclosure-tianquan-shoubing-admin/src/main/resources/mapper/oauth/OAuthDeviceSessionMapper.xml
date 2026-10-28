@@ -74,12 +74,13 @@
             version = #{po.version}, update_user_id = #{po.updateUserId}, update_time = #{po.updateTime}
         WHERE tenant_id = #{tenantId} AND id = #{po.id} AND version = #{expectedVersion} AND deleted_at IS NULL
     </update>
+    <!-- Authentication may already have been retired by an older cleanup run. -->
     <select id="selectRetainedCandidates" resultMap="Session">
         SELECT s.id, s.version FROM tianquan_oauth.oauth_device_session s
-        JOIN tianquan_oauth.oauth_authentication a ON a.tenant_id = s.tenant_id
-            AND a.jti_digest = s.authentication_jti_digest
-        WHERE s.tenant_id = #{tenantId} AND a.tenant_id = #{tenantId} AND s.deleted_at IS NULL AND a.deleted_at IS NULL
-          AND s.expires_at &lt;= #{cutoff} AND a.expires_at &lt;= #{cutoff}
+        WHERE s.tenant_id = #{tenantId} AND s.deleted_at IS NULL AND s.expires_at &lt;= #{cutoff}
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authentication a
+              WHERE a.tenant_id = #{tenantId} AND a.jti_digest = s.authentication_jti_digest
+                AND a.deleted_at IS NULL AND a.expires_at &gt; #{cutoff})
           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization g
               WHERE g.tenant_id = #{tenantId} AND g.device_session_id = s.id AND g.deleted_at IS NULL)
         ORDER BY s.id LIMIT #{limit}
@@ -90,9 +91,9 @@
             update_time = #{now}, update_user_id = #{actor}
         WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
           AND s.deleted_at IS NULL AND s.expires_at &lt;= #{cutoff}
-          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authentication a
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authentication a
               WHERE a.tenant_id = #{tenantId} AND a.jti_digest = s.authentication_jti_digest
-                AND a.deleted_at IS NULL AND a.expires_at &lt;= #{cutoff})
+                AND a.deleted_at IS NULL AND a.expires_at &gt; #{cutoff})
           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization g
               WHERE g.tenant_id = #{tenantId} AND g.device_session_id = #{id} AND g.deleted_at IS NULL)
     </update>

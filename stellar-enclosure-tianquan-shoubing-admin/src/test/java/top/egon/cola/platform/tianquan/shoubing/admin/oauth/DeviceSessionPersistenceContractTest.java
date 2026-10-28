@@ -34,7 +34,7 @@ class DeviceSessionPersistenceContractTest {
         assertFalse(candidates.contains("FOR UPDATE"));
         String retention = configuration.getMappedStatement(NAMESPACE + "deleteVersionedById").getBoundSql(null).getSql();
         assertTrue(retention.contains("s.tenant_id = ? AND s.id = ? AND s.version = ?"));
-        assertTrue(retention.contains("a.expires_at <= ?"));
+        assertTrue(retention.contains("a.expires_at > ?"));
     }
 
     @Test void generatedConverterPreservesTheStableSessionAndSsoBinding() {

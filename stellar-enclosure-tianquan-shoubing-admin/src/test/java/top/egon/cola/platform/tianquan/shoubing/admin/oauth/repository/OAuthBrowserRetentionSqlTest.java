@@ -61,6 +61,21 @@ class OAuthBrowserRetentionSqlTest {
         assertThat(mapper.deleteVersionedById(1001L, 30L, 7L, cutoff, NOW, "worker")).isZero();
         assertThat(mapper.deleteVersionedById(1001L, 30L, 8L, cutoff.minusSeconds(2), NOW, "worker")).isZero();
         assertThat(mapper.deleteVersionedById(1001L, 30L, 8L, cutoff, NOW, "worker")).isEqualTo(1);
+
+        jdbc.update("INSERT INTO tianquan_oauth.oauth_device_session (id,tenant_id,version,authentication_jti_digest,expires_at) VALUES (31,1001,1,'retired',?)", cutoff.minusSeconds(1));
+        jdbc.update("INSERT INTO tianquan_oauth.oauth_authentication (tenant_id,jti_digest,expires_at,deleted_at) VALUES (1001,'retired',?,CURRENT_TIMESTAMP)", cutoff.minusSeconds(1));
+        assertThat(mapper.selectRetainedCandidates(1001L, cutoff, 500)).extracting(candidate -> candidate.getId()).containsExactly(31L);
+        assertThat(mapper.deleteVersionedById(1001L, 31L, 1L, cutoff, NOW, "worker")).isEqualTo(1);
+
+        jdbc.update("INSERT INTO tianquan_oauth.oauth_device_session (id,tenant_id,version,authentication_jti_digest,expires_at) VALUES (32,1001,1,'live',?)", cutoff.minusSeconds(1));
+        assertThat(mapper.selectRetainedCandidates(1001L, cutoff, 500)).extracting(candidate -> candidate.getId()).containsExactly(32L);
+        jdbc.update("INSERT INTO tianquan_oauth.oauth_authentication (tenant_id,jti_digest,expires_at) VALUES (1001,'live',?)", NOW.plusSeconds(1));
+        assertThat(mapper.selectRetainedCandidates(1001L, cutoff, 500)).isEmpty();
+        assertThat(mapper.deleteVersionedById(1001L, 32L, 1L, cutoff, NOW, "worker")).isZero();
+
+        jdbc.update("INSERT INTO tianquan_oauth.oauth_device_session (id,tenant_id,version,authentication_jti_digest,expires_at) VALUES (33,1001,1,'missing',?)", cutoff.minusSeconds(1));
+        assertThat(mapper.selectRetainedCandidates(1001L, cutoff, 500)).extracting(candidate -> candidate.getId()).containsExactly(33L);
+        assertThat(mapper.deleteVersionedById(1001L, 33L, 1L, cutoff, NOW, "worker")).isEqualTo(1);
     }
 
     @Test void retainedSessionPreventsAuthenticationCleanupUntilSessionIsRetired() throws Exception {
