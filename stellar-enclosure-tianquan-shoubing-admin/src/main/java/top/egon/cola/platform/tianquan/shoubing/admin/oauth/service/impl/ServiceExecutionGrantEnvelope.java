@@ -9,7 +9,7 @@ import java.util.UUID;
 record ServiceExecutionGrantEnvelope(int schemaVersion, String grantId, ExecutionGrantEnvelope.ServiceBinding source,
         ExecutionGrantEnvelope.ServiceBinding verifier, long sourceRealmGeneration, long sourceClientGeneration,
         long sourceAuthorizationId, String sourceTokenDigest, String sourceTokenJti, Instant sourceTokenRetainUntil,
-        String sourceSigningKeyId, String purpose, String intentId, String bindingSha256, String policySha256,
+        String sourceSigningKeyId, String purpose, String intentId, String bindingSha256, String policySha256, boolean sessionRequired,
         Instant notBefore, Instant expiresAt, Instant intentDeadlineAt, StoredServiceExecutionProof subject) {
     ServiceExecutionGrantEnvelope {
         source = Objects.requireNonNull(source, "source");
@@ -28,6 +28,7 @@ record ServiceExecutionGrantEnvelope(int schemaVersion, String grantId, Executio
                 || Duration.between(notBefore, expiresAt).compareTo(Duration.ofHours(8)) > 0
                 || !source.resourceUri().equals(subject.resourceUri())
                 || source.clientPk() == verifier.clientPk() || source.resourceUri().equals(verifier.resourceUri())
+                || subject.clientPk() == verifier.clientPk() || subject.sourceResourceUri().equals(verifier.resourceUri())
                 || expiresAt.isAfter(subject.tokenRetainUntil()) || expiresAt.isAfter(sourceTokenRetainUntil)
                 || !grantId.equals(OpaqueExecutionGrantCodec.serviceGrantId(subject, source, purpose, intentId))) {
             throw new IllegalArgumentException("EXECUTION_SERVICE_GRANT_ENVELOPE_INVALID");

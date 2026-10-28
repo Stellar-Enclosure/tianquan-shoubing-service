@@ -58,7 +58,7 @@ public record OAuthExecutionGrantProperties(boolean enabled, List<Binding> bindi
                     businessCode, applicationCode, environment, resourceUri);
         }
 
-        private Map<String, Object> values() {
+        Map<String, Object> values() {
             return Map.of("clientPk", Long.toString(clientPk), "clientId", clientId, "appId", appId,
                     "businessCode", businessCode, "applicationCode", applicationCode, "environment", environment,
                     "resourceUri", resourceUri);
@@ -67,7 +67,7 @@ public record OAuthExecutionGrantProperties(boolean enabled, List<Binding> bindi
         @Override public String toString() { return "ExecutionGrantServiceBinding[redacted]"; }
     }
 
-    private static Set<String> scopes(Set<String> values, boolean allowEmpty) {
+    static Set<String> scopes(Set<String> values, boolean allowEmpty) {
         values = values == null ? Set.of() : Set.copyOf(values);
         if ((!allowEmpty && values.isEmpty()) || values.size() > 32
                 || values.stream().anyMatch(scope -> !scope.matches("[A-Za-z0-9:._-]{1,128}"))) {
@@ -76,7 +76,7 @@ public record OAuthExecutionGrantProperties(boolean enabled, List<Binding> bindi
         return values;
     }
 
-    private static void secureIssuer(String value) {
+    static void secureIssuer(String value) {
         try {
             URI uri = URI.create(value);
             if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null

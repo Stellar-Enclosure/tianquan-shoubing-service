@@ -266,7 +266,7 @@ public class OAuthAuthorityService {
                 || principal.scopeContext() != ServiceTokenContext.TENANT
                 || !Objects.equals(principal.tenantId(), tenant(caller.realm()))
                 || !principal.resourceUri().toASCIIString().equals(properties.getResourceUri().toASCIIString())
-                || !principal.scopes().contains(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)
+                || !principal.scopes().contains(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE)
                 || !principal.expiresAt().isAfter(now) || caller.realmGeneration() == null || caller.realmGeneration() < 0
                 || caller.clientGeneration() == null || caller.clientGeneration() < 0
                 || caller.authorizationId() == null || caller.authorizationId() <= 0 || caller.tokenDigest() == null
@@ -280,7 +280,7 @@ public class OAuthAuthorityService {
                 caller.sourceResource().toASCIIString());
         requireCurrentServiceFacts(caller.realm(), new CurrentServiceEvidence(source, caller.realmGeneration(),
                 caller.clientGeneration(), caller.authorizationId(), caller.tokenDigest(), principal.tokenId(),
-                caller.tokenRetainUntil(), caller.signingKeyId()), IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE);
+                caller.tokenRetainUntil(), caller.signingKeyId()), IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE);
 
         VerifiedAccess proof = verifier.verify(serviceToken, resource, null, false);
         if (!"SERVICE".equals(proof.text("principal_type"))
@@ -341,11 +341,32 @@ public class OAuthAuthorityService {
         requireCurrentServiceFacts(caller.realm(), evidence, requiredScope);
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    void requireServiceExecutionCaller(Caller caller, ExecutionGrantEnvelope.ServiceBinding binding,
+                                       StoredServiceExecutionProof subject, String requiredScope) {
+        requireExecutionPrimary();
+        if (!binding.matches(caller, subject, requiredScope, clock.instant())) throw denied("EXECUTION_SERVICE_NOT_BOUND");
+        var evidence = new CurrentServiceEvidence(binding, caller.realmGeneration(), caller.clientGeneration(),
+                caller.authorizationId(), caller.tokenDigest(), caller.principal().tokenId(), caller.tokenRetainUntil(),
+                caller.signingKeyId());
+        requireCurrentServiceFacts(caller.realm(), evidence, requiredScope);
+    }
+
     /** Rechecks the original issuing service without retaining its bearer. */
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     void requireRecordedExecutionSource(TrustedRealmBO realm, ExecutionGrantEnvelope envelope, String requiredScope) {
         requireExecutionPrimary();
         envelope.user().requireRealm(realm);
+        var evidence = new CurrentServiceEvidence(envelope.source(), envelope.sourceRealmGeneration(),
+                envelope.sourceClientGeneration(), envelope.sourceAuthorizationId(), envelope.sourceTokenDigest(),
+                envelope.sourceTokenJti(), envelope.sourceTokenRetainUntil(), envelope.sourceSigningKeyId());
+        requireCurrentServiceFacts(realm, evidence, requiredScope);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    void requireRecordedServiceExecutionSource(TrustedRealmBO realm, ServiceExecutionGrantEnvelope envelope, String requiredScope) {
+        requireExecutionPrimary();
+        envelope.subject().requireRealm(realm);
         var evidence = new CurrentServiceEvidence(envelope.source(), envelope.sourceRealmGeneration(),
                 envelope.sourceClientGeneration(), envelope.sourceAuthorizationId(), envelope.sourceTokenDigest(),
                 envelope.sourceTokenJti(), envelope.sourceTokenRetainUntil(), envelope.sourceSigningKeyId());

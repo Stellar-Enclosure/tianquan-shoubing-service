@@ -1,0 +1,196 @@
+package top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent;
+import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
+
+/** Issues owner-sealed SERVICE evidence only for configured services and one bounded intent. */
+@Service("oauthServiceExecutionGrantService")
+@ConditionalOnProperty(prefix = "egon.tianquan-shoubing.service-execution-grants", name = "enabled", havingValue = "true")
+public class OAuthServiceExecutionGrantService {
+    private final OAuthServiceExecutionGrantProperties properties;
+    private final OAuthAuthorityService authority;
+    private final OAuthExecutionPrimaryGuard primary;
+    private final OAuthRevocationRepository revocations;
+    private final OpaqueExecutionGrantCodec codec;
+    private final Clock clock;
+    private final TokenRevocationService revocationWriter;
+
+    @Autowired
+    public OAuthServiceExecutionGrantService(OAuthServiceExecutionGrantProperties properties, OAuthAuthorityService authority,
+            @Qualifier("oauthExecutionPrimaryGuard") OAuthExecutionPrimaryGuard primary,
+            @Qualifier("oAuthRevocationRepository") OAuthRevocationRepository revocations,
+            @Qualifier("oauthPayloadCipherComponent") OAuthPayloadCipherComponent cipher,
+            @Qualifier("jacksonObjectMapper") ObjectMapper mapper, @Qualifier("idpClock") Clock clock,
+            @Qualifier("tokenRevocationService") TokenRevocationService revocationWriter) {
+        this.properties = Objects.requireNonNull(properties, "properties");
+        this.authority = Objects.requireNonNull(authority, "authority");
+        this.primary = Objects.requireNonNull(primary, "primary");
+        this.revocations = Objects.requireNonNull(revocations, "revocations");
+        this.codec = new OpaqueExecutionGrantCodec(cipher, mapper);
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.revocationWriter = Objects.requireNonNull(revocationWriter, "revocationWriter");
+        if (!properties.enabled() || properties.bindings().isEmpty()) throw new IllegalArgumentException("SERVICE_EXECUTION_GRANT_DISABLED");
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    Issued issue(OAuthAuthorityService.Caller caller, String serviceToken, IssueRequest request) {
+        primary.requirePrimaryTransaction();
+        Objects.requireNonNull(caller, "caller");
+        Objects.requireNonNull(request, "request");
+        Instant now = clock.instant();
+        if (!request.deadlineAt().isAfter(now)) throw rejected();
+        var subject = authority.captureExecutionService(caller, caller.sourceResource(), serviceToken);
+        var binding = properties.bindings().stream().filter(candidate -> candidate.purpose().equals(request.purpose())
+                && candidate.matches(subject) && candidate.source().binding().matches(caller, subject,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE, now)).findFirst()
+                .orElseThrow(OAuthServiceExecutionGrantService::rejected);
+        requireScopes(binding, subject.scopes(), request.sessionRequired());
+        authority.requireServiceExecutionCaller(caller, binding.source().binding(), subject,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE);
+        var current = authority.recheckExecutionService(caller.realm(), subject);
+        requireSameSubject(subject, current);
+        Instant expiresAt = earliest(request.deadlineAt(), now.plus(binding.maxLifetime()), current.validUntil(),
+                caller.tokenRetainUntil());
+        if (!expiresAt.isAfter(now)) throw rejected();
+        String id = OpaqueExecutionGrantCodec.serviceGrantId(subject, binding.source().binding(), request.purpose(), request.intentId());
+        if (revocations.findByTarget(caller.realm(), OAuthSecurityTargetEnum.JTI, id).isPresent()) throw rejected();
+        var envelope = new ServiceExecutionGrantEnvelope(1, id, binding.source().binding(), binding.verifier().binding(),
+                caller.realmGeneration(), caller.clientGeneration(), caller.authorizationId(), caller.tokenDigest(),
+                caller.principal().tokenId(), caller.tokenRetainUntil(), caller.signingKeyId(), request.purpose(),
+                request.intentId(), request.bindingSha256(), binding.fingerprint(), request.sessionRequired(), now,
+                expiresAt, request.deadlineAt(), subject);
+        var sealed = codec.sealService(caller.realm(), envelope);
+        Instant finished = clock.instant();
+        requireTime(envelope, finished);
+        if (!envelope.source().matches(caller, subject, IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE, finished)) {
+            throw rejected();
+        }
+        return new Issued(sealed, expiresAt);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    Resolution resolve(OAuthAuthorityService.Caller caller, OpaqueExecutionGrantCodec.ServiceTicket ticket) {
+        primary.requirePrimaryTransaction();
+        Objects.requireNonNull(caller, "caller");
+        ServiceExecutionGrantEnvelope envelope = open(caller, ticket);
+        Instant now = clock.instant();
+        requireTime(envelope, now);
+        var binding = properties.bindings().stream().filter(candidate -> candidate.purpose().equals(envelope.purpose())
+                && candidate.matches(envelope.subject()) && candidate.source().binding().equals(envelope.source())
+                && candidate.verifier().binding().equals(envelope.verifier()) && candidate.fingerprint().equals(envelope.policySha256()))
+                .findFirst().orElseThrow(OAuthServiceExecutionGrantService::rejected);
+        if (!envelope.verifier().matches(caller, envelope.subject(), IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE, now)) {
+            throw rejected();
+        }
+        authority.requireServiceExecutionCaller(caller, envelope.verifier(), envelope.subject(),
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE);
+        if (revocations.findByTarget(caller.realm(), OAuthSecurityTargetEnum.JTI, envelope.grantId()).isPresent()) throw rejected();
+        authority.requireRecordedServiceExecutionSource(caller.realm(), envelope, IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE);
+        var subject = authority.recheckExecutionService(caller.realm(), envelope.subject());
+        requireSameSubject(envelope.subject(), subject);
+        requireScopes(binding, subject.scopes(), envelope.sessionRequired());
+        Instant finished = clock.instant();
+        requireTime(envelope, finished);
+        if (!envelope.verifier().matches(caller, envelope.subject(), IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE, finished)
+                || envelope.expiresAt().isAfter(subject.validUntil())) throw rejected();
+        return new Resolution(envelope.grantId(), subject.issuer(), subject.tenantId(), subject.subject(), subject.resource(),
+                envelope.source(), binding.subject().binding(), envelope.purpose(), envelope.intentId(), envelope.bindingSha256(),
+                envelope.sessionRequired(), envelope.expiresAt(), envelope.intentDeadlineAt(), subject.scopes());
+    }
+
+    /** The currently configured source may close its own intent even after the subject is revoked or expires. */
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    void revoke(OAuthAuthorityService.Caller caller, OpaqueExecutionGrantCodec.ServiceTicket ticket) {
+        primary.requirePrimaryTransaction();
+        Objects.requireNonNull(caller, "caller");
+        var envelope = open(caller, ticket);
+        Instant now = clock.instant();
+        var binding = properties.bindings().stream().filter(candidate -> candidate.purpose().equals(envelope.purpose())
+                && candidate.matches(envelope.subject()) && candidate.source().resourceUri().equals(envelope.source().resourceUri())
+                && candidate.source().binding().matches(caller, envelope.subject(),
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE, now)).findFirst()
+                .orElseThrow(OAuthServiceExecutionGrantService::rejected);
+        authority.requireServiceExecutionCaller(caller, binding.source().binding(), envelope.subject(),
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE);
+        if (!binding.source().binding().matches(caller, envelope.subject(),
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE, clock.instant())) throw rejected();
+        try { revocationWriter.revokeExecutionGrant(caller.realm(), envelope.grantId(), envelope.intentDeadlineAt()); }
+        catch (UnsupportedOperationException unavailable) { throw unavailable(); }
+    }
+
+    private ServiceExecutionGrantEnvelope open(OAuthAuthorityService.Caller caller, OpaqueExecutionGrantCodec.ServiceTicket ticket) {
+        try { return codec.openService(caller.realm(), ticket); }
+        catch (IllegalArgumentException invalid) { throw rejected(); }
+    }
+
+    private static void requireScopes(OAuthServiceExecutionGrantProperties.Binding binding, Set<String> scopes, boolean session) {
+        if (scopes == null || !scopes.containsAll(binding.requiredServiceScopes())
+                || session && (binding.sessionServiceScopes().isEmpty() || !scopes.containsAll(binding.sessionServiceScopes()))) {
+            throw rejected();
+        }
+    }
+
+    private static void requireSameSubject(StoredServiceExecutionProof stored, OAuthAuthorityService.ExecutionServiceCurrent current) {
+        if (current == null || !stored.issuer().equals(current.issuer()) || stored.tenantId() != current.tenantId()
+                || !stored.subject().equals(current.subject()) || !stored.resourceUri().equals(current.resource())
+                || !stored.sourceResourceUri().equals(current.sourceResource()) || !stored.scopes().equals(current.scopes())
+                || current.validUntil() == null) throw unavailable();
+    }
+
+    private static void requireTime(ServiceExecutionGrantEnvelope value, Instant now) {
+        if (now.isBefore(value.notBefore()) || !value.expiresAt().isAfter(now)) throw rejected();
+    }
+
+    private static Instant earliest(Instant... values) {
+        Instant result = Objects.requireNonNull(values[0], "deadline");
+        for (Instant value : values) if (Objects.requireNonNull(value, "expiry").isBefore(result)) result = value;
+        return result;
+    }
+
+    private static OAuth2AuthenticationException rejected() {
+        return new OAuth2AuthenticationException(new OAuth2Error("invalid_grant", "Request rejected", null));
+    }
+    private static OAuth2AuthenticationException unavailable() {
+        return new OAuth2AuthenticationException(new OAuth2Error("temporarily_unavailable", "Request rejected", null));
+    }
+
+    record IssueRequest(String purpose, String intentId, String bindingSha256, boolean sessionRequired, Instant deadlineAt) {
+        IssueRequest {
+            if (purpose == null || !purpose.matches("[A-Z][A-Z0-9_]{0,95}") || intentId == null || intentId.length() != 36
+                    || bindingSha256 == null || !bindingSha256.matches("[0-9a-f]{64}") || deadlineAt == null
+                    || deadlineAt.isAfter(ExecutionGrantEnvelope.MAX_INTENT_DEADLINE)) throw new IllegalArgumentException("SERVICE_EXECUTION_GRANT_REQUEST_INVALID");
+            try { if (!UUID.fromString(intentId).toString().equals(intentId)) throw new IllegalArgumentException(); }
+            catch (IllegalArgumentException malformed) { throw new IllegalArgumentException("SERVICE_EXECUTION_GRANT_REQUEST_INVALID"); }
+        }
+        @Override public String toString() { return "ServiceExecutionGrantIssueRequest[redacted]"; }
+    }
+
+    record Issued(OpaqueExecutionGrantCodec.ServiceTicket ticket, Instant expiresAt) {
+        @Override public String toString() { return "ServiceExecutionGrantIssued[redacted]"; }
+    }
+
+    record Resolution(String grantId, String issuer, long tenantId, String subject, String resource,
+            ExecutionGrantEnvelope.ServiceBinding source, ExecutionGrantEnvelope.ServiceBinding subjectSource, String purpose,
+            String intentId, String bindingSha256, boolean sessionRequired, Instant expiresAt, Instant intentDeadlineAt, Set<String> scopes) {
+        Resolution { scopes = Set.copyOf(scopes); }
+        @Override public String toString() { return "ServiceExecutionGrantResolution[redacted]"; }
+    }
+}

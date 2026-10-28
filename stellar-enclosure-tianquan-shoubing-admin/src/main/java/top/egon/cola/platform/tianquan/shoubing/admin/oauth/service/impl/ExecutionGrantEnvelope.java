@@ -55,8 +55,17 @@ record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding 
 
         /** Compares a previously authenticated SERVICE caller with this exact configured binding. */
         boolean matches(OAuthAuthorityService.Caller caller, StoredUserExecutionProof user, String scope, Instant now) {
+            return user != null && matches(caller, user.issuer(), user.tenantId(), user.issuerTrustVersion(), scope, now);
+        }
+
+        boolean matches(OAuthAuthorityService.Caller caller, StoredServiceExecutionProof subject, String scope, Instant now) {
+            return subject != null && matches(caller, subject.issuer(), subject.tenantId(), subject.issuerTrustVersion(), scope, now);
+        }
+
+        private boolean matches(OAuthAuthorityService.Caller caller, String issuer, long tenantId, long trustVersion,
+                                String scope, Instant now) {
             if (caller == null || caller.realm() == null || caller.principal() == null || caller.sourceResource() == null
-                    || user == null || scope == null || scope.isBlank() || now == null) return false;
+                    || scope == null || scope.isBlank() || now == null) return false;
             try { caller.realm().validateTrustedPartition(); }
             catch (IllegalArgumentException | NullPointerException invalid) { return false; }
             var principal = caller.principal();
@@ -64,9 +73,9 @@ record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding 
                     && businessCode.equals(principal.sourceBizCode()) && applicationCode.equals(principal.sourceAppCode())
                     && environment.equals(principal.sourceEnvironment())
                     && resourceUri.equals(caller.sourceResource().toASCIIString())
-                    && user.issuer().equals(caller.realm().getIssuer().toASCIIString())
-                    && Long.valueOf(user.tenantId()).equals(caller.realm().getBusinessTenantId())
-                    && user.issuerTrustVersion() == caller.realm().getTrustVersion()
+                    && issuer.equals(caller.realm().getIssuer().toASCIIString())
+                    && Long.valueOf(tenantId).equals(caller.realm().getBusinessTenantId())
+                    && trustVersion == caller.realm().getTrustVersion()
                     && caller.realmGeneration() != null && caller.realmGeneration() >= 0
                     && caller.clientGeneration() != null && caller.clientGeneration() >= 0
                     && caller.authorizationId() != null && caller.authorizationId() > 0
@@ -74,7 +83,7 @@ record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding 
                     && caller.tokenRetainUntil() != null && caller.tokenRetainUntil().isAfter(now)
                     && caller.signingKeyId() != null && caller.signingKeyId().matches("[A-Za-z0-9_-]{1,128}")
                     && principal.scopeContext() == ServiceTokenContext.TENANT
-                    && Long.toString(user.tenantId()).equals(principal.tenantId())
+                    && Long.toString(tenantId).equals(principal.tenantId())
                     && principal.expiresAt().isAfter(now) && principal.scopes().contains(scope);
         }
 

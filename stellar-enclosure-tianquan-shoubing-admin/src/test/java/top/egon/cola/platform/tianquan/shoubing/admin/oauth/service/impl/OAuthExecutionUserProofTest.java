@@ -471,7 +471,7 @@ class OAuthExecutionUserProofTest {
     @Test
     void service_subject_is_captured_without_bearer_and_rechecked_after_normal_token_expiry() throws Exception {
         var worker = worker();
-        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
+        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
         assertEquals(Digests.sha256Hex("worker-proof"), stored.tokenDigest());
         assertEquals("worker-service", stored.subject());
         assertEquals("https://api.example/process", stored.sourceResourceUri());
@@ -537,14 +537,14 @@ class OAuthExecutionUserProofTest {
                 .toSource(authorization, null, mapper).getTokens().getFirst();
         converted.setAuthorizationPk(51L).setRetainUntil(NOW.plusSeconds(86_400));
         when(tokens.findByTokenDigest(realm, Digests.sha256Hex("worker-proof"))).thenReturn(Optional.of(converted));
-        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
+        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
         assertEquals("worker-service", service.recheckExecutionService(realm, stored).subject());
     }
 
     @Test
     void service_capture_requires_a_current_bound_issuing_service_and_primary() {
         worker();
-        var authorized = caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        var authorized = caller(Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
         assertThrows(AccessDeniedException.class, () -> service.captureExecutionService(caller(Set.of("other")), TARGET, "worker-proof"));
         assertThrows(AccessDeniedException.class, () -> service.captureExecutionService(authorized,
                 URI.create("https://API.example/orders"), "worker-proof"));
@@ -562,7 +562,7 @@ class OAuthExecutionUserProofTest {
     @Test
     void service_capture_rejects_expired_subject_or_wrong_realm_and_type() {
         worker();
-        var authorized = caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        var authorized = caller(Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
         when(clock.instant()).thenReturn(NOW.plusSeconds(300));
         assertThrows(AccessDeniedException.class, () -> service.captureExecutionService(authorized, TARGET, "worker-proof"));
         when(clock.instant()).thenReturn(NOW);
@@ -579,7 +579,7 @@ class OAuthExecutionUserProofTest {
     @Test
     void service_recheck_rejects_revoked_or_changed_authority_and_credentials() {
         var worker = worker();
-        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
+        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
         worker.token().setRevokedAt(NOW);
         assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
         worker.token().setRevokedAt(null);
@@ -609,7 +609,7 @@ class OAuthExecutionUserProofTest {
     @Test
     void service_recheck_binds_source_target_scopes_and_original_token_metadata() {
         var worker = worker();
-        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
+        var stored = service.captureExecutionService(caller(Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE)), TARGET, "worker-proof");
         worker.source().setStatus(ResourceServerStatus.DISABLED);
         assertThrows(OAuth2AuthenticationException.class, () -> service.recheckExecutionService(realm, stored));
         worker.source().setStatus(ResourceServerStatus.ACTIVE).setManagementClientId("other");
@@ -642,7 +642,47 @@ class OAuthExecutionUserProofTest {
                         .storagePartitionId(101L).businessTenantId(101L).trustVersion(3L).build(), stored));
     }
 
+    @Test
+    void service_grant_rechecks_its_issuing_service_after_normal_source_expiry() {
+        worker();
+        var caller = caller(Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
+        var subject = service.captureExecutionService(caller, TARGET, "worker-proof");
+        var source = new ExecutionGrantEnvelope.ServiceBinding(11, "orders-service", "orders", "trade",
+                "orders", "test", TARGET.toASCIIString());
+        var verifier = new ExecutionGrantEnvelope.ServiceBinding(20, "rbac-service", "rbac", "platform",
+                "jianshen", "test", "https://api.example/jianshen");
+        String intent = "d4c0f428-12ca-487c-a600-303883a19031";
+        String purpose = "TIANJI_AGENT_RUN_EXECUTION";
+        var envelope = new ServiceExecutionGrantEnvelope(1,
+                OpaqueExecutionGrantCodec.serviceGrantId(subject, source, purpose, intent), source, verifier,
+                1, 2, 21, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key", purpose, intent,
+                "c".repeat(64), "f".repeat(64), false, NOW, NOW.plusSeconds(3_600), NOW.plusSeconds(7_200), subject);
+        assertDoesNotThrow(() -> service.requireServiceExecutionCaller(caller, source, subject,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
+        serviceFamily.setStatus("EXPIRED");
+        when(clock.instant()).thenReturn(NOW.plusSeconds(900));
+        assertDoesNotThrow(() -> service.requireRecordedServiceExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
+        serviceGeneration.incrementAndGet();
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedServiceExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
+        serviceGeneration.decrementAndGet();
+        serviceGrant.setStatus(ClientResourceGrant.Status.DISABLED);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedServiceExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
+        serviceGrant.setStatus(ClientResourceGrant.Status.ACTIVE);
+        serviceToken.setRevokedAt(NOW);
+        assertThrows(OAuth2AuthenticationException.class, () -> service.requireRecordedServiceExecutionSource(realm, envelope,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE));
+    }
+
     private WorkerProof worker() {
+        var issuerScopes = List.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE);
+        serviceClient.setAllowedScopes(issuerScopes);
+        serviceFamily.setAuthorizedScopes(issuerScopes);
+        serviceToken.getMetadata().getClaims().setScope(Set.copyOf(issuerScopes));
+        serviceGrant.setAllowedScopes(issuerScopes);
         var client = OAuthClientBO.builder().id(31L).clientId("worker-service").appId("worker")
                 .credentialVersion(7L).purpose(OAuthClientPurposeEnum.SERVICE).status(OAuthClient.Status.ACTIVE)
                 .allowedScopes(List.of("agent:submit", "agent:run")).build();
