@@ -34,12 +34,13 @@ class SubjectRevocationLeaseConcurrencyTest {
         jdbc.execute("""
                 CREATE TABLE tianquan_oauth.oauth_subject_revocation_task (
                   id BIGINT PRIMARY KEY, tenant_id BIGINT NOT NULL, version BIGINT NOT NULL,
+                  identity_sub VARCHAR(64), target_tenant_id VARCHAR(64), source_revision BIGINT,
                   status VARCHAR(16) NOT NULL, next_attempt_at TIMESTAMP WITH TIME ZONE NOT NULL,
                   attempt_count INTEGER NOT NULL, lease_owner VARCHAR(64), lease_until TIMESTAMP WITH TIME ZONE,
                   update_user_id VARCHAR(128), update_time TIMESTAMP WITH TIME ZONE, deleted_at TIMESTAMP)
                 """);
-        jdbc.update("INSERT INTO tianquan_oauth.oauth_subject_revocation_task (id,tenant_id,version,status,next_attempt_at,attempt_count) VALUES (?,?,?,?,?,?)",
-                17L, 9000L, 0L, "PENDING", NOW, 0);
+        jdbc.update("INSERT INTO tianquan_oauth.oauth_subject_revocation_task (id,tenant_id,version,identity_sub,target_tenant_id,source_revision,status,next_attempt_at,attempt_count) VALUES (?,?,?,?,?,?,?,?,?)",
+                17L, 9000L, 0L, "alice", "7", 10L, "PENDING", NOW, 0);
         var factory = new SqlSessionFactoryBean(); factory.setDataSource(source);
         factory.setMapperLocations(new ClassPathResource("mapper/token/SubjectRevocationTaskMapper.xml"));
         mapper = new SqlSessionTemplate(factory.getObject()).getMapper(SubjectRevocationTaskMapper.class);
@@ -71,10 +72,22 @@ class SubjectRevocationLeaseConcurrencyTest {
         assertThat(jdbc.queryForObject("SELECT status FROM tianquan_oauth.oauth_subject_revocation_task WHERE id=17", String.class)).isEqualTo("PENDING");
     }
 
+    @Test void aLaterRevisionCannotBeClaimedUntilItsPredecessorIsComplete() {
+        jdbc.update("INSERT INTO tianquan_oauth.oauth_subject_revocation_task (id,tenant_id,version,identity_sub,target_tenant_id,source_revision,status,next_attempt_at,attempt_count) VALUES (?,?,?,?,?,?,?,?,?)",
+                18L, 9000L, 0L, "alice", "7", 11L, "PENDING", NOW, 0);
+        var later = task(0L); later.setId(18L); later.setSourceRevision(11L);
+        assertThat((Integer) transaction.execute(status -> mapper.claim(9000L, later, "later", NOW.plusSeconds(30), NOW, "worker"))).isZero();
+        assertThat(claim("first", 0L, NOW, NOW.plusSeconds(30))).isEqualTo(1);
+        assertThat((Integer) transaction.execute(status -> mapper.claim(9000L, later, "later", NOW.plusSeconds(30), NOW, "worker"))).isZero();
+        assertThat((Integer) transaction.execute(status -> mapper.complete(9000L, task(1L), "first", NOW, "worker"))).isEqualTo(1);
+        assertThat((Integer) transaction.execute(status -> mapper.claim(9000L, later, "later", NOW.plusSeconds(30), NOW, "worker"))).isEqualTo(1);
+    }
+
     private int claim(String owner, long version, Instant now, Instant until) {
         return transaction.execute(status -> mapper.claim(9000L, task(version), owner, until, now, "worker"));
     }
     private static SubjectRevocationTaskBO task(long version) {
-        var task = new SubjectRevocationTaskBO(); task.setId(17L); task.setVersion(version); return task;
+        var task = new SubjectRevocationTaskBO(); task.setId(17L); task.setVersion(version);
+        task.setIdentitySub("alice"); task.setTargetTenantId("7"); task.setSourceRevision(10L); return task;
     }
 }

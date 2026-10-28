@@ -61,7 +61,7 @@ class SsoRevocationScopeTest {
         verify(grants, never()).findByIdForUpdate(any(), anyLong());
         verify(grants, never()).findByPrincipalName(any(), anyString(), anyString(), anyLong(), anyInt());
         verify(authentications, never()).findActiveByBrowser(any(), anyString(), anyLong(), anyInt());
-        verify(events).append(argThat(event -> "CURRENT_SSO_LOGOUT".equals(event.reason())));
+        verify(events).appendForTenant(eq(realm.getStoragePartitionId()), argThat(event -> "CURRENT_SSO_LOGOUT".equals(event.reason())));
     }
 
     @Test void anotherBrowserOrSubjectCannotRevokeTheAuthentication() {
@@ -154,7 +154,7 @@ class SsoRevocationScopeTest {
 
     @Test void auditFailureIsPropagatedToTheOwningTransaction() {
         when(grants.findByAuthentication(realm, CURRENT, 0L, 500)).thenReturn(List.of());
-        doThrow(new IllegalStateException("audit unavailable")).when(events).append(any());
+        doThrow(new IllegalStateException("audit unavailable")).when(events).appendForTenant(anyLong(), any());
         assertThrows(IllegalStateException.class, () -> service.logout(realm, CURRENT, BINDING, "alice"));
     }
 }

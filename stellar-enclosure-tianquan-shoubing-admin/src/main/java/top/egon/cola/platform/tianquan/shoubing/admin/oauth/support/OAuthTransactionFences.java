@@ -88,7 +88,7 @@ public final class OAuthTransactionFences {
         if (state == null) return;
         var key = new SecurityKey(RealmKey.of(realm), value.getTargetType(), value.getTargetKey());
         state.security.put(key, new SecurityValue(value.getId(), value.getVersion(), value.getGeneration(),
-                value.isEnabled(), value.getRevision(), value.getDirectorySubjectRevision(),
+                value.isEnabled(), value.getRevision(), value.getDirectorySubjectRevision(), value.getDirectorySubjectOrderedRevision(),
                 value.getDirectorySubjectFingerprint(), value.getReasonCode()));
     }
 
@@ -99,6 +99,7 @@ public final class OAuthTransactionFences {
         return value == null ? null : OAuthSecurityStateBO.builder().id(value.id()).version(value.version())
                 .targetType(type).targetKey(targetKey).generation(value.generation()).enabled(value.enabled())
                 .revision(value.revision()).directorySubjectRevision(value.directorySubjectRevision())
+                .directorySubjectOrderedRevision(value.directorySubjectOrderedRevision())
                 .directorySubjectFingerprint(value.directorySubjectFingerprint()).reasonCode(value.reasonCode()).build();
     }
 
@@ -151,7 +152,7 @@ public final class OAuthTransactionFences {
     private record SecurityKey(RealmKey realm, OAuthSecurityTargetEnum type, String key) { }
     private record IdentityKey(long partition, String subject) { }
     private record SecurityValue(Long id, long version, long generation, boolean enabled, long revision,
-            long directorySubjectRevision, String directorySubjectFingerprint, String reasonCode) { }
+            long directorySubjectRevision, long directorySubjectOrderedRevision, String directorySubjectFingerprint, String reasonCode) { }
     private record Snapshot(Map<RealmKey, Boolean> realms, Map<ClientKey, ClientFence> clients,
             Map<ClientKey, ClientWrite> writes, Map<SecurityKey, SecurityValue> security,
             Map<IdentityKey, IdentityUser> identityUsers) { }

@@ -75,13 +75,25 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
     @Override
     @Transactional
     public void append(IdentitySecurityEvent event) {
+        append(event, null);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void appendForTenant(long storagePartitionId, IdentitySecurityEvent event) {
+        if (storagePartitionId <= 0) throw new IllegalArgumentException("IDENTITY_TENANT_AUDIT_PARTITION_INVALID");
+        append(event, storagePartitionId);
+    }
+
+    private void append(IdentitySecurityEvent event, Long storagePartitionId) {
         IdentitySecurityEvent value = Objects.requireNonNull(event, "event");
         String subject = subject(value.identitySub());
         String eventType = eventValue(value.eventType(), "eventType");
         String reason = eventValue(value.reason(), "reason");
         String sourceBucket = eventValue(value.sourceBucket(), "sourceBucket");
         Objects.requireNonNull(value.occurredAt(), "occurredAt");
-        var scope = outboxIdentity.forPlatform("oauth_audit");
+        var scope = storagePartitionId == null ? outboxIdentity.forPlatform("oauth_audit")
+                : outboxIdentity.forTenant("oauth_authentication", storagePartitionId);
         String eventId = scope.messageId(nextId());
         String traceId = MDC.get("traceId");
         if (traceId != null && !traceId.matches("[A-Za-z0-9._~-]{1,128}")) {
@@ -91,13 +103,14 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("schemaVersion", 1);
         payload.put("sourceBucket", sourceBucket);
+        String result = eventType.endsWith("FAILED") ? "FAILURE" : "SUCCESS";
         OAuthAuditBO audit = OAuthAuditBO.builder()
                 .version(0L)
                 .eventId(eventId)
                 .eventType(eventType)
                 .actorSub(subject)
                 .targetSub(subject)
-                .result(eventType.endsWith("FAILED") ? "FAILURE" : "SUCCESS")
+                .result(result)
                 .reasonCode(reason)
                 .traceId(traceId)
                 .occurredAt(value.occurredAt())
@@ -105,7 +118,7 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
                 .auditKind("IDENTITY")
                 .publicId(eventId)
                 .build();
-        audits.save(platformRealm, audit, 0L);
+        if (storagePartitionId == null) audits.save(platformRealm, audit, 0L);
 
         Map<String, Object> streamEvent = new LinkedHashMap<>();
         streamEvent.put("eventId", eventId);
@@ -115,7 +128,7 @@ public class IdentityOutboxPublisher implements IdentityUserStatePort, IdentityS
         streamEvent.put("eventType", eventType);
         streamEvent.put("actorSub", subject);
         streamEvent.put("targetSub", subject);
-        streamEvent.put("result", audit.getResult());
+        streamEvent.put("result", result);
         streamEvent.put("reasonCode", reason);
         streamEvent.put("sourceBucket", sourceBucket);
         streamEvent.put("occurredAt", value.occurredAt().toString());

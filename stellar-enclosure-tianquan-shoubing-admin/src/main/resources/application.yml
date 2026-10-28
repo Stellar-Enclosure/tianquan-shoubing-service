@@ -269,6 +269,9 @@ egon:
       transactional-outbox:
         enabled: true
         node-id: ${TIANQUAN_SHOUBING_INSTANCE_ID:tianquan-shoubing-local-1}
+        retry:
+          recover-exhausted: true
+          exhausted-retry-delay: ${TIANQUAN_SHOUBING_OUTBOX_EXHAUSTED_RETRY_DELAY:PT5M}
         storage:
           data-source-bean-name: dataSource
           transaction-manager-bean-name: transactionManager

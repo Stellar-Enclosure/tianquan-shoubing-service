@@ -83,7 +83,7 @@ class TenantServiceImplTest {
                 "operator-1",
                 NOW
         );
-        when(tenants.findByIdForUpdate("10001"))
+        when(tenants.findById("10001"))
                 .thenReturn(Optional.of(tenant));
         when(tenants.save(any(IdentityTenantBO.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -102,6 +102,7 @@ class TenantServiceImplTest {
                 IdentityTenantBO.Status.ACTIVE
         );
         assertThat(active.version()).isEqualTo(1L);
+        verify(tenants, never()).findByIdForUpdate(any(String.class));
 
         assertThatThrownBy(() -> service.update(
                 "10001",

@@ -51,18 +51,28 @@
     <select id="selectDue" resultMap="Task">
         SELECT id, tenant_id, version, identity_sub, target_tenant_id, source_revision, subject_enabled,
                reason_code, status, next_attempt_at, attempt_count, lease_owner, lease_until
-          FROM tianquan_oauth.oauth_subject_revocation_task
-         WHERE tenant_id = #{tenantId} AND deleted_at IS NULL
-           AND ((status = 'PENDING' AND next_attempt_at &lt;= #{now}) OR (status = 'LEASED' AND lease_until &lt;= #{now}))
-         ORDER BY next_attempt_at, id LIMIT #{limit}
+          FROM tianquan_oauth.oauth_subject_revocation_task task
+         WHERE task.tenant_id = #{tenantId} AND task.deleted_at IS NULL
+           AND ((task.status = 'PENDING' AND task.next_attempt_at &lt;= #{now}) OR (task.status = 'LEASED' AND task.lease_until &lt;= #{now}))
+           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_subject_revocation_task predecessor
+                WHERE predecessor.tenant_id = #{tenantId} AND predecessor.identity_sub = task.identity_sub
+                  AND predecessor.target_tenant_id = task.target_tenant_id AND predecessor.source_revision &lt; task.source_revision
+                  AND predecessor.status &lt;&gt; 'DONE' AND predecessor.deleted_at IS NULL)
+         ORDER BY task.next_attempt_at, task.id LIMIT #{limit}
     </select>
     <update id="claim">
-        UPDATE tianquan_oauth.oauth_subject_revocation_task
+        UPDATE tianquan_oauth.oauth_subject_revocation_task task
            SET status = 'LEASED', lease_owner = #{owner}, lease_until = #{until},
                attempt_count = CASE WHEN attempt_count &lt; 2147483647 THEN attempt_count + 1 ELSE attempt_count END,
-               version = version + 1, update_user_id = #{actor}, update_time = #{now}
-         WHERE tenant_id = #{tenantId} AND id = #{task.id} AND version = #{task.version} AND deleted_at IS NULL
-           AND ((status = 'PENDING' AND next_attempt_at &lt;= #{now}) OR (status = 'LEASED' AND lease_until &lt;= #{now}))
+               version = task.version + 1, update_user_id = #{actor}, update_time = #{now}
+         WHERE task.tenant_id = #{tenantId} AND task.id = #{task.id} AND task.version = #{task.version} AND task.deleted_at IS NULL
+           AND task.identity_sub = #{task.identitySub} AND task.target_tenant_id = #{task.targetTenantId}
+           AND task.source_revision = #{task.sourceRevision}
+           AND ((task.status = 'PENDING' AND task.next_attempt_at &lt;= #{now}) OR (task.status = 'LEASED' AND task.lease_until &lt;= #{now}))
+           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_subject_revocation_task predecessor
+                WHERE predecessor.tenant_id = #{tenantId} AND predecessor.identity_sub = #{task.identitySub}
+                  AND predecessor.target_tenant_id = #{task.targetTenantId} AND predecessor.source_revision &lt; #{task.sourceRevision}
+                  AND predecessor.status &lt;&gt; 'DONE' AND predecessor.deleted_at IS NULL)
     </update>
     <update id="complete">
         UPDATE tianquan_oauth.oauth_subject_revocation_task

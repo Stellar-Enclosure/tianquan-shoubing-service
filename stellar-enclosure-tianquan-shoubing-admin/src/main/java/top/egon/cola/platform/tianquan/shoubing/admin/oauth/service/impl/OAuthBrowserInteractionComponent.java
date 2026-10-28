@@ -60,7 +60,7 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
     @Qualifier("tenantIssuerService") private final TenantIssuerService issuers;
     @Qualifier("oauthPayloadCipherComponent") private final OAuthPayloadCipherComponent cipher;
     @Qualifier("oauthAuthenticationJwtService") private final OAuthAuthenticationJwtService authenticationJwts;
-    @Qualifier("identityFacade") private final top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityFacade identities;
+    @Qualifier("oauthPasswordChangeCoordinator") private final OAuthPasswordChangeCoordinator passwordChanges;
     @Qualifier("oauthSsoLifecycleService") private final OAuthSsoLifecycleService sso;
     @Qualifier("jacksonObjectMapper") private final ObjectMapper mapper;
     @Qualifier("idpClock") private final Clock clock;
@@ -236,17 +236,13 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
         setCookie(request, response, name("authn", realm), "", Duration.ZERO);
     }
 
-    @Transactional
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public String changeRequiredPassword(HttpServletRequest request, char[] oldPassword, char[] newPassword) {
         var realm = realm(request);
-        fenceRealm(realm);
         var interaction = require(request, true);
-        if (!"PASSWORD_CHANGE".equals(interaction.getPurpose()) || !"PENDING".equals(interaction.getState())
+        if (!"PASSWORD_CHANGE".equals(interaction.getPurpose()) || !Set.of("PENDING", "AUTHENTICATED").contains(interaction.getState())
                 || interaction.getRestrictedSubject() == null || interaction.getAuthenticationJtiDigest() != null) { throw rejected(); }
-        identities.changePassword(interaction.getRestrictedSubject(), oldPassword, newPassword, clock.instant());
-        long version = interaction.getVersion();
-        interaction.setVersion(version + 1).setState("CONSUMED").setConsumedAt(clock.instant());
-        interactions.save(realm, interaction, version);
+        passwordChanges.change(realm, interaction, oldPassword, newPassword);
         return realm.getIssuer().getRawPath() + "/oauth2/authorize?" + query(parameters(realm, interaction));
     }
 

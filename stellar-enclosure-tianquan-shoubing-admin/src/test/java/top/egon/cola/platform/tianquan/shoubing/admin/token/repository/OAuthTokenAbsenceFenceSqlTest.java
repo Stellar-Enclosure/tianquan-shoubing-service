@@ -187,4 +187,95 @@ class OAuthTokenAbsenceFenceSqlTest {
             MDC.remove("tenantId");
         }
     }
+    @Test
+    void consentAbsenceFenceIsTenantScopedAndGuarded() throws Exception {
+        var configuration = new Configuration();
+        String resource = "mapper/token/OAuthSecurityStateMapper.xml";
+        try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            new XMLMapperBuilder(input, configuration, resource, configuration.getSqlFragments()).parse();
+        }
+        configuration.setEnvironment(new Environment("test", new SpringManagedTransactionFactory(), mock(DataSource.class)));
+        var properties = new EgonColaMybatisPlusProperties();
+        var tenantGuard = new EgonColaTenantIdGuardInnerInterceptor(() -> "service:tianquan-shoubing", properties);
+        new CommonAnnotationBeanPostProcessor().postProcessBeforeInitialization(tenantGuard, "sqlGuard");
+        var tables = new ArrayList<String>();
+        var guard = new EgonColaLocalWriteGuardInnerInterceptor(query -> {
+            tables.add(query.logicalTable());
+            return new EgonColaRouteResult(List.of(new EgonColaPhysicalTargetBO("primary", "tianquan_oauth", query.logicalTable())), "a".repeat(64));
+        }, tenantGuard, mock(EgonColaTwoLevelRouteStrategy.class), Map.of());
+        var parameters = Map.<String, Object>of("tenantId", 101L, "id", 42L, "expectedVersion", 4L,
+                "clientPk", 5L, "subject", "alice", "now", Instant.parse("2026-10-28T00:00:00Z"), "actor", "service:tianquan-shoubing");
+        var statement = configuration.getMappedStatement(OAuthSecurityStateMapper.class.getName() + ".fenceRealmIfConsentInactive");
+        var sql = statement.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT);
+        assertThat(sql).contains("not exists", "c.client_pk = ?", "c.subject = ?", "c.status = 'active'")
+                .doesNotContain("for update");
+        assertThat(postgresParser().parse(sql, false)).isNotNull();
+        MDC.put("tenantId", "101");
+        try {
+            Executor executor = mock(Executor.class);
+            var invocation = new Invocation(executor, Executor.class.getMethod("update", MappedStatement.class, Object.class),
+                    new Object[]{statement, parameters});
+            assertThatCode(() -> new EgonColaOriginalSqlGuardInterceptor(properties).intercept(invocation)).doesNotThrowAnyException();
+            var handler = configuration.newStatementHandler(executor, statement, parameters, RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
+            assertThatCode(() -> guard.beforePrepare(handler, null, null)).doesNotThrowAnyException();
+            assertThat(tables).containsExactly("oauth_security_state", "oauth_consent");
+        } finally { MDC.remove("tenantId"); }
+    }
+
+    @Test
+    void orderedDeliveryReceiptAndPredecessorUseTheSameShardGuard() throws Exception {
+        var configuration = new Configuration();
+        for (String resource : List.of("mapper/token/OAuthSecurityStateMapper.xml", "mapper/token/SubjectDeliveryReceiptMapper.xml")) {
+            try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+                new XMLMapperBuilder(input, configuration, resource, configuration.getSqlFragments()).parse();
+            }
+        }
+        configuration.setEnvironment(new Environment("test", new SpringManagedTransactionFactory(), mock(DataSource.class)));
+        var properties = new EgonColaMybatisPlusProperties();
+        var tenantGuard = new EgonColaTenantIdGuardInnerInterceptor(() -> "service:tianquan-shoubing", properties);
+        new CommonAnnotationBeanPostProcessor().postProcessBeforeInitialization(tenantGuard, "sqlGuard");
+        var tables = new ArrayList<String>();
+        var guard = new EgonColaLocalWriteGuardInnerInterceptor(query -> {
+            tables.add(query.logicalTable());
+            return new EgonColaRouteResult(List.of(new EgonColaPhysicalTargetBO("primary", "tianquan_oauth", query.logicalTable())), "a".repeat(64));
+        }, tenantGuard, mock(EgonColaTwoLevelRouteStrategy.class), Map.of());
+        var parameters = new java.util.HashMap<String, Object>();
+        parameters.put("tenantId", 101L); parameters.put("id", 42L); parameters.put("expectedVersion", 4L);
+        parameters.put("subject", "alice"); parameters.put("sourceRevision", 20L); parameters.put("previousRevision", 10L);
+        parameters.put("payloadFingerprint", "a".repeat(64));
+        parameters.put("eventId", "event-20"); parameters.put("now", Instant.parse("2026-10-28T00:00:00Z"));
+        parameters.put("actor", "service:tianquan-shoubing");
+        MDC.put("tenantId", "101"); MDC.put("userId", "service:tianquan-shoubing");
+        try {
+            Executor executor = mock(Executor.class);
+            for (String id : List.of(OAuthSecurityStateMapper.class.getName() + ".fenceSubjectDelivery",
+                    OAuthSecurityStateMapper.class.getName() + ".fenceSubjectDeliveryDuplicate",
+                    top.egon.cola.platform.tianquan.shoubing.admin.token.dao.SubjectDeliveryReceiptMapper.class.getName() + ".insertIfAbsent")) {
+                var statement = configuration.getMappedStatement(id);
+                assertThat(statement.getBoundSql(parameters).getSql().toLowerCase()).doesNotContain("for update", "for share");
+                assertThat(postgresParser().parse(statement.getBoundSql(parameters).getSql(), false)).isNotNull();
+                var invocation = new Invocation(executor, Executor.class.getMethod("update", MappedStatement.class, Object.class),
+                        new Object[]{statement, parameters});
+                assertThatCode(() -> new EgonColaOriginalSqlGuardInterceptor(properties).intercept(invocation)).doesNotThrowAnyException();
+                var handler = configuration.newStatementHandler(executor, statement, parameters, RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
+                assertThatCode(() -> guard.beforePrepare(handler, null, null)).doesNotThrowAnyException();
+            }
+            assertThat(tables).contains("oauth_security_state", "oauth_subject_delivery_receipt");
+            var cross = new EgonColaLocalWriteGuardInnerInterceptor(query -> new EgonColaRouteResult(List.of(
+                    new EgonColaPhysicalTargetBO(query.logicalTable().equals("oauth_security_state") ? "primary_a" : "primary_b",
+                            "tianquan_oauth", query.logicalTable())), "a".repeat(64)), tenantGuard,
+                    mock(EgonColaTwoLevelRouteStrategy.class), Map.of());
+            var statement = configuration.getMappedStatement(OAuthSecurityStateMapper.class.getName() + ".fenceSubjectDelivery");
+            var handler = configuration.newStatementHandler(executor, statement, parameters, RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
+            assertThatThrownBy(() -> cross.beforePrepare(handler, null, null)).hasMessageContaining("LOCAL_WRITE_TARGET_MISMATCH");
+        } finally { MDC.remove("tenantId"); MDC.remove("userId"); }
+    }
+
+    private static org.apache.shardingsphere.infra.parser.ShardingSphereSQLParserEngine postgresParser() {
+        return new org.apache.shardingsphere.infra.parser.ShardingSphereSQLParserEngine(
+                org.apache.shardingsphere.infra.spi.type.typed.TypedSPILoader.getService(
+                        org.apache.shardingsphere.database.connector.core.type.DatabaseType.class, "PostgreSQL"),
+                new org.apache.shardingsphere.sql.parser.engine.api.CacheOption(16, 64),
+                new org.apache.shardingsphere.sql.parser.engine.api.CacheOption(16, 64));
+    }
 }

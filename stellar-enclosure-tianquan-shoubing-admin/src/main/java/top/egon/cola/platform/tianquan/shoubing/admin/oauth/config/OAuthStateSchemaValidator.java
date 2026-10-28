@@ -20,10 +20,12 @@ public class OAuthStateSchemaValidator {
             Map.entry("oauth_token", Set.of("authorization_pk", "token_digest", "refresh_generation", "consumed_at", "retain_until")),
             Map.entry("oauth_consent", Set.of("resource_uri")),
             Map.entry("oauth_revocation", Set.of("retain_until")),
-            Map.entry("oauth_security_state", Set.of("directory_subject_revision", "directory_subject_fingerprint")),
+            Map.entry("oauth_security_state", Set.of("directory_subject_revision", "directory_subject_fingerprint", "directory_subject_ordered_revision")),
             Map.entry("oauth_subject_tenant_history", Set.of("tenant_id", "identity_sub", "identity_tenant_id", "deleted_at")),
             Map.entry("oauth_subject_revocation_task", Set.of("identity_sub", "target_tenant_id", "source_revision",
                     "subject_enabled", "status", "next_attempt_at", "lease_owner", "lease_until")),
+            Map.entry("oauth_password_change_receipt", Set.of("tenant_id", "operation_key", "identity_sub", "origin_tenant_id")),
+            Map.entry("oauth_subject_delivery_receipt", Set.of("tenant_id", "event_id", "identity_sub", "source_revision", "previous_revision", "payload_fingerprint")),
             Map.entry("oauth_audit", Set.of("event_fingerprint", "source_client_pk", "source_issuer", "retain_until")),
             Map.entry("oauth_authentication", Set.of("jti_digest", "browser_binding_digest", "subject_generation",
                     "realm_generation", "authenticated_at", "expires_at", "retain_until", "revoked_at")),
@@ -37,6 +39,8 @@ public class OAuthStateSchemaValidator {
 
     private static final Set<String> REQUIRED_CONSTRAINTS = Set.of(
             "pk_oauth_subject_tenant_history", "uk_oauth_subject_task", "ck_oauth_subject_task_lease", "ck_oauth_subject_source_fingerprint",
+            "uk_oauth_password_receipt_operation",
+            "ck_oauth_subject_ordered_revision", "ck_oauth_subject_delivery_fingerprint", "uk_oauth_subject_delivery_event", "uk_oauth_subject_delivery_revision",
             "uk_oauth_authentication_jti", "uk_oauth_interaction_identity",
             "fk_oauth_authorization_authentication", "fk_oauth_authorization_interaction",
             "fk_oauth_token_authorization", "ck_oauth_authorization_scope_ceiling",

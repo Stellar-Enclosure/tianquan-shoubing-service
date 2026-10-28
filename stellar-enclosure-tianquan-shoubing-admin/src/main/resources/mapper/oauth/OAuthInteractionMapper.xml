@@ -63,6 +63,25 @@
           AND version = #{expectedVersion} AND deleted_at IS NULL
           AND (#{po.state} IN ('CANCELLED', 'EXPIRED', 'CLOSED') OR expires_at &gt; CURRENT_TIMESTAMP)
     </update>
+    <update id="claimPasswordChange">
+        UPDATE tianquan_oauth.oauth_interaction
+        SET state = 'AUTHENTICATED', version = version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE tenant_id = #{tenantId} AND id = #{interaction.id} AND version = #{interaction.version}
+          AND interaction_id = #{interaction.interactionId} AND purpose = 'PASSWORD_CHANGE'
+          AND restricted_subject = #{interaction.restrictedSubject} AND browser_binding_digest = #{interaction.browserBindingDigest}
+          AND csrf_digest = #{interaction.csrfDigest} AND authentication_jti_digest IS NULL
+          AND state IN ('PENDING', 'AUTHENTICATED') AND expires_at &gt; #{now} AND deleted_at IS NULL
+    </update>
+    <update id="consumePasswordChange">
+        UPDATE tianquan_oauth.oauth_interaction
+        SET state = 'CONSUMED', consumed_at = #{now}, version = version + 1,
+            update_user_id = #{actor}, update_time = #{now}
+        WHERE tenant_id = #{tenantId} AND id = #{interaction.id} AND version = #{interaction.version}
+          AND interaction_id = #{interaction.interactionId} AND purpose = 'PASSWORD_CHANGE'
+          AND restricted_subject = #{interaction.restrictedSubject} AND browser_binding_digest = #{interaction.browserBindingDigest}
+          AND csrf_digest = #{interaction.csrfDigest} AND authentication_jti_digest IS NULL
+          AND state = 'AUTHENTICATED' AND deleted_at IS NULL
+    </update>
     <update id="deleteRetained">
         UPDATE tianquan_oauth.oauth_interaction t
         SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,

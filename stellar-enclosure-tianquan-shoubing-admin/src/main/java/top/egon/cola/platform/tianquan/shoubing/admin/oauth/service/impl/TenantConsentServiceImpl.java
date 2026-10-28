@@ -19,6 +19,10 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRea
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.SasConsentConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthConsentRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.TenantIssuerService;
 import top.egon.cola.platform.tianquan.shoubing.core.oauth.OAuthClient;
 
@@ -38,12 +42,17 @@ public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentServi
     private final SasConsentConverter converter;
     @Qualifier("egonColaMybatisPlusClock")
     private final Clock clock;
+    @Qualifier("oAuthRealmRepository")
+    private final OAuthRealmRepository realms;
+    @Qualifier("oAuthSecurityStateRepository")
+    private final OAuthSecurityStateRepository securityStates;
 
     @Override
     @Transactional
     public void save(OAuth2AuthorizationConsent source) {
         OAuth2AuthorizationConsent consent = Objects.requireNonNull(source, "consent");
         TrustedRealmBO trustedRealm = tenantIssuerService.resolveCurrentIssuer();
+        fenceRealm(trustedRealm);
         requirePrincipal(consent.getPrincipalName());
         long clientPk = parsePositiveId(consent.getRegisteredClientId(), "OAUTH_CONSENT_CLIENT_ID_INVALID");
         OAuthClientBO client = loadActiveClient(trustedRealm, clientPk);
@@ -76,16 +85,31 @@ public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentServi
     public void remove(OAuth2AuthorizationConsent source) {
         OAuth2AuthorizationConsent consent = Objects.requireNonNull(source, "consent");
         TrustedRealmBO trustedRealm = tenantIssuerService.resolveCurrentIssuer();
+        fenceRealm(trustedRealm);
         requirePrincipal(consent.getPrincipalName());
         long clientPk = parsePositiveId(consent.getRegisteredClientId(), "OAUTH_CONSENT_CLIENT_ID_INVALID");
-        OAuthConsentBO current = consentRepository.findConsentForUpdate(
+        OAuthConsentBO current = consentRepository.findConsent(
                 trustedRealm, clientPk, consent.getPrincipalName()).orElse(null);
-        if (current == null || "REVOKED".equals(current.getStatus())) {
+        if (current == null) {
+            var state = securityStates.findByTarget(trustedRealm, OAuthSecurityTargetEnum.REALM, "self")
+                    .orElseThrow(() -> new org.springframework.dao.TransientDataAccessResourceException("OAuth realm state is not visible"));
+            if (!securityStates.fenceRealmIfConsentInactive(trustedRealm, state.getId(), state.getVersion(),
+                    clientPk, consent.getPrincipalName(), clock.instant())) {
+                throw new org.springframework.dao.TransientDataAccessResourceException("OAuth consent is not yet visible");
+            }
+            state.setVersion(Math.addExact(state.getVersion(), 1L));
+            OAuthTransactionFences.securityStateWritten(trustedRealm, state);
             return;
         }
         current.setStatus("REVOKED");
         current.setVersion(Math.addExact(current.getVersion(), 1L));
         consentRepository.save(trustedRealm, current, current.getVersion() - 1L);
+    }
+
+    private void fenceRealm(TrustedRealmBO realm) {
+        if (!OAuthTransactionFences.activeRealm(realms, realm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before consent update");
+        }
     }
 
     @Override

@@ -111,6 +111,46 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
 
     @Override
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRealmIfConsentInactive(TrustedRealmBO realm, long id, long expectedVersion,
+            long clientPk, String subject, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || clientPk <= 0 || subject == null || subject.isBlank()
+                || subject.length() > 128 || now == null) {
+            throw new IllegalArgumentException("OAUTH_SECURITY_STATE_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceRealmIfConsentInactive(
+                tenant, id, expectedVersion, clientPk, subject, now.truncatedTo(ChronoUnit.MICROS),
+                userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceSubjectDelivery(TrustedRealmBO realm, long id, long expectedVersion,
+            String subject, long sourceRevision, long previousRevision, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || subject == null || !subject.matches("[A-Za-z0-9._~-]{1,64}")
+                || sourceRevision <= 0 || previousRevision < 0 || previousRevision >= sourceRevision || now == null) {
+            throw new IllegalArgumentException("OAUTH_SUBJECT_DELIVERY_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceSubjectDelivery(tenant, id, expectedVersion,
+                subject, sourceRevision, previousRevision, now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceSubjectDeliveryDuplicate(TrustedRealmBO realm, long id, long expectedVersion,
+            String subject, long sourceRevision, long previousRevision, String eventId, String payloadFingerprint, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || subject == null || !subject.matches("[A-Za-z0-9._~-]{1,64}")
+                || sourceRevision <= 0 || previousRevision < 0 || previousRevision >= sourceRevision
+                || eventId == null || !eventId.matches("[A-Za-z0-9._~-]{1,64}")
+                || payloadFingerprint == null || !payloadFingerprint.matches("[0-9a-f]{64}") || now == null) {
+            throw new IllegalArgumentException("OAUTH_SUBJECT_DELIVERY_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceSubjectDeliveryDuplicate(tenant, id,
+                expectedVersion, subject, sourceRevision, previousRevision, eventId, payloadFingerprint,
+                now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public boolean fenceSubjectAtLeast(TrustedRealmBO realm, OAuthSecurityStateBO subject, long sourceRevision, String fingerprint, Instant now) {
         Objects.requireNonNull(subject, "subject");
         if (subject.getId() == null || subject.getId() <= 0 || subject.getVersion() < 0 || sourceRevision <= 0
@@ -173,6 +213,10 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
             OAuthSecurityStateBO state,
             long expectedVersion) {
         Objects.requireNonNull(state, "state");
+        if (state.getDirectorySubjectOrderedRevision() < 0
+                || state.getDirectorySubjectOrderedRevision() > state.getDirectorySubjectRevision()) {
+            throw new IllegalArgumentException("OAUTH_SUBJECT_DELIVERY_REVISION_INVALID");
+        }
         if (state.getDirectorySubjectRevision() == 0 ? state.getDirectorySubjectFingerprint() != null
                 : state.getTargetType() != OAuthSecurityTargetEnum.SUBJECT || state.getDirectorySubjectFingerprint() == null
                     || !state.getDirectorySubjectFingerprint().matches("[0-9a-f]{64}")) {
@@ -205,6 +249,7 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
                         || state.getGeneration() < current.getGeneration()
                         || state.getRevision() < current.getRevision()
                         || state.getDirectorySubjectRevision() < current.getDirectorySubjectRevision()
+                        || state.getDirectorySubjectOrderedRevision() < current.getDirectorySubjectOrderedRevision()
                         || state.getDirectorySubjectRevision() == current.getDirectorySubjectRevision()
                             && !Objects.equals(state.getDirectorySubjectFingerprint(), current.getDirectorySubjectFingerprint())
                         || (state.isEnabled() != current.getEnabled()

@@ -31,6 +31,20 @@ public interface OAuthSecurityStateMapper extends EgonColaMapper<OAuthSecuritySt
             @Param("expectedVersion") Long expectedVersion, @Param("subject") String subject,
             @Param("now") java.time.Instant now, @Param("actor") String actor);
 
+    int fenceRealmIfConsentInactive(@Param("tenantId") Long tenantId, @Param("id") Long id,
+            @Param("expectedVersion") Long expectedVersion, @Param("clientPk") Long clientPk,
+            @Param("subject") String subject, @Param("now") java.time.Instant now, @Param("actor") String actor);
+
+    int fenceSubjectDelivery(@Param("tenantId") Long tenantId, @Param("id") Long id,
+            @Param("expectedVersion") Long expectedVersion, @Param("subject") String subject,
+            @Param("sourceRevision") long sourceRevision, @Param("previousRevision") long previousRevision,
+            @Param("now") java.time.Instant now, @Param("actor") String actor);
+    int fenceSubjectDeliveryDuplicate(@Param("tenantId") Long tenantId, @Param("id") Long id,
+            @Param("expectedVersion") Long expectedVersion, @Param("subject") String subject,
+            @Param("sourceRevision") long sourceRevision, @Param("previousRevision") long previousRevision,
+            @Param("eventId") String eventId, @Param("payloadFingerprint") String payloadFingerprint,
+            @Param("now") java.time.Instant now, @Param("actor") String actor);
+
     int fenceSubjectAtLeast(@Param("tenantId") Long tenantId, @Param("id") Long id,
             @Param("expectedVersion") long expectedVersion, @Param("subject") String subject,
             @Param("sourceRevision") long sourceRevision, @Param("fingerprint") String fingerprint,

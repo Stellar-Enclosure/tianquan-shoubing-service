@@ -188,6 +188,25 @@ class SpringConstructorResolutionTest {
     }
 
     @Test
+    void createsPasswordCoordinatorWithTheProductionQualifiedDependencies() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            registerNamedMock(context, "transactionManager", PlatformTransactionManager.class);
+            registerNamedMock(context, "oAuthInteractionRepository", top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository.class);
+            registerNamedMock(context, "oAuthRealmRepository", OAuthRealmRepository.class);
+            registerNamedMock(context, "identityFacade", top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityFacade.class);
+            context.getBeanFactory().registerSingleton("identityCredentialRepository", mock(IdentityCredentialRepository.class));
+            registerNamedMock(context, "springPasswordHashAdapter", PasswordHashPort.class);
+            registerNamedMock(context, "identityDirectoryContext", top.egon.cola.platform.tianquan.shoubing.admin.identity.repo.IdentityDirectoryContext.class);
+            registerNamedMock(context, "passwordChangeReceiptMapper", top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.PasswordChangeReceiptMapper.class);
+            registerNamedMock(context, "egonColaMdcUserIdProvider", top.egon.cola.component.common.mybatis.business.EgonColaUserIdProvider.class);
+            context.registerBean("idpClock", Clock.class, Clock::systemUTC);
+            context.registerBean(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthPasswordChangeCoordinator.class);
+            context.refresh();
+            assertThat(context.getBean(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthPasswordChangeCoordinator.class)).isNotNull();
+        }
+    }
+
+    @Test
     void createsResourceProjectionAdapterAndHandlerThroughNamedQualifiedBeans() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             registerNamedMock(context, "oAuthRealmRepository", OAuthRealmRepository.class);

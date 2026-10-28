@@ -30,6 +30,16 @@
       "version": "20261028_002",
       "path": "db/egon-mp/V20261028_002__subject_revocation_fanout.sql",
       "sha256": "b71c431fa3f51a5bd135927ca45e61ee000936d34ee5c0a607b0289ada604167"
+    },
+    {
+      "version": "20261028_003",
+      "path": "db/egon-mp/V20261028_003__password_change_receipt.sql",
+      "sha256": "288e7175b9f6228588442daac7ef1d1e342e1eaada4ec30e836feafac26799af"
+    },
+    {
+      "version": "20261028_004",
+      "path": "db/egon-mp/V20261028_004__ordered_subject_delivery.sql",
+      "sha256": "2c7b1f2e57ce58f8c9098059593065bc0b2b0b317be7e82614959a41cbf31b6d"
     }
   ]
 }

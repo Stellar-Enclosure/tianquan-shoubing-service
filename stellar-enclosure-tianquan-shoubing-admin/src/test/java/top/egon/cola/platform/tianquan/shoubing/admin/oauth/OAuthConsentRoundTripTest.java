@@ -1119,6 +1119,7 @@ class OAuthConsentRoundTripTest {
         @Bean("resourceServerStore") ResourceServerStore resources(Fixture f) { return f.resources; }
         @Bean("tenantMembershipPort") TenantMembershipPort memberships(Fixture f) { return f.memberships; }
         @Bean("identityFacade") IdentityFacade identities(Fixture f) { return f.identities; }
+        @Bean("oauthPasswordChangeCoordinator") top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthPasswordChangeCoordinator passwordChanges(Fixture f) { return f.passwordChanges; }
         @Bean("tokenRevocationService") TokenRevocationService revocations() { return mock(TokenRevocationService.class); }
         @Bean({"idpClock", "egonColaMybatisPlusClock"}) Clock clock(Fixture f) { return f.clock; }
         @Bean("transactionManager") PlatformTransactionManager transactions(Fixture f) { return new FixtureTransactionManager(f); }
@@ -1131,7 +1132,12 @@ class OAuthConsentRoundTripTest {
         @Bean("oAuthAuthenticationRepository") top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository authentications(Fixture f) { return f.authenticationRepository; }
         @Bean("oAuthInteractionRepository") top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository interactions(Fixture f) { return f.interactionRepository; }
         @Bean("oAuthSecurityStateRepository") top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository states(Fixture f) { return f.securityStateRepository; }
-        @Bean("identityOutboxPublisher") top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEventPort identityEvents(Fixture f) { return f.identityEvents::add; }
+        @Bean("identityOutboxPublisher") top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEventPort identityEvents(Fixture f) {
+            return new top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEventPort() {
+                @Override public void append(top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEvent event) { f.identityEvents.add(event); }
+                @Override public void appendForTenant(long tenant, top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEvent event) { f.identityEvents.add(event); }
+            };
+        }
         @Bean top.egon.cola.platform.tianquan.shoubing.admin.identity.dao.IdentityUserDAO identityUserDAO() { return mock(top.egon.cola.platform.tianquan.shoubing.admin.identity.dao.IdentityUserDAO.class); }
         @Bean("identityUserRepository") top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository users(Fixture f) { return f.userRepository; }
         @Bean("fixtureFallbackSecurity") @Order(10)
@@ -1164,6 +1170,8 @@ class OAuthConsentRoundTripTest {
         final ResourceServerStore resources = mock(ResourceServerStore.class);
         final TenantMembershipPort memberships = mock(TenantMembershipPort.class);
         final IdentityFacade identities = mock(IdentityFacade.class);
+        final top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthPasswordChangeCoordinator passwordChanges =
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthPasswordChangeCoordinator.class);
         final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository authenticationRepository = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class);
         final top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository interactionRepository = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthInteractionRepository.class);
         final top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository securityStateRepository = mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class);
@@ -1258,6 +1266,8 @@ class OAuthConsentRoundTripTest {
                     .map(Map.Entry::getValue).filter(value -> value.getAuthenticationJtiDigest().equals(i.getArgument(1))
                             && value.getClientPk().equals(i.getArgument(2))).findFirst().map(value -> value.toBuilder().build()));
             when(deviceSessionRepository.findById(any(), anyLong())).thenAnswer(i -> Optional.ofNullable(deviceSessions.get(key(i.getArgument(0), Long.toString(i.getArgument(1))))));
+            when(deviceSessionRepository.fenceLiveSnapshot(any(), anyLong(), anyLong(), anyString(), any(), anyList())).thenReturn(true);
+            when(deviceSessionRepository.fenceRevokedWithoutLiveAuthorizations(any(), anyLong(), anyLong(), any())).thenReturn(true);
             when(deviceSessionRepository.findLiveBySubject(any(), anyString(), any())).thenAnswer(i -> deviceSessions.entrySet().stream()
                     .filter(entry -> entry.getKey().startsWith(((TrustedRealmBO) i.getArgument(0)).getRealmKey() + ":"))
                     .map(Map.Entry::getValue).filter(value -> value.getSubject().equals(i.getArgument(1)) && "ACTIVE".equals(value.getStatus())
@@ -1276,6 +1286,14 @@ class OAuthConsentRoundTripTest {
                     .sorted(Comparator.comparing(OAuthAuthorizationPO::getId)).limit((int) i.getArgument(3))
                     .flatMap(value -> readAuthorization(i.getArgument(0), value.getId()).stream()).toList());
             doAnswer(i -> { mustChangePassword = false; return null; }).when(identities).changePassword(anyString(), any(char[].class), any(char[].class), any());
+            doAnswer(i -> {
+                TrustedRealmBO realm = i.getArgument(0);
+                top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO interaction = i.getArgument(1);
+                identities.changePassword(interaction.getRestrictedSubject(), i.getArgument(2), i.getArgument(3), clock.instant());
+                interactionFacts.put(key(realm, interaction.getInteractionId()), interaction.toBuilder()
+                        .state("CONSUMED").consumedAt(clock.instant()).version(interaction.getVersion() + 2).build());
+                return null;
+            }).when(passwordChanges).change(any(), any(), any(char[].class), any(char[].class));
             when(authorizationRepository.findByAuthentication(any(), anyString(), anyLong(), anyInt())).thenAnswer(i -> authorizations.values().stream()
                     .filter(value -> Objects.equals(value.getAuthenticationJtiDigest(), i.getArgument(1)) && value.getId() > (long) i.getArgument(2)
                             && Set.of("ACTIVE", "PENDING_CONSENT").contains(value.getStatus())).sorted(Comparator.comparing(OAuthAuthorizationPO::getId))
@@ -1322,7 +1340,7 @@ class OAuthConsentRoundTripTest {
             when(userRepository.findByIdentitySub(anyString())).thenAnswer(i -> Optional.of(new top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUser(
                     i.getArgument(0), "fixture-user", "fixture-user", "Fixture user", top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.ACTIVE, 0, null, null, 0L)));
             when(securityStateRepository.findByTarget(any(), any(), anyString())).thenAnswer(i -> Optional.of(top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO.builder()
-                    .targetType(i.getArgument(1)).targetKey(i.getArgument(2)).generation(0L).enabled(true).revision(0L).reasonCode("TEST").build()));
+                    .id(42L).version(0L).targetType(i.getArgument(1)).targetKey(i.getArgument(2)).generation(0L).enabled(true).revision(0L).reasonCode("TEST").build()));
             when(signingKeyRepository.findByKid(any(), anyString())).thenAnswer(i -> signingKeyRepository.findByStatuses(i.getArgument(0), Set.of(OAuthKeyStatusEnum.ACTIVE), 0L, 8).stream().filter(value -> value.getKid().equals(i.getArgument(1))).findFirst());
             when(authorizationRepository.findByInteractionId(any(), anyString())).thenAnswer(i -> authorizations.values().stream()
                     .filter(value -> Objects.equals(value.getInteractionId(), i.getArgument(1)))

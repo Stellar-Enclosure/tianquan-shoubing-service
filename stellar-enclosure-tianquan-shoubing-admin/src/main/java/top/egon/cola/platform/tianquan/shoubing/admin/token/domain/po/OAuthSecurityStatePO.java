@@ -69,6 +69,13 @@ public class OAuthSecurityStatePO extends EgonModel<OAuthSecurityStatePO> {
             EgonColaModelValidationGroups.Persisted.class})
     private Long directorySubjectRevision;
 
+    @TableField("directory_subject_ordered_revision")
+    @NotNull(groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
+            EgonColaModelValidationGroups.Persisted.class})
+    @Min(value = 0, groups = {EgonColaModelValidationGroups.Insert.class, EgonColaModelValidationGroups.Update.class,
+            EgonColaModelValidationGroups.Persisted.class})
+    private Long directorySubjectOrderedRevision;
+
     @JsonIgnore
     @ToString.Exclude
     @TableField("directory_subject_fingerprint")

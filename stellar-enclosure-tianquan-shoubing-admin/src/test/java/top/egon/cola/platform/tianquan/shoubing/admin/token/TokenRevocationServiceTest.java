@@ -662,7 +662,7 @@ class TokenRevocationServiceTest {
     void newerSubjectTaskAdvancesGenerationAndPublishesInTheTargetTransaction() {
         var task = subjectTask(9L, false);
         var current = securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 8L)
-                .setDirectorySubjectRevision(5L).setDirectorySubjectFingerprint("a".repeat(64));
+                .setDirectorySubjectRevision(5L).setDirectorySubjectOrderedRevision(5L).setDirectorySubjectFingerprint("a".repeat(64));
         when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice")).thenReturn(Optional.of(current));
         when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 8L)));
@@ -674,10 +674,14 @@ class TokenRevocationServiceTest {
         verify(states, org.mockito.Mockito.times(2)).save(eq(REALM), captured.capture(), anyLong());
         var subject = captured.getAllValues().get(1);
         assertThat(subject.getDirectorySubjectRevision()).isEqualTo(9L);
+        assertThat(subject.getDirectorySubjectOrderedRevision()).isEqualTo(9L);
         assertThat(subject.getDirectorySubjectFingerprint()).matches("[0-9a-f]{64}");
         assertThat(subject.getGeneration()).isEqualTo(4L);
         assertThat(subject.isEnabled()).isFalse();
-        verify(outbox).enqueue(any());
+        var message = ArgumentCaptor.forClass(top.egon.cola.component.outbox.api.OutboxMessage.class);
+        verify(outbox).enqueue(message.capture());
+        assertThat(message.getValue().headers()).containsEntry("oauth-subject-source-revision", "9")
+                .containsEntry("oauth-subject-previous-revision", "5");
         verify(realms, never()).findByRealmKeyForUpdate(any());
         verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
     }

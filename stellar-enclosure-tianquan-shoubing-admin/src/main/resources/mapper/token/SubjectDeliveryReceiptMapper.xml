@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="top.egon.cola.platform.tianquan.shoubing.admin.token.dao.SubjectDeliveryReceiptMapper">
+    <insert id="insertIfAbsent">
+        INSERT INTO tianquan_oauth.oauth_subject_delivery_receipt
+            (id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
+             event_id, identity_sub, source_revision, previous_revision, payload_fingerprint)
+        VALUES (#{id}, #{tenantId}, 0, #{now}, #{actor}, #{now}, #{actor}, NULL,
+                #{eventId}, #{subject}, #{sourceRevision}, #{previousRevision}, #{payloadFingerprint})
+        ON CONFLICT (tenant_id, event_id) DO NOTHING
+    </insert>
+</mapper>

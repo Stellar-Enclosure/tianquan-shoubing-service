@@ -17,13 +17,14 @@
         <result property="enabled" column="enabled"/>
         <result property="revision" column="revision"/>
         <result property="directorySubjectRevision" column="directory_subject_revision"/>
+        <result property="directorySubjectOrderedRevision" column="directory_subject_ordered_revision"/>
         <result property="directorySubjectFingerprint" column="directory_subject_fingerprint"/>
         <result property="reasonCode" column="reason_code"/>
     </resultMap>
 
     <sql id="Columns">
         id, tenant_id, version, create_time, create_user_id, update_time, update_user_id, deleted_at,
-        target_type, target_key, generation, enabled, revision, directory_subject_revision, directory_subject_fingerprint, reason_code
+        target_type, target_key, generation, enabled, revision, directory_subject_revision, directory_subject_ordered_revision, directory_subject_fingerprint, reason_code
     </sql>
 
     <select id="selectByTarget" resultMap="OAuthSecurityStatePOResultMap">
@@ -80,6 +81,7 @@
         UPDATE tianquan_oauth.oauth_security_state
         SET generation = #{po.generation}, enabled = #{po.enabled}, revision = #{po.revision},
             directory_subject_revision = #{po.directorySubjectRevision},
+            directory_subject_ordered_revision = #{po.directorySubjectOrderedRevision},
             directory_subject_fingerprint = #{po.directorySubjectFingerprint,jdbcType=VARCHAR},
             reason_code = #{po.reasonCode}, version = #{po.version},
             update_user_id = #{po.updateUserId}, update_time = #{po.updateTime}
@@ -150,6 +152,40 @@
           AND (directory_subject_revision &gt; #{sourceRevision}
                OR (directory_subject_revision = #{sourceRevision} AND directory_subject_fingerprint = #{fingerprint}))
           AND deleted_at IS NULL
+    </update>
+
+    <update id="fenceRealmIfConsentInactive">
+        UPDATE tianquan_oauth.oauth_security_state s
+        SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
+          AND s.target_type = 'REALM' AND s.target_key = 'self' AND s.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_consent c
+                          WHERE c.tenant_id = #{tenantId} AND c.client_pk = #{clientPk}
+                            AND c.subject = #{subject} AND c.status = 'ACTIVE' AND c.deleted_at IS NULL)
+    </update>
+    <update id="fenceSubjectDelivery">
+        UPDATE tianquan_oauth.oauth_security_state s
+        SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
+          AND s.target_type = 'SUBJECT' AND s.target_key = #{subject} AND s.deleted_at IS NULL
+          AND s.directory_subject_ordered_revision &gt;= #{sourceRevision}
+        <if test="previousRevision > 0">
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_subject_delivery_receipt receipt
+                      WHERE receipt.tenant_id = #{tenantId} AND receipt.identity_sub = #{subject}
+                        AND receipt.source_revision = #{previousRevision} AND receipt.deleted_at IS NULL)
+        </if>
+    </update>
+    <update id="fenceSubjectDeliveryDuplicate">
+        UPDATE tianquan_oauth.oauth_security_state s
+        SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
+          AND s.target_type = 'SUBJECT' AND s.target_key = #{subject} AND s.deleted_at IS NULL
+          AND s.directory_subject_ordered_revision &gt;= #{sourceRevision}
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_subject_delivery_receipt receipt
+                      WHERE receipt.tenant_id = #{tenantId} AND receipt.identity_sub = #{subject}
+                        AND receipt.source_revision = #{sourceRevision} AND receipt.event_id = #{eventId}
+                        AND receipt.previous_revision = #{previousRevision} AND receipt.payload_fingerprint = #{payloadFingerprint}
+                        AND receipt.deleted_at IS NULL)
     </update>
 
     <update id="deleteVersionedById">

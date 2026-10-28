@@ -26,6 +26,10 @@ At the code level, Shoubing handles identity and token issuance; [Jianshen](http
 
 Token, authorization, consent, authentication, interaction, security-generation, revocation and audit-state saves read their candidates without a row lock and use version conditions in primary updates; concurrent writes to the same observed version cannot both succeed. A lagging replica may return an older token or revocation state, and a stale write can fail with a version conflict. Other OAuth locking paths still require adaptation before this service can use strict read/write splitting.
 
+Subject revocation creates per-tenant durable tasks in the directory transaction. Tasks for the same subject and tenant wait for their predecessors, and target security-event receipts prevent later outbox deliveries from being acknowledged first. Shoubing enables recovery of retryable outbox messages after their attempt budget is exhausted; permanent failures remain dead. Browser password changes use a directory receipt so a retry after the password commit does not change it again.
+
+For a multi-primary rollout, install the matching Components version, route password-change receipts with the identity directory and subject-delivery receipts with their tenant security state, and apply the managed manifests to every primary. Stop older writers and dispatchers during the upgrade, and drain or reconcile already queued subject events before starting the new ordered chain: earlier versions do not create the new receipts or enforce their ordering. Supply the approved previous routing fingerprint when changing topology. These code paths still require real PostgreSQL primary/replica acceptance; the checked-in example remains a single-primary topology.
+
 ## Build
 
 Requires Java 25 and the included Maven Wrapper. The shared parent manages Spring Boot 4.1.2. Once the 0.0.1 dependencies are published:

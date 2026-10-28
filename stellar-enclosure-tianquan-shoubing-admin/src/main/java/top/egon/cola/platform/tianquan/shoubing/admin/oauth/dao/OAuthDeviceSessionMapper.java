@@ -14,6 +14,12 @@ public interface OAuthDeviceSessionMapper extends EgonColaMapper<OAuthDeviceSess
             @Param("digest") String digest, @Param("clientPk") Long clientPk);
     List<OAuthDeviceSessionPO> selectLiveBySubject(@Param("tenantId") Long tenantId,
             @Param("subject") String subject, @Param("now") Instant now);
+    int fenceLiveSnapshot(@Param("tenantId") Long tenantId, @Param("stateId") long stateId,
+            @Param("expectedVersion") long expectedVersion, @Param("subject") String subject,
+            @Param("now") Instant now, @Param("sessions") List<top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthDeviceSessionBO> sessions,
+            @Param("count") int count, @Param("actor") String actor);
+    int fenceRevokedWithoutLiveAuthorizations(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("expectedVersion") long expectedVersion, @Param("now") Instant now, @Param("actor") String actor);
     int deleteRetained(@Param("tenantId") Long tenantId, @Param("now") Instant now,
             @Param("limit") int limit, @Param("actor") String actor);
     int updateExpectedVersion(@Param("tenantId") Long tenantId, @Param("po") OAuthDeviceSessionPO po,

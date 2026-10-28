@@ -27,10 +27,16 @@ import top.egon.cola.platform.tianquan.shoubing.core.audit.OAuthSecurityChangedE
 public final class OAuthSecurityDeliveryHandler implements DeliveryHandler {
 
     private top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver managementRealms;
+    private top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSubjectDeliveryOrderService deliveryOrder;
 
     @org.springframework.beans.factory.annotation.Autowired
     void setManagementRealms(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver resolver) {
         this.managementRealms = Objects.requireNonNull(resolver, "resolver");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setDeliveryOrder(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSubjectDeliveryOrderService service) {
+        this.deliveryOrder = Objects.requireNonNull(service, "service");
     }
 
     public static final String CHANNEL = OAuthSecurityChangedEvent.OUTBOX_CHANNEL;
@@ -81,6 +87,19 @@ public final class OAuthSecurityDeliveryHandler implements DeliveryHandler {
                 throw new IllegalArgumentException("OAUTH_SECURITY_EVENT_REALM_MISMATCH");
             }
             projectionComponent.applyProjection(trustedRealm, event);
+            var headers = delivery.headers();
+            String source = headers.get(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSubjectDeliveryOrderService.SOURCE_REVISION_HEADER);
+            String previous = headers.get(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSubjectDeliveryOrderService.PREVIOUS_REVISION_HEADER);
+            if (source != null || previous != null) {
+                if (!"SUBJECT".equals(event.targetType()) || source == null || previous == null
+                        || !source.matches("[1-9][0-9]{0,18}") || !previous.matches("0|[1-9][0-9]{0,18}")) {
+                    throw new IllegalArgumentException("OAUTH_SUBJECT_DELIVERY_HEADERS_INVALID");
+                }
+                long sequence = Long.parseLong(source); long predecessor = Long.parseLong(previous);
+                Objects.requireNonNull(deliveryOrder, "deliveryOrder").confirm(trustedRealm, event.targetKey(),
+                        sequence, predecessor, event.eventId(),
+                        top.egon.cola.component.common.crypto.digest.Digests.sha256Hex(delivery.payload()));
+            }
             return DeliveryResult.success();
         } catch (JsonProcessingException | IllegalArgumentException invalid) {
             return DeliveryResult.permanentFailure(

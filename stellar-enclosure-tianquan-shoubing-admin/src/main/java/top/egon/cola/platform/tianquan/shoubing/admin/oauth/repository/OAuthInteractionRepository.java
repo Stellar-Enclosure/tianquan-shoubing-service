@@ -15,6 +15,9 @@ public interface OAuthInteractionRepository {
 
     OAuthInteractionBO save(TrustedRealmBO realm, OAuthInteractionBO value, long expectedVersion);
 
+    boolean claimPasswordChange(TrustedRealmBO realm, OAuthInteractionBO observed, Instant now);
+    boolean consumePasswordChange(TrustedRealmBO realm, OAuthInteractionBO claimed, Instant now);
+
     List<OAuthInteractionBO> findRetainedBefore(TrustedRealmBO realm, Instant now, long afterId, int limit);
     boolean deleteRetained(TrustedRealmBO realm, long id, long expectedVersion, Instant now);
 }

@@ -46,7 +46,8 @@ class OAuthSecurityProjectionComponentTest {
     @BeforeEach void setUp() {
         component = new OAuthSecurityProjectionComponent(states, revocations, authorizations, clients, realms, management, Clock.fixed(NOW, ZoneOffset.UTC));
         var row = OAuthRealmBO.builder().issuer(REALM.getIssuer()).realmKey(REALM.getRealmKey()).status("ACTIVE").activeKid("key").build();
-        when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(row));
+        when(realms.findByRealmKey(REALM)).thenReturn(Optional.of(row));
+        when(realms.fenceRecovery(eq(REALM), any(), anyList(), anyBoolean())).thenReturn(true);
         when(realms.fenceActiveObservedVersion(REALM)).thenReturn(true);
         when(realms.findByIssuer(REALM)).thenReturn(Optional.of(row));
         when(clients.findAllByRealm(REALM)).thenReturn(List.of(OAuthClientBO.builder().id(501L).clientId("client").status(OAuthClient.Status.ACTIVE).build()));
@@ -110,6 +111,15 @@ class OAuthSecurityProjectionComponentTest {
     @Test void emptyAuthorityBootstrapIsIdempotent() {
         rows.clear(); assertEquals(0, component.recover(REALM)); assertEquals(2, rows.size());
         assertEquals(0, component.recover(REALM)); verify(states, times(2)).save(eq(REALM), any(), eq(0L));
+        verify(realms, never()).findByRealmKeyForUpdate(any());
+    }
+
+    @Test void incompleteReplicaCannotInitializeGenerations() {
+        rows.clear();
+        when(realms.fenceRecovery(eq(REALM), any(), anyList(), eq(true))).thenReturn(false);
+        assertThrows(OAuth2AuthenticationException.class, () -> component.recover(REALM));
+        verify(states, never()).save(any(), any(), anyLong());
+        verify(realms, never()).findByRealmKeyForUpdate(any());
     }
 
     @Test void outboxAcknowledgementCannotInventARevisionOrChangeAuthority() {

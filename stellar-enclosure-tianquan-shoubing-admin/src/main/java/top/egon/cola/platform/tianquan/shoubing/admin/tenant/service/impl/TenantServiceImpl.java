@@ -74,7 +74,7 @@ public class TenantServiceImpl implements TenantService {
     @Transactional
     public TenantView update(String tenantId, UpdateTenantCommand command) {
         Objects.requireNonNull(command, "command");
-        IdentityTenantBO tenant = tenants.findByIdForUpdate(required(tenantId, "tenantId"))
+        IdentityTenantBO tenant = tenants.findById(required(tenantId, "tenantId"))
                 .orElseThrow(() -> new IllegalStateException("tenant not found"));
         tenant.update(
                 command.tenantName(),

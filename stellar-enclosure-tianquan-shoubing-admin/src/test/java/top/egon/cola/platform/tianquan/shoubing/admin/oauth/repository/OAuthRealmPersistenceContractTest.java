@@ -302,12 +302,13 @@ class OAuthRealmPersistenceContractTest {
         storedRealm.setStoragePartitionId(trustedRealm.getStoragePartitionId());
         storedRealm.setStatus("ACTIVE");
         storedRealm.setTrustVersion(4L);
-        when(realmMapper.selectByRealmKeyForUpdate(TENANT_PARTITION_ID, trustedRealm.getRealmKey()))
+        when(realmMapper.selectByRealmKey(TENANT_PARTITION_ID, trustedRealm.getRealmKey()))
                 .thenReturn(storedRealm);
         OAuthRealmBO staleRealm = realmConverter.toTarget(storedRealm).setVersion(2L);
         assertThrows(OptimisticLockingFailureException.class,
                 () -> realms.save(trustedRealm, staleRealm, 1L));
         verify(realmMapper, never()).updateExpectedVersion(anyLong(), any(), anyLong());
+        verify(realmMapper, never()).selectByRealmKeyForUpdate(anyLong(), any(String.class));
 
         OAuthClientMapper clientMapper = mock(OAuthClientMapper.class);
         OAuthClientConverter clientConverter = Mappers.getMapper(OAuthClientConverter.class);

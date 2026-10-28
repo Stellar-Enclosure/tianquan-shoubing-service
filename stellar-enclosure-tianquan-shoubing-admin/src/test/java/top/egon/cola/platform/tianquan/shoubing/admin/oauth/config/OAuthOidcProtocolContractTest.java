@@ -344,6 +344,32 @@ class OAuthOidcProtocolContractTest {
     }
 
     @Test
+    void orderedSubjectDeliveryRetriesUntilItsPredecessorIsConfirmed() throws Exception {
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        var projection = mock(OAuthSecurityProjectionComponent.class);
+        var handler = new OAuthSecurityDeliveryHandler(mapper, mock(TenantIssuerService.class), projection, mock(OAuthRevocationRepository.class));
+        var resolver = mock(OAuthManagementRealmResolver.class);
+        var order = mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSubjectDeliveryOrderService.class);
+        var realm = trustedTenant();
+        when(resolver.resolveTenantForRevocation("1001")).thenReturn(realm);
+        org.springframework.test.util.ReflectionTestUtils.setField(handler, "managementRealms", resolver);
+        org.springframework.test.util.ReflectionTestUtils.setField(handler, "deliveryOrder", order);
+        String payload = mapper.writeValueAsString(Map.of("eventId", "event-20", "schemaVersion", 1,
+                "issuer", realm.getIssuer().toASCIIString(), "realmKey", realm.getRealmKey(), "revision", 8,
+                "targetType", "SUBJECT", "targetKey", "alice", "generation", 2,
+                "reasonCode", "USER_DISABLED", "occurredAt", NOW.toString()));
+        String fingerprint = top.egon.cola.component.common.crypto.digest.Digests.sha256Hex(payload);
+        org.mockito.Mockito.doThrow(new org.springframework.dao.TransientDataAccessResourceException("predecessor not visible"))
+                .doNothing().when(order).confirm(realm, "alice", 20L, 10L, "event-20", fingerprint);
+        var context = new DeliveryContext("event-20", OAuthSecurityDeliveryHandler.CHANNEL,
+                OAuthSecurityDeliveryHandler.DESTINATION, payload, "application/json", "1",
+                Map.of("oauth-subject-source-revision", "20", "oauth-subject-previous-revision", "10"), null, 1, 5, NOW);
+        assertEquals(DeliveryResult.Kind.RETRYABLE_FAILURE, handler.deliver(context).kind());
+        assertEquals(DeliveryResult.Kind.SUCCESS, handler.deliver(context).kind());
+        verify(order, org.mockito.Mockito.times(2)).confirm(realm, "alice", 20L, 10L, "event-20", fingerprint);
+    }
+
+    @Test
     void mapsSavedAuthorizationRequestToTypedPkceAndOidcAttributes() {
         String state = "state-that-must-not-be-persisted";
         String nonce = "nonce-that-must-not-be-logged-or-serialized";

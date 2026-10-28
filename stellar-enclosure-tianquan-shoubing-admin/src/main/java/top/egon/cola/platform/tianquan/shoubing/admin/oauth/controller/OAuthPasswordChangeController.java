@@ -52,6 +52,8 @@ public class OAuthPasswordChangeController {
             return ResponseEntity.status(303).location(URI.create(location)).cacheControl(CacheControl.noStore()).build();
         } catch (top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityException rejected) {
             return ResponseEntity.status(400).cacheControl(CacheControl.noStore()).build();
+        } catch (org.springframework.dao.TransientDataAccessException retryable) {
+            return ResponseEntity.status(503).header("Retry-After", "1").cacheControl(CacheControl.noStore()).build();
         } finally { Arrays.fill(oldPassword, '\0'); Arrays.fill(newPassword, '\0'); }
     }
 }

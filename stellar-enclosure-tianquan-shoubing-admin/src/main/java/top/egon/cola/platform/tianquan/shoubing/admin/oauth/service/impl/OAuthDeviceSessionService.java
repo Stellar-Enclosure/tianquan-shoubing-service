@@ -20,6 +20,9 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuth
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthDeviceSessionRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEvent;
 import top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEventPort;
 
@@ -34,6 +37,7 @@ public class OAuthDeviceSessionService {
     @Qualifier("oAuthClientRepository") private final OAuthClientRepository clients;
     @Qualifier("identityOutboxPublisher") private final IdentitySecurityEventPort events;
     @Qualifier("idpClock") private final Clock clock;
+    @Qualifier("oAuthSecurityStateRepository") private final OAuthSecurityStateRepository securityStates;
 
     @Transactional
     public Long register(TrustedRealmBO realm, OAuthClientBO client, OAuthAuthorizationBO grant, HttpServletRequest request) {
@@ -42,7 +46,15 @@ public class OAuthDeviceSessionService {
         if (existing != null && (!"ACTIVE".equals(existing.getStatus()) || !grant.getPrincipalName().equals(existing.getSubject()))) {
             throw new OAuth2AuthenticationException(new OAuth2Error("login_required", "Fresh authentication required", null));
         }
-        var live = sessions.findLiveBySubject(realm, grant.getPrincipalName(), clock.instant());
+        var now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        var live = sessions.findLiveBySubject(realm, grant.getPrincipalName(), now);
+        var state = securityStates.findByTarget(realm, OAuthSecurityTargetEnum.REALM, "self")
+                .orElseThrow(() -> new org.springframework.dao.TransientDataAccessResourceException("OAuth realm state is not visible"));
+        if (!sessions.fenceLiveSnapshot(realm, state.getId(), state.getVersion(), grant.getPrincipalName(), now, live)) {
+            throw new org.springframework.dao.TransientDataAccessResourceException("OAuth device sessions are not yet visible");
+        }
+        state.setVersion(Math.addExact(state.getVersion(), 1L));
+        OAuthTransactionFences.securityStateWritten(realm, state);
         boolean alreadyLive = existing != null && live.stream().anyMatch(value -> Objects.equals(value.getId(), existing.getId()));
         int count = live.size();
         for (var candidate : live) {
@@ -62,7 +74,7 @@ public class OAuthDeviceSessionService {
                 .subject(grant.getPrincipalName()).authenticationJtiDigest(grant.getAuthenticationJtiDigest())
                 .authenticatedAt(clock.instant()).expiresAt(grant.getAbsoluteExpiresAt()).status("ACTIVE")
                 .userAgent(displayValue(request.getHeader("User-Agent"), 512)).ipAddress(displayValue(request.getRemoteAddr(), 64)).build(), 0L);
-        events.append(new IdentitySecurityEvent("IDENTITY_DEVICE_SESSION_CREATED", created.getSubject(),
+        events.appendForTenant(realm.getStoragePartitionId(), new IdentitySecurityEvent("IDENTITY_DEVICE_SESSION_CREATED", created.getSubject(),
                 "DEVICE_SESSION_LOGIN", "NATIVE_SSO", clock.instant()));
         return created.getId();
     }
@@ -88,13 +100,13 @@ public class OAuthDeviceSessionService {
     private void revoke(TrustedRealmBO realm, OAuthDeviceSessionBO session, String reason) {
         if ("REVOKED".equals(session.getStatus())) { return; }
         long version = session.getVersion();
-        sessions.save(realm, session.toBuilder().version(version + 1).status("REVOKED").revokedAt(clock.instant()).reasonCode(reason).build(), version);
+        var revoked = sessions.save(realm, session.toBuilder().version(version + 1).status("REVOKED").revokedAt(clock.instant()).reasonCode(reason).build(), version);
         long after = 0L;
         while (true) {
             var page = grants.findByDeviceSession(realm, session.getId(), after, 500);
             for (var candidate : page) {
                 after = Math.max(after, candidate.getId());
-                var grant = grants.findByIdForUpdate(realm, candidate.getId()).orElseThrow();
+                var grant = candidate;
                 if (!Objects.equals(grant.getDeviceSessionId(), session.getId()) || !session.getSubject().equals(grant.getPrincipalName())) {
                     throw new IllegalStateException("OAUTH_DEVICE_SESSION_GRANT_MISMATCH");
                 }
@@ -104,11 +116,16 @@ public class OAuthDeviceSessionService {
             }
             if (page.size() < 500) { break; }
         }
-        events.append(new IdentitySecurityEvent("IDENTITY_DEVICE_SESSION_REVOKED", session.getSubject(), reason, "NATIVE_SSO", clock.instant()));
+        if (!sessions.fenceRevokedWithoutLiveAuthorizations(realm, revoked.getId(), revoked.getVersion(), clock.instant())) {
+            throw new org.springframework.dao.TransientDataAccessResourceException("OAuth device authorizations are not yet visible");
+        }
+        events.appendForTenant(realm.getStoragePartitionId(), new IdentitySecurityEvent("IDENTITY_DEVICE_SESSION_REVOKED", session.getSubject(), reason, "NATIVE_SSO", clock.instant()));
     }
 
     private void lockRealm(TrustedRealmBO realm) {
-        realms.findByRealmKeyForUpdate(realm).orElseThrow(() -> new IllegalStateException("OAUTH_SESSION_REALM_MISSING"));
+        if (!OAuthTransactionFences.realm(realms, realm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before device session update");
+        }
     }
 
     private static String displayValue(String value, int limit) {

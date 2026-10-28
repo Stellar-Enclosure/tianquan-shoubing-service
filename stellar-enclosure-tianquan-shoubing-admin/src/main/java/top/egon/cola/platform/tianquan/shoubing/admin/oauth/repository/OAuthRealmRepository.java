@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
 import org.springframework.validation.annotation.Validated;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 
 import java.util.List;
@@ -22,6 +23,9 @@ public interface OAuthRealmRepository {
     boolean fenceObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm);
 
     boolean fenceActiveObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm);
+
+    boolean fenceRecovery(@NotNull @Valid TrustedRealmBO trustedRealm, OAuthRealmBO observed,
+                          List<OAuthClientBO> clients, boolean initializing);
 
     List<OAuthRealmBO> findAllByStoragePartition(@NotNull @Valid TrustedRealmBO trustedRealm);
 

@@ -67,6 +67,7 @@ class OAuthSecurityReplicaWriteTest {
         var row = new OAuthSecurityStatePO();
         row.setId(21L); row.setTenantId(1001L); row.setVersion(1L); row.setTargetType(OAuthSecurityTargetEnum.SUBJECT);
         row.setTargetKey("user"); row.setGeneration(1L); row.setRevision(1L); row.setEnabled(true); row.setReasonCode("INITIALIZED");
+        row.setDirectorySubjectRevision(0L); row.setDirectorySubjectOrderedRevision(0L);
         var value = OAuthSecurityStateBO.builder().id(21L).version(2L).targetType(OAuthSecurityTargetEnum.SUBJECT)
                 .targetKey("user").generation(2L).revision(2L).enabled(false).reasonCode("REVOKED").build();
         var barrier = new CyclicBarrier(2); var won = new AtomicBoolean();

@@ -31,12 +31,20 @@ class DeviceSessionServiceTest {
     private final OAuthAuthorizationRepository grants = mock(OAuthAuthorizationRepository.class);
     private final OAuthClientRepository clients = mock(OAuthClientRepository.class);
     private final IdentitySecurityEventPort events = mock(IdentitySecurityEventPort.class);
-    private final OAuthDeviceSessionService service = new OAuthDeviceSessionService(realms, sessions, grants, clients, events, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository states =
+            mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class);
+    private final OAuthDeviceSessionService service = new OAuthDeviceSessionService(realms, sessions, grants, clients, events, Clock.fixed(NOW, ZoneOffset.UTC), states);
     private final OAuthClientBO client = OAuthClientBO.builder().id(11L).clientId("browser").clientName("Browser").browserBound(true).build();
     private final MockHttpServletRequest request = new MockHttpServletRequest();
 
     @BeforeEach void setUp() {
-        when(realms.findByRealmKeyForUpdate(realm)).thenReturn(Optional.of(OAuthRealmBO.builder().build()));
+        when(realms.fenceObservedVersion(realm)).thenReturn(true);
+        when(states.findByTarget(eq(realm), any(), eq("self"))).thenReturn(Optional.of(
+                top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO.builder()
+                        .id(99L).version(0L).targetType(top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum.REALM)
+                        .targetKey("self").build()));
+        when(sessions.fenceLiveSnapshot(eq(realm), anyLong(), anyLong(), anyString(), any(), anyList())).thenReturn(true);
+        when(sessions.fenceRevokedWithoutLiveAuthorizations(eq(realm), anyLong(), anyLong(), any())).thenReturn(true);
         when(sessions.save(eq(realm), any(), anyLong())).thenAnswer(i -> {
             OAuthDeviceSessionBO value = i.getArgument(1);
             return value.toBuilder().id(value.getId() == null ? 6L : value.getId()).build();
@@ -50,13 +58,14 @@ class DeviceSessionServiceTest {
         when(sessions.findLiveBySubject(realm, "alice", NOW)).thenReturn(live);
         var oldGrant = grant(51L, 1L);
         when(grants.findByDeviceSession(realm, 1L, 0L, 500)).thenReturn(List.of(oldGrant));
-        when(grants.findByIdForUpdate(realm, 51L)).thenReturn(Optional.of(oldGrant));
         assertEquals(6L, service.register(realm, client, grant(null, null), request));
         verify(sessions).save(eq(realm), argThat(value -> value.getId() != null && value.getId() == 1L
                 && "REVOKED".equals(value.getStatus()) && "DEVICE_SESSION_LIMIT".equals(value.getReasonCode())), eq(0L));
         verify(grants).save(eq(realm), argThat(value -> "REVOKED".equals(value.getStatus())), eq(0L));
         verify(grants, never()).findByAuthentication(any(), anyString(), anyLong(), anyInt());
         verify(grants, never()).findByPrincipalName(any(), anyString(), anyString(), anyLong(), anyInt());
+        verify(realms, never()).findByRealmKeyForUpdate(any());
+        verify(grants, never()).findByIdForUpdate(any(), anyLong());
     }
 
     @Test void theSameClientAndSsoReuseOneSlotAcrossResourcesAndExtendExpiry() {
@@ -74,12 +83,23 @@ class DeviceSessionServiceTest {
         var browser = grant(51L, 1L);
         var app = grant(52L, 2L);
         when(grants.findByDeviceSession(realm, 1L, 0L, 500)).thenReturn(List.of(browser));
-        when(grants.findByIdForUpdate(realm, 51L)).thenReturn(Optional.of(browser));
         service.revoke(realm, "alice", 1L);
         assertEquals("REVOKED", browser.getStatus());
         assertEquals("ACTIVE", app.getStatus());
         verify(grants, never()).findByIdForUpdate(realm, 52L);
-        verify(events).append(argThat(event -> "DEVICE_SESSION_KICKED".equals(event.reason())));
+        verify(events).appendForTenant(eq(realm.getStoragePartitionId()), argThat(event -> "DEVICE_SESSION_KICKED".equals(event.reason())));
+    }
+
+    @Test void replicaMissesCannotBypassSessionLimitOrLeaveLiveAuthorizations() {
+        when(sessions.fenceLiveSnapshot(eq(realm), anyLong(), anyLong(), anyString(), any(), anyList())).thenReturn(false);
+        assertThrows(org.springframework.dao.TransientDataAccessResourceException.class,
+                () -> service.register(realm, client, grant(null, null), request));
+        verify(sessions, never()).save(any(), any(), anyLong());
+        when(sessions.findById(realm, 1L)).thenReturn(Optional.of(session(1L)));
+        when(sessions.fenceRevokedWithoutLiveAuthorizations(eq(realm), anyLong(), anyLong(), any())).thenReturn(false);
+        assertThrows(org.springframework.dao.TransientDataAccessResourceException.class,
+                () -> service.revoke(realm, "alice", 1L));
+        verifyNoInteractions(events);
     }
 
     @Test void anotherAccountCannotKickADeviceEvenWithAKnownSessionId() {
@@ -101,7 +121,7 @@ class DeviceSessionServiceTest {
         service.revoke(realm, "alice", 1L);
         verifyNoInteractions(grants, events);
         when(sessions.findById(realm, 1L)).thenReturn(Optional.of(session(1L)));
-        doThrow(new IllegalStateException("audit unavailable")).when(events).append(any());
+        doThrow(new IllegalStateException("audit unavailable")).when(events).appendForTenant(anyLong(), any());
         assertThrows(IllegalStateException.class, () -> service.revoke(realm, "alice", 1L));
     }
 

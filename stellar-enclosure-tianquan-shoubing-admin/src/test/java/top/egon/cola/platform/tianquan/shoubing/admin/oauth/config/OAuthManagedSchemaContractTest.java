@@ -57,7 +57,7 @@ class OAuthManagedSchemaContractTest {
             "oauth_identity_credential",
             "oauth_identity_tenant",
             "oauth_identity_membership",
-            "oauth_subject_tenant_history", "oauth_subject_revocation_task",
+            "oauth_subject_tenant_history", "oauth_subject_revocation_task", "oauth_password_change_receipt", "oauth_subject_delivery_receipt",
             "oauth_realm",
             "oauth_client",
             "oauth_grant",
@@ -101,7 +101,7 @@ class OAuthManagedSchemaContractTest {
         JsonNode manifest = objectMapper.readTree(requiredResource(MANIFEST_RESOURCE));
 
         assertEquals("tianquan-oauth", manifest.path("family").asText());
-        assertEquals(6, manifest.path("scripts").size());
+        assertEquals(8, manifest.path("scripts").size());
         JsonNode script = manifest.path("scripts").get(0);
         assertEquals("20261008_001", script.path("version").asText());
         assertEquals(SQL_RESOURCE, script.path("path").asText());
@@ -143,8 +143,19 @@ class OAuthManagedSchemaContractTest {
         assertTrue(fanoutSql.contains("SELECT DISTINCT tenant_id, identity_sub, CAST(identity_tenant_id AS BIGINT), NULL FROM oauth_identity_membership"));
         assertTrue(fanoutSql.contains("UNIQUE (tenant_id, identity_sub, target_tenant_id, source_revision)"));
         assertTrue(fanoutSql.contains("BEFORE INSERT OR UPDATE OR DELETE ON oauth_identity_membership"));
+        JsonNode receipt = manifest.path("scripts").get(6);
+        assertEquals("20261028_003", receipt.path("version").asText());
+        byte[] receiptBytes = requiredResource(receipt.path("path").asText());
+        assertEquals(sha256(receiptBytes), receipt.path("sha256").asText());
+        assertTrue(new String(receiptBytes, StandardCharsets.UTF_8).contains("UNIQUE (tenant_id, operation_key)"));
+        JsonNode delivery = manifest.path("scripts").get(7);
+        assertEquals("20261028_004", delivery.path("version").asText());
+        byte[] deliveryBytes = requiredResource(delivery.path("path").asText());
+        assertEquals(sha256(deliveryBytes), delivery.path("sha256").asText());
+        assertTrue(new String(deliveryBytes, StandardCharsets.UTF_8).contains("UNIQUE (tenant_id, identity_sub, source_revision)"));
         String sql = new String(sqlBytes, StandardCharsets.UTF_8) + new String(statelessBytes, StandardCharsets.UTF_8)
-                + new String(deviceBytes, StandardCharsets.UTF_8) + new String(fanoutBytes, StandardCharsets.UTF_8);
+                + new String(deviceBytes, StandardCharsets.UTF_8) + new String(fanoutBytes, StandardCharsets.UTF_8)
+                + new String(receiptBytes, StandardCharsets.UTF_8) + new String(deliveryBytes, StandardCharsets.UTF_8);
         Matcher tableMatcher = Pattern.compile(
                 "(?im)^\\s*CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([a-z0-9_]+)\\b"
         ).matcher(sql);
@@ -219,7 +230,7 @@ class OAuthManagedSchemaContractTest {
             var identities = new top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity(topology.profiles(), 9000L);
             for (String table : List.of("oauth_audit", "oauth_grant", "oauth_resource", "oauth_security_state",
                     "oauth_identity_user", "oauth_identity_credential", "oauth_identity_membership", "oauth_realm",
-                    "oauth_subject_tenant_history", "oauth_subject_revocation_task")) {
+                    "oauth_subject_tenant_history", "oauth_subject_revocation_task", "oauth_password_change_receipt", "oauth_subject_delivery_receipt")) {
                 assertEquals("legacy-id", identities.forTenant(table, 1001L).messageId("legacy-id"));
             }
         }
@@ -245,6 +256,23 @@ class OAuthManagedSchemaContractTest {
         assertTrue(basePersistenceKeys.contains(
                 "egon.cola.component.transactional-outbox.state-machine.business.enabled"
         ));
+    }
+
+    @Test
+    void outboxExhaustedRecoveryIsEnabledInBothProfiles() throws Exception {
+        for (String name : List.of("application.yml", "application-local.yml")) {
+            var environment = new org.springframework.mock.env.MockEnvironment();
+            for (var source : new YamlPropertySourceLoader().load(name, new org.springframework.core.io.ClassPathResource(name))) {
+                environment.getPropertySources().addLast(source);
+            }
+            var retry = org.springframework.boot.context.properties.bind.Binder.get(environment)
+                    .bind("egon.cola.component.transactional-outbox.retry",
+                            org.springframework.boot.context.properties.bind.Bindable.of(
+                                    top.egon.cola.component.outbox.autoconfigure.TransactionalOutboxProperties.Retry.class))
+                    .get();
+            assertTrue(retry.isRecoverExhausted());
+            assertEquals(java.time.Duration.ofMinutes(5), retry.getExhaustedRetryDelay());
+        }
     }
 
     @Test

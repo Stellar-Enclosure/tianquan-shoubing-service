@@ -99,6 +99,30 @@ public class OAuthInteractionRepositoryImpl extends EgonColaRepository<OAuthInte
         });
     }
 
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean claimPasswordChange(TrustedRealmBO realm, OAuthInteractionBO observed, Instant now) {
+        requirePasswordChange(observed, now);
+        return withRealm(realm, tenant -> baseMapper.claimPasswordChange(tenant, observed,
+                now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean consumePasswordChange(TrustedRealmBO realm, OAuthInteractionBO claimed, Instant now) {
+        requirePasswordChange(claimed, now);
+        return withRealm(realm, tenant -> baseMapper.consumePasswordChange(tenant, claimed,
+                now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    private static void requirePasswordChange(OAuthInteractionBO interaction, Instant now) {
+        if (interaction == null || interaction.getId() == null || interaction.getId() <= 0 || interaction.getVersion() < 0
+                || !"PASSWORD_CHANGE".equals(interaction.getPurpose()) || interaction.getRestrictedSubject() == null
+                || interaction.getRestrictedSubject().isBlank() || interaction.getBrowserBindingDigest() == null
+                || interaction.getCsrfDigest() == null || now == null) throw new IllegalArgumentException("OAUTH_PASSWORD_CHANGE_INVALID");
+        requireKey(interaction.getInteractionId());
+    }
+
     static void requireTransition(OAuthInteractionPO current, OAuthInteractionBO requested) {
         if (requested.getRetainUntil() == null) { throw new IllegalArgumentException("OAUTH_STATE_RETENTION_REQUIRED"); }
         if (!List.of("AUTHORIZATION", "PASSWORD_CHANGE", "LOGOUT").contains(requested.getPurpose())

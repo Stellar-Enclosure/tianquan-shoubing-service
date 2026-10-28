@@ -30,6 +30,14 @@ public interface OAuthSecurityStateRepository {
 
     boolean fenceRealmIfSubjectAbsent(TrustedRealmBO realm, long id, long expectedVersion, String subject, Instant now);
 
+    boolean fenceRealmIfConsentInactive(TrustedRealmBO realm, long id, long expectedVersion,
+            long clientPk, String subject, Instant now);
+
+    boolean fenceSubjectDelivery(TrustedRealmBO realm, long id, long expectedVersion,
+            String subject, long sourceRevision, long previousRevision, Instant now);
+    boolean fenceSubjectDeliveryDuplicate(TrustedRealmBO realm, long id, long expectedVersion,
+            String subject, long sourceRevision, long previousRevision, String eventId, String payloadFingerprint, Instant now);
+
     boolean fenceSubjectAtLeast(TrustedRealmBO realm, OAuthSecurityStateBO subject, long sourceRevision, String fingerprint, Instant now);
 
     Optional<OAuthSecurityStateBO> findByTarget(

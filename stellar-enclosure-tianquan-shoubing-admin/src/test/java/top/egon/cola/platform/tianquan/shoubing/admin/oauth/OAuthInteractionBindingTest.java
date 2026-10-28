@@ -55,7 +55,8 @@ class OAuthInteractionBindingTest {
 
     @BeforeEach void prepare() {
         interactions = new OAuthBrowserInteractionComponent(rows, clients, realms, issuers, cipher, authentications,
-                identities, mock(OAuthSsoLifecycleService.class), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), ORIGIN);
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthPasswordChangeCoordinator.class),
+                mock(OAuthSsoLifecycleService.class), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), ORIGIN);
         when(issuers.resolveExactIssuer(ISSUER)).thenReturn(realm);
         client = OAuthClientBO.builder().id(11L).purpose(OAuthClientPurposeEnum.USER).status(OAuthClient.Status.ACTIVE)
                 .clientId("web").redirectUris(List.of("https://web.example/callback")).resourceUris(List.of("https://api.example/orders"))

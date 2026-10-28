@@ -25,20 +25,49 @@
         WHERE tenant_id = #{tenantId} AND authentication_jti_digest = #{digest}
           AND client_pk = #{clientPk} AND deleted_at IS NULL
     </select>
-    <select id="selectLiveBySubject" resultMap="Session">
-        SELECT s.* FROM tianquan_oauth.oauth_device_session s
+    <sql id="liveSessionSet">
+        FROM tianquan_oauth.oauth_device_session s
         JOIN tianquan_oauth.oauth_authentication a ON a.tenant_id = s.tenant_id AND a.jti_digest = s.authentication_jti_digest
         JOIN tianquan_oauth.oauth_security_state u ON u.tenant_id = s.tenant_id AND u.target_type = 'SUBJECT' AND u.target_key = s.subject
         JOIN tianquan_oauth.oauth_security_state r ON r.tenant_id = s.tenant_id AND r.target_type = 'REALM' AND r.target_key = 'self'
         WHERE s.tenant_id = #{tenantId} AND s.subject = #{subject} AND s.status = 'ACTIVE' AND s.expires_at &gt; #{now}
+          AND a.tenant_id = #{tenantId} AND u.tenant_id = #{tenantId} AND r.tenant_id = #{tenantId}
           AND s.deleted_at IS NULL AND a.deleted_at IS NULL AND a.status &lt;&gt; 'REVOKED'
           AND u.deleted_at IS NULL AND r.deleted_at IS NULL AND u.enabled AND r.enabled
           AND a.subject_generation = u.generation AND a.realm_generation = r.generation
           AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization g
-                      WHERE g.tenant_id = s.tenant_id AND g.device_session_id = s.id AND g.status = 'ACTIVE'
+                      WHERE g.tenant_id = #{tenantId} AND g.tenant_id = s.tenant_id AND g.device_session_id = s.id AND g.status = 'ACTIVE'
                         AND g.absolute_expires_at &gt; #{now} AND g.deleted_at IS NULL)
+    </sql>
+    <select id="selectLiveBySubject" resultMap="Session">
+        SELECT s.* <include refid="liveSessionSet"/>
         ORDER BY s.authenticated_at, s.id
     </select>
+    <update id="fenceLiveSnapshot">
+        UPDATE tianquan_oauth.oauth_security_state state
+        SET version = state.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE state.tenant_id = #{tenantId} AND state.id = #{stateId} AND state.version = #{expectedVersion}
+          AND state.target_type = 'REALM' AND state.target_key = 'self' AND state.deleted_at IS NULL
+          AND (SELECT count(*) <include refid="liveSessionSet"/>) = #{count}
+        <if test="sessions != null and !sessions.isEmpty()">
+          AND (SELECT count(*) <include refid="liveSessionSet"/> AND s.id IN
+              <foreach collection="sessions" item="session" open="(" separator="," close=")">#{session.id}</foreach>) = #{count}
+          <foreach collection="sessions" item="session">
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_device_session observed
+                      WHERE observed.tenant_id = #{tenantId} AND observed.id = #{session.id}
+                        AND observed.version = #{session.version} AND observed.deleted_at IS NULL)
+          </foreach>
+        </if>
+    </update>
+    <update id="fenceRevokedWithoutLiveAuthorizations">
+        UPDATE tianquan_oauth.oauth_device_session s
+        SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
+          AND s.status = 'REVOKED' AND s.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization g
+                          WHERE g.tenant_id = #{tenantId} AND g.device_session_id = #{id}
+                            AND g.status IN ('ACTIVE', 'PENDING_CONSENT') AND g.deleted_at IS NULL)
+    </update>
     <update id="updateExpectedVersion">
         UPDATE tianquan_oauth.oauth_device_session
         SET status = #{po.status}, expires_at = #{po.expiresAt}, revoked_at = #{po.revokedAt}, reason_code = #{po.reasonCode},

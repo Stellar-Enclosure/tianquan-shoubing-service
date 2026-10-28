@@ -413,6 +413,8 @@ class OAuthSigningKeyPersistenceContractTest {
         current.setGeneration(4L);
         current.setEnabled(true);
         current.setRevision(6L);
+        current.setDirectorySubjectRevision(0L);
+        current.setDirectorySubjectOrderedRevision(0L);
         current.setReasonCode("ADMIN_REVOKE");
         AtomicBoolean updateAttempted = new AtomicBoolean();
         Object mapper = Mockito.mock(mapperType, invocation -> {

@@ -20,6 +20,7 @@ import top.egon.cola.component.common.mybatis.business.EgonColaUserIdProvider;
 import top.egon.cola.component.common.mybatis.extension.EgonColaRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthRealmMapper;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthRealmConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthRealmPO;
@@ -109,6 +110,23 @@ public class OAuthRealmRepositoryImpl extends EgonColaRepository<OAuthRealmMappe
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRecovery(TrustedRealmBO trustedRealm, OAuthRealmBO observed,
+            List<OAuthClientBO> clients, boolean initializing) {
+        Objects.requireNonNull(observed, "observed");
+        Objects.requireNonNull(clients, "clients");
+        trustedRealm.validateTrustedPartition();
+        requireMatchingTrustedRealm(trustedRealm, observed);
+        if (observed.getId() == null || observed.getId() <= 0 || observed.getVersion() < 0
+                || !Objects.equals(observed.getTrustVersion(), trustedRealm.getTrustVersion())
+                || clients.stream().anyMatch(client -> client == null || client.getId() == null || client.getId() <= 0)
+                || clients.stream().map(OAuthClientBO::getId).distinct().count() != clients.size()) return false;
+        return withTrustedStoragePartition(trustedRealm, tenantId -> baseMapper.fenceRecovery(
+                tenantId, observed.getId(), trustedRealm.getRealmKey(), observed.getVersion(), clients, clients.size(),
+                initializing, clock.instant().truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<OAuthRealmBO> findAllByStoragePartition(@NotNull @Valid TrustedRealmBO trustedRealm) {
         return withTrustedStoragePartition(trustedRealm, tenantId -> baseMapper
@@ -128,7 +146,7 @@ public class OAuthRealmRepositoryImpl extends EgonColaRepository<OAuthRealmMappe
         requireMatchingTrustedRealm(trustedRealm, realm);
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthRealmPO current = baseMapper.selectByRealmKeyForUpdate(
+                OAuthRealmPO current = baseMapper.selectByRealmKey(
                         tenantId, trustedRealm.getRealmKey());
                 OAuthRealmPO value = converter.toSource(realm);
                 value.setTenantId(tenantId);

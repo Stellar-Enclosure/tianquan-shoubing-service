@@ -89,6 +89,27 @@ class IdentityOutboxPublisherTest {
     }
 
     @Test
+    void tenantAuditWritesOnlyTheOwningOutboxAndTargetsPlatformAuditOnDelivery() {
+        var identity = mock(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.class);
+        when(identity.forTenant("oauth_authentication", 7L)).thenReturn(
+                new top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.Scope(
+                        1, Map.of(0, "platform", 1, "tenant")));
+        publisher.setOutboxIdentity(identity);
+        publisher.appendForTenant(7L, new IdentitySecurityEvent(
+                "IDENTITY_SSO_REVOKED", "alice-sub", "CURRENT_SSO_LOGOUT", "NATIVE_SSO", NOW));
+        verifyNoInteractions(audits);
+        var captured = org.mockito.ArgumentCaptor.forClass(OutboxMessage.class);
+        verify(outbox).enqueue(captured.capture());
+        OutboxMessage message = captured.getValue();
+        assertThat(message.messageId()).startsWith("s1_00000001_");
+        assertThat(message.idempotencyKey()).startsWith("s1_00000001_");
+        @SuppressWarnings("unchecked") var payload = (Map<String, Object>) message.payload();
+        assertThat(payload).containsEntry("eventId", message.messageId())
+                .containsEntry("issuer", PLATFORM.getIssuer().toASCIIString())
+                .containsEntry("eventType", "IDENTITY_SSO_REVOKED");
+    }
+
+    @Test
     void statePublicationChecksTheCurrentDatabaseFactWithoutAnotherStore() {
         when(users.findByIdentitySub("alice-sub")).thenReturn(java.util.Optional.of(user(
                 top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.DISABLED)));

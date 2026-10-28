@@ -70,6 +70,27 @@
           AND version = #{expectedVersion} AND deleted_at IS NULL
     </update>
 
+    <update id="fenceRecovery">
+        UPDATE tianquan_oauth.oauth_realm
+        SET version = version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE tenant_id = #{tenantId} AND id = #{id} AND realm_key = #{realmKey}
+          AND version = #{expectedVersion} AND deleted_at IS NULL
+          AND (SELECT count(*) FROM tianquan_oauth.oauth_client c
+               WHERE c.tenant_id = #{tenantId} AND c.deleted_at IS NULL) = #{clientCount}
+        <foreach collection="clients" item="client">
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_client c
+                      WHERE c.tenant_id = #{tenantId} AND c.id = #{client.id}
+                        AND c.version = #{client.version} AND c.deleted_at IS NULL)
+        </foreach>
+        <if test="initializing">
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization a WHERE a.tenant_id = #{tenantId} AND a.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authentication a WHERE a.tenant_id = #{tenantId} AND a.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_revocation v WHERE v.tenant_id = #{tenantId} AND v.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_security_state s WHERE s.tenant_id = #{tenantId}
+                          AND s.deleted_at IS NULL AND (s.generation &gt; 0 OR s.revision &gt; 0 OR s.target_type = 'SUBJECT'))
+        </if>
+    </update>
+
     <select id="selectDirectory" resultMap="OAuthRealmPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_realm

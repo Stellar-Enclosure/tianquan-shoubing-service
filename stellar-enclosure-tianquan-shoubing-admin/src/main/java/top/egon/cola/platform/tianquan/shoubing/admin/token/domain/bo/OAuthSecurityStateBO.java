@@ -42,6 +42,8 @@ public class OAuthSecurityStateBO {
     private long revision;
     @Min(0)
     private long directorySubjectRevision;
+    @Min(0)
+    private long directorySubjectOrderedRevision;
     @JsonIgnore
     @ToString.Exclude
     private String directorySubjectFingerprint;

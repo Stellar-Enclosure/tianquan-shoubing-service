@@ -11,6 +11,9 @@ public interface OAuthDeviceSessionRepository {
     Optional<OAuthDeviceSessionBO> findById(TrustedRealmBO realm, long id);
     Optional<OAuthDeviceSessionBO> findByAuthentication(TrustedRealmBO realm, String digest, Long clientPk);
     List<OAuthDeviceSessionBO> findLiveBySubject(TrustedRealmBO realm, String subject, Instant now);
+    boolean fenceLiveSnapshot(TrustedRealmBO realm, long stateId, long stateVersion, String subject,
+            Instant now, List<OAuthDeviceSessionBO> sessions);
+    boolean fenceRevokedWithoutLiveAuthorizations(TrustedRealmBO realm, long id, long version, Instant now);
     int deleteRetained(TrustedRealmBO realm, Instant now, int limit);
     OAuthDeviceSessionBO save(TrustedRealmBO realm, OAuthDeviceSessionBO session, long expectedVersion);
 }

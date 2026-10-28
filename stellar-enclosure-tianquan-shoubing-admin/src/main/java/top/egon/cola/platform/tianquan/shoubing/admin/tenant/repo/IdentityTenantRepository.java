@@ -90,7 +90,7 @@ public class IdentityTenantRepository extends EgonColaRepository<IdentityTenantD
         String actor = required(tenant.getUpdatedBy(), "updatedBy");
         return directoryContext.withPlatformDirectoryPartition(actor, () -> {
             Long partitionId = directoryContext.directoryPartitionId();
-            IdentityTenantPO current = baseMapper.selectForUpdate(partitionId, id);
+            IdentityTenantPO current = baseMapper.selectByExternalKey(partitionId, id);
             IdentityTenantPO value = converter.toSource(tenant);
             value.setTenantId(partitionId);
             if (current == null) {

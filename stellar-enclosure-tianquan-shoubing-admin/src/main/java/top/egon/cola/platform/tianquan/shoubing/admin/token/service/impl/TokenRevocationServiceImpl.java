@@ -376,14 +376,16 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
             saveRealmRevision(realm, realmState, revision);
         }
         long generation = current == null ? 0L : Math.addExact(current.getGeneration(), 1L);
+        long previousDelivery = current == null ? 0L : current.getDirectorySubjectOrderedRevision();
         OAuthSecurityStateBO changed = securityState(current, OAuthSecurityTargetEnum.SUBJECT, task.getIdentitySub(),
                 generation, task.getSubjectEnabled(), revision, task.getReasonCode())
-                .setDirectorySubjectRevision(task.getSourceRevision()).setDirectorySubjectFingerprint(fingerprint);
+                .setDirectorySubjectRevision(task.getSourceRevision()).setDirectorySubjectOrderedRevision(task.getSourceRevision())
+                .setDirectorySubjectFingerprint(fingerprint);
         OAuthSecurityStateBO saved = stateRepository.save(realm, changed, current == null ? 0L : current.getVersion());
         OAuthSecurityChangedEvent event = event(realm, revision, OAuthSecurityTargetEnum.SUBJECT, task.getIdentitySub(),
                 saved.getGeneration(), null, task.getReasonCode(), now);
         saveAuditIfAbsent(realm, event, "SUBJECT_REVOKED");
-        enqueue(realm, event);
+        enqueue(realm, event, task.getSourceRevision(), previousDelivery);
         registerProjectionAfterCommit(List.of(new ProjectionChange(realm, event, null)));
     }
 
@@ -466,17 +468,25 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
     }
 
     private void enqueue(TrustedRealmBO realm, OAuthSecurityChangedEvent event) {
+        enqueue(realm, event, null, 0L);
+    }
+
+    private void enqueue(TrustedRealmBO realm, OAuthSecurityChangedEvent event, Long sourceRevision, long previousRevision) {
         String idempotencyKey = "oauth-security:" + event.realmKey() + ":" + event.targetType()
                 + ":" + event.targetKey() + ":" + event.revision();
         var scope = outboxIdentity.forTenant("oauth_security_state", realm.getStoragePartitionId());
-        outbox.enqueue(OutboxMessage.builder()
+        var message = OutboxMessage.builder()
                 .messageId(event.eventId())
                 .idempotencyKey(scope.idempotencyKey(idempotencyKey))
                 .channel(OAuthSecurityChangedEvent.OUTBOX_CHANNEL)
                 .destination(OAuthSecurityChangedEvent.OUTBOX_DESTINATION)
                 .payload(event)
-                .schemaVersion("1")
-                .build());
+                .schemaVersion("1");
+        if (sourceRevision != null) {
+            message.header(OAuthSubjectDeliveryOrderService.SOURCE_REVISION_HEADER, Long.toString(sourceRevision))
+                    .header(OAuthSubjectDeliveryOrderService.PREVIOUS_REVISION_HEADER, Long.toString(previousRevision));
+        }
+        outbox.enqueue(message.build());
     }
 
     private OAuthSecurityChangedEvent event(
@@ -536,6 +546,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 .enabled(enabled)
                 .revision(revision)
                 .directorySubjectRevision(current == null ? 0L : current.getDirectorySubjectRevision())
+                .directorySubjectOrderedRevision(current == null ? 0L : current.getDirectorySubjectOrderedRevision())
                 .directorySubjectFingerprint(current == null ? null : current.getDirectorySubjectFingerprint())
                 .reasonCode(reasonCode)
                 .build();

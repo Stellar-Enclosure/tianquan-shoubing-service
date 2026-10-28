@@ -80,6 +80,12 @@ public interface OAuthRealmMapper extends EgonColaMapper<OAuthRealmPO> {
             @Param("realmKey") String realmKey, @Param("expectedVersion") long expectedVersion,
             @Param("now") java.time.Instant now, @Param("actor") String actor);
 
+    int fenceRecovery(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("realmKey") String realmKey, @Param("expectedVersion") long expectedVersion,
+            @Param("clients") List<top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO> clients,
+            @Param("clientCount") int clientCount, @Param("initializing") boolean initializing,
+            @Param("now") java.time.Instant now, @Param("actor") String actor);
+
     @Validated(EgonColaModelValidationGroups.Query.class)
     List<OAuthRealmPO> selectDirectory(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)

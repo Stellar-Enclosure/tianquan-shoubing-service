@@ -76,14 +76,18 @@ public class OAuthSecurityProjectionComponent {
     @Transactional
     public long recover(TrustedRealmBO realm) {
         Objects.requireNonNull(realm, "realm").validateTrustedPartition();
-        OAuthRealmBO registered = realmRepository.findByRealmKeyForUpdate(realm)
+        OAuthRealmBO registered = realmRepository.findByRealmKey(realm)
                 .orElseThrow(() -> unavailable("OAUTH_SECURITY_REALM_STATE_MISSING"));
         List<OAuthClientBO> clients = clientRepository.findAllByRealm(realm);
         boolean missingRealm = stateRepository.findByTarget(realm, OAuthSecurityTargetEnum.REALM, "self").isEmpty();
         List<OAuthClientBO> missingClients = clients.stream().filter(client -> stateRepository.findByTarget(
                 realm, OAuthSecurityTargetEnum.CLIENT, Long.toString(client.getId())).isEmpty()).toList();
-        if ((missingRealm || !missingClients.isEmpty()) && hasSecurityHistory(realm)) {
+        boolean initializing = missingRealm || !missingClients.isEmpty();
+        if (initializing && hasSecurityHistory(realm)) {
             throw unavailable("OAUTH_SECURITY_GENERATION_STATE_INCOMPLETE");
+        }
+        if (!realmRepository.fenceRecovery(realm, registered, clients, initializing)) {
+            throw unavailable("OAUTH_SECURITY_RECOVERY_REPLICA_INCOMPLETE");
         }
         if (missingRealm) { stateRepository.save(realm, initial(OAuthSecurityTargetEnum.REALM, "self",
                 "ACTIVE".equals(registered.getStatus()), 0L), 0L); }

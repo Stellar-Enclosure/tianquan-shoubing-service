@@ -58,6 +58,27 @@ public class OAuthDeviceSessionRepositoryImpl extends EgonColaRepository<OAuthDe
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceLiveSnapshot(TrustedRealmBO realm, long stateId, long stateVersion, String subject,
+            Instant now, List<OAuthDeviceSessionBO> sessions) {
+        if (stateId <= 0 || stateVersion < 0 || subject == null || subject.isBlank() || now == null || sessions == null
+                || sessions.stream().anyMatch(session -> session == null || session.getId() == null || session.getId() <= 0)
+                || sessions.stream().map(OAuthDeviceSessionBO::getId).distinct().count() != sessions.size()) {
+            throw new IllegalArgumentException("OAUTH_SESSION_SNAPSHOT_INVALID");
+        }
+        return withRealm(realm, tenant -> baseMapper.fenceLiveSnapshot(tenant, stateId, stateVersion, subject,
+                now.truncatedTo(ChronoUnit.MICROS), sessions, sessions.size(), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRevokedWithoutLiveAuthorizations(TrustedRealmBO realm, long id, long version, Instant now) {
+        if (id <= 0 || version < 0 || now == null) throw new IllegalArgumentException("OAUTH_SESSION_FENCE_INVALID");
+        return withRealm(realm, tenant -> baseMapper.fenceRevokedWithoutLiveAuthorizations(
+                tenant, id, version, now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional
     public OAuthDeviceSessionBO save(TrustedRealmBO realm, OAuthDeviceSessionBO value, long expectedVersion) {
         Objects.requireNonNull(value, "session");

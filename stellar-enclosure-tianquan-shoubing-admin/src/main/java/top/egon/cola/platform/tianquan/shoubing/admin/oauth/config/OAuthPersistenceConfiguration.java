@@ -54,7 +54,8 @@ public class OAuthPersistenceConfiguration {
         var identities = new top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity(profiles, directory.directoryPartitionId());
         int directorySlot = identities.forPlatform("oauth_identity_user").slot();
         for (String table : java.util.List.of("oauth_identity_credential", "oauth_identity_membership", "oauth_realm",
-                "oauth_security_state", "oauth_audit", "oauth_subject_tenant_history", "oauth_subject_revocation_task")) {
+                "oauth_security_state", "oauth_audit", "oauth_subject_tenant_history", "oauth_subject_revocation_task",
+                "oauth_password_change_receipt", "oauth_subject_delivery_receipt")) {
             if (identities.forPlatform(table).slot() != directorySlot) {
                 throw new IllegalStateException("OAUTH_DIRECTORY_SHARD_MISMATCH: " + table);
             }

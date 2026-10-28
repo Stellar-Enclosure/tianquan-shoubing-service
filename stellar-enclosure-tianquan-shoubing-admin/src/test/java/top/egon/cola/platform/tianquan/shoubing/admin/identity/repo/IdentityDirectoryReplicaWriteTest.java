@@ -117,4 +117,21 @@ class IdentityDirectoryReplicaWriteTest {
         }
         assertThat(userRepository.findByIdentitySub("alice")).isEmpty();
     }
+
+    @Test void tenantUpdateRejectsAStalePrimaryVersionWithoutLockingRead() {
+        var mapper = mock(top.egon.cola.platform.tianquan.shoubing.admin.tenant.dao.IdentityTenantDAO.class);
+        var current = new top.egon.cola.platform.tianquan.shoubing.admin.tenant.domain.po.IdentityTenantPO();
+        current.setId(19L); current.setVersion(0L);
+        when(mapper.selectByExternalKey(9000L, "7")).thenReturn(current);
+        when(mapper.updateExpectedVersion(eq(9000L), any(), eq(0L))).thenReturn(0);
+        var repository = new top.egon.cola.platform.tianquan.shoubing.admin.tenant.repo.IdentityTenantRepository(
+                mapper, properties, Mappers.getMapper(top.egon.cola.platform.tianquan.shoubing.admin.tenant.domain.converter.IdentityTenantConverter.class), context);
+        var tenant = top.egon.cola.platform.tianquan.shoubing.admin.tenant.domain.bo.IdentityTenantBO.create(
+                "7", "acme", "Acme", "{}", "worker", Instant.EPOCH);
+        tenant.update(null, null, top.egon.cola.platform.tianquan.shoubing.admin.tenant.domain.bo.IdentityTenantBO.Status.ACTIVE,
+                0L, "worker", Instant.EPOCH);
+        assertThatThrownBy(() -> repository.save(tenant)).isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(mapper, never()).selectForUpdate(anyLong(), anyString());
+        verify(mapper).updateExpectedVersion(eq(9000L), any(), eq(0L));
+    }
 }

@@ -438,6 +438,7 @@ class TenantIssuerIsolationTest {
     void authorizationTokenLookupAndConsentRemainBoundToTheCurrentIssuer() {
         OAuthRealmRepository realmRepository = realmRepository("ACTIVE");
         TenantIssuerService issuerService = issuerService(realmRepository);
+        when(realmRepository.fenceActiveObservedVersion(any())).thenReturn(true);
         OAuthAuthorizationRepository authorizations = mock(OAuthAuthorizationRepository.class);
         OAuthTokenRepository tokens = mock(OAuthTokenRepository.class);
         OAuthClientRepository clients = mock(OAuthClientRepository.class);
@@ -504,7 +505,8 @@ class TenantIssuerIsolationTest {
                 consents,
                 clients,
                 org.mapstruct.factory.Mappers.getMapper(SasConsentConverter.class),
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC), realmRepository,
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class));
         OAuth2AuthorizationConsent tenantOneConsent = withIssuer("https://idp.example.test/tenants/1001",
                 () -> consentService.findById("501", "subject-1"));
         OAuth2AuthorizationConsent tenantTwoConsent = withIssuer("https://idp.example.test/tenants/1002",
@@ -525,7 +527,8 @@ class TenantIssuerIsolationTest {
                 updatingConsents,
                 clients,
                 org.mapstruct.factory.Mappers.getMapper(SasConsentConverter.class),
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC), realmRepository,
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class));
         OAuth2AuthorizationConsent updatedConsent = OAuth2AuthorizationConsent.withId("501", "subject-1")
                 .scope("openid")
                 .scope("orders.read")
@@ -551,7 +554,8 @@ class TenantIssuerIsolationTest {
                 roleConsents,
                 clients,
                 org.mapstruct.factory.Mappers.getMapper(SasConsentConverter.class),
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC), realmRepository,
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class));
         assertThrows(IllegalArgumentException.class, () -> withIssuer(
                 "https://idp.example.test/tenants/1001",
                 () -> roleRejectingService.findById("501", "subject-1")));

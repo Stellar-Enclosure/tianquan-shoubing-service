@@ -21,7 +21,7 @@ class SubjectRevocationTargetOrderTest {
         jdbc.execute("""
                 CREATE TABLE tianquan_oauth.oauth_security_state (id BIGINT PRIMARY KEY, tenant_id BIGINT, version BIGINT,
                   target_type VARCHAR(16), target_key VARCHAR(128), generation BIGINT, enabled BOOLEAN, revision BIGINT,
-                  directory_subject_revision BIGINT, directory_subject_fingerprint CHAR(64), reason_code VARCHAR(128), deleted_at TIMESTAMP,
+                  directory_subject_revision BIGINT, directory_subject_ordered_revision BIGINT, directory_subject_fingerprint CHAR(64), reason_code VARCHAR(128), deleted_at TIMESTAMP,
                   update_user_id VARCHAR(128), update_time TIMESTAMP WITH TIME ZONE)
                 """);
         jdbc.update("INSERT INTO tianquan_oauth.oauth_security_state (id,tenant_id,version,target_type,target_key,generation,enabled,revision,directory_subject_revision,reason_code) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -32,6 +32,7 @@ class SubjectRevocationTargetOrderTest {
         var state = new OAuthSecurityStatePO(); state.setId(31L); state.setVersion(4L);
         state.setTargetType(OAuthSecurityTargetEnum.SUBJECT); state.setTargetKey("alice"); state.setGeneration(3L);
         state.setEnabled(false); state.setRevision(6L); state.setDirectorySubjectRevision(9L);
+        state.setDirectorySubjectOrderedRevision(9L);
         state.setDirectorySubjectFingerprint("a".repeat(64)); state.setReasonCode("USER_DISABLED");
         state.setUpdateUserId("worker"); state.setUpdateTime(Instant.parse("2026-10-28T00:00:00Z"));
         assertThat(mapper.updateExpectedVersion(7L, state, 3L)).isEqualTo(1);

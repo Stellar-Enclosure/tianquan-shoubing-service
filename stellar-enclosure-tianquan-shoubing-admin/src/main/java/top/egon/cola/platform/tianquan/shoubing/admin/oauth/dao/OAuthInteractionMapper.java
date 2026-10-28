@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import top.egon.cola.component.common.mybatis.extension.EgonColaMapper;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthInteractionPO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO;
 
 @Mapper
 public interface OAuthInteractionMapper extends EgonColaMapper<OAuthInteractionPO> {
@@ -19,6 +20,10 @@ public interface OAuthInteractionMapper extends EgonColaMapper<OAuthInteractionP
 
     int updateExpectedVersion(@Param("tenantId") Long tenantId, @Param("po") OAuthInteractionPO po,
             @Param("expectedVersion") long expectedVersion);
+    int claimPasswordChange(@Param("tenantId") Long tenantId, @Param("interaction") OAuthInteractionBO interaction,
+            @Param("now") Instant now, @Param("actor") String actor);
+    int consumePasswordChange(@Param("tenantId") Long tenantId, @Param("interaction") OAuthInteractionBO interaction,
+            @Param("now") Instant now, @Param("actor") String actor);
     int deleteRetained(@Param("tenantId") Long tenantId, @Param("id") long id,
             @Param("expectedVersion") long expectedVersion, @Param("now") Instant now, @Param("actor") String actor);
 }

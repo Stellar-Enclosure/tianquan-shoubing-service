@@ -67,7 +67,8 @@ public class OAuthSsoLifecycleService {
             throw new org.springframework.dao.TransientDataAccessResourceException("SSO authorizations are not yet visible on a replica");
         }
         if (!alreadyRevoked) {
-            events.append(new IdentitySecurityEvent("IDENTITY_SSO_REVOKED", subject, "CURRENT_SSO_LOGOUT", "NATIVE_SSO", clock.instant()));
+            events.appendForTenant(realm.getStoragePartitionId(),
+                    new IdentitySecurityEvent("IDENTITY_SSO_REVOKED", subject, "CURRENT_SSO_LOGOUT", "NATIVE_SSO", clock.instant()));
         }
     }
 }
