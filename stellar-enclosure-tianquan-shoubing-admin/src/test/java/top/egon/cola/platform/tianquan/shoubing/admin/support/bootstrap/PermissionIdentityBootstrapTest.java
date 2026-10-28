@@ -29,7 +29,6 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 import top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
-import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.dto.CreateOAuthClientDTO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.OAuthClientPurposeEnum;
@@ -81,7 +80,7 @@ class PermissionIdentityBootstrapTest {
                 directory.toString(), "operator-1", List.of(new PermissionIdentityBootstrapCommand.Client(ISSUER, input)), List.of(), List.of());
         when(transactions.getTransaction(any())).thenReturn(status);
         when(issuers.resolveExactIssuer(ISSUER)).thenReturn(realm);
-        when(realms.findByRealmKeyForUpdate(realm)).thenReturn(Optional.of(OAuthRealmBO.builder().status("ACTIVE").build()));
+        when(realms.fenceObservedVersion(realm)).thenReturn(true);
         when(security.isIssuerReady(realm)).thenReturn(true);
         when(clients.findByClientId(realm, "bootstrap-client")).thenReturn(Optional.empty(), Optional.of(client));
         when(clientService.create(eq(realm), eq(realm), any(), eq("operator-1")))
@@ -93,6 +92,8 @@ class PermissionIdentityBootstrapTest {
     void commitsNativeOwnerAndPrivateMaterialWithOneImmutableAuditReceipt() throws Exception {
         JsonNode receipt = owner.execute(command, ORIGIN, DIGEST);
         verify(transactions).commit(status);
+        verify(realms, org.mockito.Mockito.atLeastOnce()).fenceObservedVersion(realm);
+        verify(realms, org.mockito.Mockito.never()).findByRealmKeyForUpdate(any());
         verify(clientService).create(eq(realm), eq(realm), any(), eq("operator-1"));
         verifyNoInteractions(resourceService);
         assertThat(saved.getPayload()).isEqualTo(receipt);
@@ -104,6 +105,15 @@ class PermissionIdentityBootstrapTest {
         PermissionBootstrapFiles.receipt(directory.resolve("receipt.json"), mapper.writeValueAsBytes(receipt));
         assertThatThrownBy(() -> PermissionBootstrapFiles.receipt(directory.resolve("receipt.json"), "{}".getBytes(StandardCharsets.UTF_8)))
                 .hasMessage("PERMISSION_BOOTSTRAP_INPUT_UNSAFE");
+    }
+
+    @Test
+    void staleRealmFenceRejectsBootstrapBeforeWritingCredentials() throws Exception {
+        when(realms.fenceObservedVersion(realm)).thenReturn(false);
+        assertThatThrownBy(() -> owner.execute(command, ORIGIN, DIGEST)).hasMessage("PERMISSION_BOOTSTRAP_STATE_CONFLICT");
+        verify(transactions).rollback(status);
+        verifyNoInteractions(clientService, resourceService);
+        assertThat(Files.exists(directory.resolve(OPERATION + ".pending.json"))).isFalse();
     }
 
     @Test
@@ -256,6 +266,7 @@ class PermissionIdentityBootstrapTest {
                 assertThat(factory.containsBeanDefinition("transactionalOutbox")).isTrue();
                 assertThat(factory.containsBeanDefinition("transactionManager")).isTrue();
                 assertThat(factory.containsBeanDefinition("oAuthClientRepository")).isTrue();
+                assertThat(factory.containsBeanDefinition("oauthOutboxIdentity")).isTrue();
                 for (String name : factory.getBeanDefinitionNames()) {
                     String type = factory.getBeanDefinition(name).getBeanClassName();
                     if (type != null) {

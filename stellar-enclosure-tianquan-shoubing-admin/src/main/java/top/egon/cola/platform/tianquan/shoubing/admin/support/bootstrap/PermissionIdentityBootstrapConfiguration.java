@@ -52,6 +52,8 @@ import top.egon.cola.component.outbox.migration.OutboxManagedDdlInitializer;
         top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver.class,
         top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthClientServiceImpl.class,
         top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceServerServiceImpl.class,
+        top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceGrantTransactionCoordinator.class,
+        top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceFenceRepository.class,
         top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.TokenRevocationServiceImpl.class,
         top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSecurityProjectionComponent.class,
         top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.service.IdentityOutboxPublisher.class,
@@ -103,6 +105,14 @@ class PermissionIdentityBootstrapConfiguration {
 
     @Bean("egonColaRoutingProfiles")
     Map<String, EgonColaRoutingProfileBO> profiles(EgonColaShardingTopologyValidator.TopologyBO topology) { return topology.profiles(); }
+
+    @Bean("oauthOutboxIdentity")
+    top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity outboxIdentity(
+            @Qualifier("egonColaRoutingProfiles") Map<String, EgonColaRoutingProfileBO> profiles,
+            top.egon.cola.platform.tianquan.shoubing.admin.identity.repo.IdentityDirectoryContext directory) {
+        return new top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity(
+                profiles, directory.directoryPartitionId());
+    }
 
     @Bean("egonColaWriteTargetResolver")
     EgonColaWriteTargetResolver writeTargetResolver(@Qualifier("egonColaRoutingProfiles") Map<String, EgonColaRoutingProfileBO> profiles,

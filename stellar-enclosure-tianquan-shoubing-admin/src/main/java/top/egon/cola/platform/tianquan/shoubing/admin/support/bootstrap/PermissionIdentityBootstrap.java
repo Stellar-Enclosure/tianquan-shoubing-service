@@ -102,7 +102,9 @@ final class PermissionIdentityBootstrap {
         return transaction.execute(status -> {
             URI platformIssuer = URI.create(publicOrigin.toASCIIString().replaceAll("/$", "") + "/platform");
             TrustedRealmBO platform = issuers.resolveExactIssuer(platformIssuer);
-            realms.findByRealmKeyForUpdate(platform).orElseThrow(PermissionIdentityBootstrap::conflict);
+            if (!top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences.realm(realms, platform)) {
+                throw conflict();
+            }
             String eventId = "permission-bootstrap-" + command.operationId();
             var committed = audits.findByEventId(platform, eventId);
             if (committed.isPresent()) {
@@ -118,7 +120,9 @@ final class PermissionIdentityBootstrap {
             command.clients().stream().map(PermissionIdentityBootstrapCommand.Client::issuer).distinct()
                     .sorted(java.util.Comparator.comparing(URI::toASCIIString)).forEach(issuer -> {
                         TrustedRealmBO realm = issuers.resolveExactIssuer(issuer);
-                        realms.findByRealmKeyForUpdate(realm).orElseThrow(PermissionIdentityBootstrap::conflict);
+                        if (!top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences.realm(realms, realm)) {
+                            throw conflict();
+                        }
                         if (!security.isIssuerReady(realm)) { throw new IllegalStateException("PERMISSION_BOOTSTRAP_REALM_NOT_READY"); }
                         trusted.put(issuer, realm);
                     });
