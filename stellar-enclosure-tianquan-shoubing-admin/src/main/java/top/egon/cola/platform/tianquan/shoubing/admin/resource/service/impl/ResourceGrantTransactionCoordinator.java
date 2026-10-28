@@ -25,22 +25,27 @@ public class ResourceGrantTransactionCoordinator {
 
     public <T> T execute(TrustedRealmBO platform, List<OAuthResourceBO> resources, Supplier<T> action) {
         Objects.requireNonNull(action, "action");
-        if (TransactionSynchronizationManager.isActualTransactionActive()) {
-            throw new IllegalStateException("OAUTH_RESOURCE_GRANT_AMBIENT_TRANSACTION_UNSUPPORTED");
-        }
         if (resources == null || resources.isEmpty() || resources.stream().anyMatch(value -> value == null || value.getId() == null)
                 || resources.stream().map(OAuthResourceBO::getId).distinct().count() != resources.size()) {
             throw new IllegalArgumentException("OAUTH_RESOURCE_FENCE_SET_INVALID");
         }
         var ordered = resources.stream().sorted(Comparator.comparing(OAuthResourceBO::getId)).toList();
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            fence(platform, ordered);
+            return action.get();
+        }
         return transaction(60).execute(outer -> {
-            for (OAuthResourceBO resource : ordered) {
-                if (!fences.fenceCurrent(platform, resource)) {
-                    throw new TransientDataAccessResourceException("OAuth resource is not yet visible at its expected version");
-                }
-            }
+            fence(platform, ordered);
             return transaction(45).execute(inner -> action.get());
         });
+    }
+
+    private void fence(TrustedRealmBO platform, List<OAuthResourceBO> resources) {
+        for (OAuthResourceBO resource : resources) {
+            if (!fences.fenceCurrent(platform, resource)) {
+                throw new TransientDataAccessResourceException("OAuth resource is not yet visible at its expected version");
+            }
+        }
     }
 
     private TransactionTemplate transaction(int timeout) {

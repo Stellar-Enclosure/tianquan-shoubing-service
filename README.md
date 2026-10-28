@@ -30,7 +30,7 @@ Subject revocation creates per-tenant durable tasks in the directory transaction
 
 For a multi-primary rollout, install the matching Components version, route password-change receipts with the identity directory, subject-delivery receipts with their tenant security state, and resource fences with the platform resource table. Apply the managed manifests to every primary. Stop older writers and dispatchers during the upgrade, and drain or reconcile already queued subject events before starting the new ordered chain: earlier versions do not create the new receipts or enforce their ordering. Resource-grant changes hold a platform fence while a separate owning-shard transaction commits; configure sufficient pool capacity for both connections. Supply the approved previous routing fingerprint when changing topology. These code paths still require real PostgreSQL primary/replica acceptance; the checked-in example remains a single-primary topology.
 
-Resource-grant and client resource-URI mutations must be invoked outside an existing transaction; they reject an ambient transaction so an independent shard commit cannot survive a caller rollback. The all-in-one permission bootstrap cannot provision cross-shard grants through that transactional path and requires a separately coordinated provisioning workflow.
+Resource-grant and client resource-URI mutations join an existing transaction only when all writes belong to the same primary group; the local-write guard rejects a cross-group transaction. Outside an existing transaction, the platform fence and owning-shard write use separate transactions. An all-in-one permission bootstrap spanning primary groups requires a separately coordinated provisioning workflow.
 
 ## Build
 

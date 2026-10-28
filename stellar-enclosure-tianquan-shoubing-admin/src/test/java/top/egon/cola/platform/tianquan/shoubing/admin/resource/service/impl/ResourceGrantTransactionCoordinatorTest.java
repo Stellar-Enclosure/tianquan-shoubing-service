@@ -75,13 +75,23 @@ class ResourceGrantTransactionCoordinatorTest {
         order.verify(fences).fenceCurrent(platform, second);
     }
 
-    @Test void rejectsAmbientTransactionBeforeCommittingAnIndependentShard() {
-        new TransactionTemplate(manager).execute(status -> {
-            assertThatThrownBy(() -> coordinator.execute(platform, List.of(resource), () -> "unexpected"))
-                    .hasMessage("OAUTH_RESOURCE_GRANT_AMBIENT_TRANSACTION_UNSUPPORTED");
-            return null;
-        });
-        verify(fences, never()).fenceCurrent(any(), any());
+    @Test void joinsAmbientTransactionAndRollsBackItsFenceWithTheCaller() {
+        assertThatThrownBy(() -> new TransactionTemplate(manager).execute(status -> {
+            coordinator.execute(platform, List.of(resource), () -> {
+                assertThat(EgonColaTransactionWriteTarget.capture(logical).group()).isEqualTo("platform");
+                return null;
+            });
+            throw new IllegalStateException("caller rollback");
+        })).hasMessage("caller rollback");
+        assertThat(platformJdbc.queryForObject("SELECT version FROM resource_fence WHERE id=11", Long.class)).isZero();
+    }
+
+    @Test void ambientTransactionRejectsASecondPrimaryWithoutPartialCommit() {
+        assertThatThrownBy(() -> new TransactionTemplate(manager).execute(status ->
+                coordinator.execute(platform, List.of(resource), () -> {
+                    EgonColaTransactionWriteTarget.capture(logical).pin("tenant", factory);
+                    return null;
+                }))).hasMessage("LOCAL_WRITE_TARGET_MISMATCH");
         assertThat(platformJdbc.queryForObject("SELECT version FROM resource_fence WHERE id=11", Long.class)).isZero();
     }
 
