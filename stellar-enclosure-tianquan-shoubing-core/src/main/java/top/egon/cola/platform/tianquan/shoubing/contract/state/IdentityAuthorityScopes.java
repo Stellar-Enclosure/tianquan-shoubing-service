@@ -7,6 +7,7 @@ public final class IdentityAuthorityScopes {
     public static final String AUDIT_APPEND = "tianquan-shoubing:audit:append";
     public static final String EXECUTION_GRANT_ISSUE = "tianquan-shoubing:execution-grant:issue";
     public static final String EXECUTION_GRANT_RESOLVE = "tianquan-shoubing:execution-grant:resolve";
+    public static final String EXECUTION_GRANT_REVOKE = "tianquan-shoubing:execution-grant:revoke";
 
     private IdentityAuthorityScopes() { }
 }

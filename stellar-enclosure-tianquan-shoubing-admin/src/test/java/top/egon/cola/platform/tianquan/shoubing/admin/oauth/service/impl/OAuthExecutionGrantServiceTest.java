@@ -13,6 +13,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyEncry
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthRevocationBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceIdentityPrincipal;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
@@ -48,6 +49,7 @@ class OAuthExecutionGrantServiceTest {
     private final OAuthAuthorityService authority = mock(OAuthAuthorityService.class);
     private final OAuthExecutionPrimaryGuard primary = mock(OAuthExecutionPrimaryGuard.class);
     private final OAuthRevocationRepository revocations = mock(OAuthRevocationRepository.class);
+    private final TokenRevocationService revocationWriter = mock(TokenRevocationService.class);
     private final Clock clock = mock(Clock.class);
     @TempDir Path directory;
     private OAuthPayloadCipherComponent cipher;
@@ -173,9 +175,87 @@ class OAuthExecutionGrantServiceTest {
         assertEquals("temporarily_unavailable", failure.getError().getErrorCode());
     }
 
+    @Test
+    void fresh_owner_and_current_source_revoke_the_stable_run_identifier() {
+        var issued = service.issue(sourceCaller, "user-proof", request(false, NOW.plusSeconds(7_200)));
+        var revokeCaller = caller(source, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, 51, "501", "1".repeat(64));
+        when(authority.captureExecutionUser(revokeCaller, TARGET, "fresh-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE))
+                .thenReturn(user);
+        service.revoke(revokeCaller, "fresh-proof", issued.ticket());
+        verify(authority).requireExecutionService(eq(revokeCaller), eq(source.binding()), eq(user),
+                eq(IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE));
+        verify(revocationWriter).revokeExecutionGrant(realm, issued.ticket().grantId(), NOW.plusSeconds(7_200));
+    }
+
+    @Test
+    void a_different_user_or_unconfigured_service_cannot_revoke_another_users_grant() {
+        var issued = service.issue(sourceCaller, "user-proof", request(false, NOW.plusSeconds(600)));
+        var revokeCaller = caller(source, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, 51, "501", "1".repeat(64));
+        StoredUserExecutionProof other = new StoredUserExecutionProof(user.issuer(), user.tenantId(), user.issuerTrustVersion(),
+                "other-user", user.resourceUri(), user.clientPk(), user.clientId(), user.authorizationId(), user.tokenDigest(),
+                user.tokenJti(), user.signingKeyId(), user.scopes(), user.realmGeneration(), user.clientGeneration(),
+                user.subjectGeneration(), user.authenticationJtiDigest(), user.acr(), user.authenticationTime(),
+                user.authenticationExpiresAt(), user.authorizationExpiresAt(), user.refreshGeneration(), user.tokenRetainUntil());
+        when(authority.captureExecutionUser(revokeCaller, TARGET, "fresh-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE))
+                .thenReturn(other);
+        assertRejected(() -> service.revoke(revokeCaller, "fresh-proof", issued.ticket()));
+        verifyNoInteractions(revocationWriter);
+    }
+
+    @Test
+    void a_replacement_source_client_can_revoke_the_old_clients_grant() {
+        var issued = service.issue(sourceCaller, "user-proof", request(false, NOW.plusSeconds(600)));
+        var replacement = new OAuthExecutionGrantProperties.Service(16, "replacement", "agent", "platform",
+                "tianji", "test", TARGET.toASCIIString());
+        var changed = new OAuthExecutionGrantProperties.Binding(realm.getIssuer().toASCIIString(), 101, replacement, verifier,
+                PURPOSE, Set.of("tianji:agent:start"), Set.of("tianji:agent:read"), Duration.ofHours(1));
+        var replacementService = service(changed);
+        var revokeCaller = caller(replacement, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, 51, "501", "1".repeat(64));
+        when(authority.captureExecutionUser(revokeCaller, TARGET, "fresh-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE))
+                .thenReturn(user);
+        replacementService.revoke(revokeCaller, "fresh-proof", issued.ticket());
+        verify(revocationWriter).revokeExecutionGrant(realm, issued.ticket().grantId(), NOW.plusSeconds(600));
+    }
+
+    @Test
+    void a_fresh_user_can_revoke_an_expired_copy_before_the_run_deadline() {
+        var issued = service.issue(sourceCaller, "user-proof", request(false, NOW.plusSeconds(7_200)));
+        when(clock.instant()).thenReturn(NOW.plusSeconds(3_700));
+        var principal = new ServiceIdentityPrincipal(source.clientId(), "101", source.clientId(), "501",
+                URI.create("https://api.example/idp"), 1, Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE),
+                source.businessCode(), source.applicationCode(), source.environment(), "credential",
+                NOW.plusSeconds(3_600), NOW.plusSeconds(4_000), source.appId(), ServiceTokenContext.TENANT);
+        var freshCaller = new OAuthAuthorityService.Caller(principal, realm, source.clientPk(), TARGET, 1L, 2L,
+                51L, "1".repeat(64), NOW.plusSeconds(86_400), "source-key");
+        when(authority.captureExecutionUser(freshCaller, TARGET, "fresh-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE))
+                .thenReturn(user);
+        service.revoke(freshCaller, "fresh-proof", issued.ticket());
+        verify(revocationWriter).revokeExecutionGrant(realm, issued.ticket().grantId(), NOW.plusSeconds(7_200));
+    }
+
+    @Test
+    void an_older_revocation_implementation_cannot_report_success() {
+        var issued = service.issue(sourceCaller, "user-proof", request(false, NOW.plusSeconds(600)));
+        var revokeCaller = caller(source, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, 51, "501", "1".repeat(64));
+        when(authority.captureExecutionUser(revokeCaller, TARGET, "fresh-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE))
+                .thenReturn(user);
+        doThrow(new UnsupportedOperationException("fixture internal detail")).when(revocationWriter)
+                .revokeExecutionGrant(realm, issued.ticket().grantId(), NOW.plusSeconds(600));
+        var failure = assertThrows(OAuth2AuthenticationException.class,
+                () -> service.revoke(revokeCaller, "fresh-proof", issued.ticket()));
+        assertEquals("temporarily_unavailable", failure.getError().getErrorCode());
+        assertFalse(failure.toString().contains("fixture internal detail"));
+        var oldConstructor = new OAuthExecutionGrantService(new OAuthExecutionGrantProperties(true,
+                List.of(binding(Duration.ofHours(1), Set.of("tianji:agent:start"), Set.of("tianji:agent:read")))),
+                authority, primary, revocations, cipher, mapper, clock);
+        failure = assertThrows(OAuth2AuthenticationException.class,
+                () -> oldConstructor.revoke(revokeCaller, "fresh-proof", issued.ticket()));
+        assertEquals("temporarily_unavailable", failure.getError().getErrorCode());
+    }
+
     private OAuthExecutionGrantService service(OAuthExecutionGrantProperties.Binding binding) {
         return new OAuthExecutionGrantService(new OAuthExecutionGrantProperties(true, List.of(binding)), authority,
-                primary, revocations, cipher, mapper, clock);
+                primary, revocations, cipher, mapper, clock, revocationWriter);
     }
 
     private OAuthExecutionGrantProperties.Binding binding(Duration max, Set<String> required, Set<String> session) {

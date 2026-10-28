@@ -7,9 +7,15 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRea
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.OAuthClientRevokeCommand;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.OAuthSubjectRevokeCommand;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.RevokeOAuthTokenCommand;
+import java.time.Instant;
 
 @Validated
 public interface TokenRevocationService {
+
+    /** Fails closed for implementations that do not support bounded execution-grant revocation. */
+    default void revokeExecutionGrant(TrustedRealmBO realm, String grantId, Instant intentDeadline) {
+        throw new UnsupportedOperationException("EXECUTION_GRANT_REVOCATION_UNAVAILABLE");
+    }
 
     void revoke(
             @NotNull @Valid TrustedRealmBO trustedRealm,

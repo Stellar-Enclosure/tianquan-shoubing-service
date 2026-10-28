@@ -31,7 +31,7 @@ public class OAuthExecutionPrimaryGuard {
         this.jdbc = new JdbcTemplate(dataSource);
     }
 
-    void requirePrimaryTransaction() {
+    public void requirePrimaryTransaction() {
         if (topology.getMode() != EgonColaShardingProperties.ModeEnum.SHARDING
                 || topology.getDataSources() == null || topology.getDataSources().size() != 1
                 || topology.getDataSources().getFirst() == null

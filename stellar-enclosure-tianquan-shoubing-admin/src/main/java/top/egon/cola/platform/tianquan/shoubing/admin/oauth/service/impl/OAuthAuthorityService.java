@@ -77,7 +77,7 @@ public class OAuthAuthorityService {
     @Qualifier("idpClock") private final Clock clock;
     private volatile OAuthExecutionPrimaryGuard executionPrimary;
 
-    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setExecutionPrimary(@Qualifier("oauthExecutionPrimaryGuard") OAuthExecutionPrimaryGuard guard) {
         this.executionPrimary = Objects.requireNonNull(guard, "guard");
     }
@@ -184,12 +184,19 @@ public class OAuthAuthorityService {
     /** Captures only the facts needed to recheck a verified USER; no bearer is retained. */
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     StoredUserExecutionProof captureExecutionUser(Caller caller, URI resource, String userToken) {
+        return captureExecutionUser(caller, resource, userToken, IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    StoredUserExecutionProof captureExecutionUser(Caller caller, URI resource, String userToken, String requiredScope) {
         requireExecutionPrimary();
         Objects.requireNonNull(caller, "caller");
         caller.realm().validateTrustedPartition();
-        if (caller.clientPk() <= 0 || caller.principal().scopeContext() != ServiceTokenContext.TENANT
+        if (requiredScope == null || !Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE,
+                IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE).contains(requiredScope)
+                || caller.clientPk() <= 0 || caller.principal().scopeContext() != ServiceTokenContext.TENANT
                 || !Objects.equals(caller.principal().tenantId(), tenant(caller.realm()))
-                || !caller.principal().scopes().contains(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)
+                || !caller.principal().scopes().contains(requiredScope)
                 || !caller.principal().expiresAt().isAfter(clock.instant()) || resource == null
                 || !caller.sourceResource().toASCIIString().equals(resource.toASCIIString())) {
             throw denied("EXECUTION_USER_SOURCE_NOT_BOUND");

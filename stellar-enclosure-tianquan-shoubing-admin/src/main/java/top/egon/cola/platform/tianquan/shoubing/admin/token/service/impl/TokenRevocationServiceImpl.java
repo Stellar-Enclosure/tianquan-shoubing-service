@@ -23,6 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -65,6 +66,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
     private top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity outboxIdentity =
             top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.singleGroup();
     private top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl.SubjectRevocationTaskRepository subjectTasks;
+    private volatile top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthExecutionPrimaryGuard executionPrimary;
 
     @org.springframework.beans.factory.annotation.Autowired
     void setOutboxIdentity(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity identity) {
@@ -74,6 +76,12 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
     @org.springframework.beans.factory.annotation.Autowired
     void setSubjectTasks(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl.SubjectRevocationTaskRepository tasks) {
         this.subjectTasks = Objects.requireNonNull(tasks, "tasks");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setExecutionPrimary(@Qualifier("oauthExecutionPrimaryGuard")
+            top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthExecutionPrimaryGuard guard) {
+        this.executionPrimary = Objects.requireNonNull(guard, "guard");
     }
 
     private static final int TOKEN_PAGE_SIZE = 500;
@@ -109,6 +117,71 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
     void validateClockSkew() {
         if (clockSkew.isNegative() || clockSkew.compareTo(Duration.ofSeconds(60)) > 0) {
             throw new IllegalStateException("OAUTH_CLOCK_SKEW_INVALID");
+        }
+    }
+
+    @Override
+    @Transactional(transactionManager = "transactionManager", isolation = Isolation.REPEATABLE_READ)
+    public void revokeExecutionGrant(TrustedRealmBO trustedRealm, String grantId, Instant intentDeadline) {
+        var primary = executionPrimary;
+        if (primary == null) throw unavailable("EXECUTION_AUTHORITY_PRIMARY_REQUIRED");
+        primary.requirePrimaryTransaction();
+        TrustedRealmBO realm = requireRealm(trustedRealm);
+        if (realm.getBusinessTenantId() == null || grantId == null || !grantId.matches("9[0-9]{62}") || intentDeadline == null
+                || intentDeadline.isAfter(Instant.parse("9999-12-30T23:59:59Z"))) {
+            throw new IllegalArgumentException("EXECUTION_GRANT_REVOCATION_INVALID");
+        }
+        if (!OAuthTransactionFences.realm(realmRepository, realm)) {
+            throw unavailable("OAUTH_REVOCATION_REALM_NOT_READY");
+        }
+        OAuthSecurityStateBO realmState = requiredState(realm, OAuthSecurityTargetEnum.REALM, "self");
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        Instant minimum = now.plus(Duration.ofHours(8));
+        Instant requestedExpiry = (intentDeadline.isAfter(minimum) ? intentDeadline : minimum).plus(clockSkew);
+        Instant expiresAt = requestedExpiry.truncatedTo(ChronoUnit.MICROS);
+        if (expiresAt.isBefore(requestedExpiry)) expiresAt = expiresAt.plus(1, ChronoUnit.MICROS);
+        Instant retainUntil = expiresAt.plusSeconds(86_400);
+        OAuthRevocationBO current = revocationRepository.findByTarget(realm, OAuthSecurityTargetEnum.JTI, grantId).orElse(null);
+        boolean publish = false;
+        if (current == null) {
+            long revision = nextRevision(realmState, null, null);
+            if (!stateRepository.advanceRealmIfRevocationAbsent(realm, realmState.getId(), realmState.getVersion(),
+                    OAuthSecurityTargetEnum.JTI, grantId, revision, now)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth execution grant revocation changed");
+            }
+            realmState.setVersion(Math.addExact(realmState.getVersion(), 1L)).setRevision(revision);
+            OAuthTransactionFences.securityStateWritten(realm, realmState);
+            current = revocationRepository.save(realm, OAuthRevocationBO.builder().version(0L)
+                    .targetType(OAuthSecurityTargetEnum.JTI).targetKey(grantId).reasonCode("EXECUTION_GRANT_REVOKED")
+                    .revokedAt(now).expiresAt(expiresAt).revision(revision).retainUntil(retainUntil).build(), 0L);
+            publish = true;
+        } else {
+            if (!"EXECUTION_GRANT_REVOKED".equals(current.getReasonCode())) {
+                throw unavailable("EXECUTION_GRANT_REVOCATION_COLLISION");
+            }
+            if (!revocationRepository.fenceObservedVersion(realm, current)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth execution grant revocation changed");
+            }
+            current.setVersion(Math.addExact(current.getVersion(), 1L));
+            if (current.getExpiresAt() != null && expiresAt.isAfter(current.getExpiresAt())) {
+                long revision = Math.addExact(Math.max(realmState.getRevision(), current.getRevision()), 1L);
+                saveRealmRevision(realm, realmState, revision);
+                if (current.getRetainUntil() != null && current.getRetainUntil().isAfter(retainUntil)) {
+                    retainUntil = current.getRetainUntil();
+                }
+                current = revocationRepository.save(realm, OAuthRevocationBO.builder().id(current.getId())
+                        .version(Math.addExact(current.getVersion(), 1L)).targetType(OAuthSecurityTargetEnum.JTI)
+                        .targetKey(grantId).reasonCode(current.getReasonCode()).revokedAt(current.getRevokedAt())
+                        .expiresAt(expiresAt).revision(revision).retainUntil(retainUntil).build(), current.getVersion());
+                publish = true;
+            }
+        }
+        if (publish) {
+            var event = event(realm, current.getRevision(), OAuthSecurityTargetEnum.JTI, grantId, null,
+                    current.getExpiresAt(), current.getReasonCode(), now);
+            saveAuditIfAbsent(realm, event, "EXECUTION_GRANT_REVOKED");
+            enqueue(realm, event);
+            registerProjectionAfterCommit(List.of(new ProjectionChange(realm, event, OAuthSecurityTargetEnum.JTI)));
         }
     }
 

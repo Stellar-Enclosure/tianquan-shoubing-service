@@ -65,14 +65,21 @@ class OAuthExecutionPrimaryGuardPostgresTest {
             assertThrows(OAuth2AuthenticationException.class,
                     () -> transaction.executeWithoutResult(status -> guard.requirePrimaryTransaction()));
             try (var context = new AnnotationConfigApplicationContext()) {
+                context.getBeanFactory().setConversionService(org.springframework.boot.convert.ApplicationConversionService.getSharedInstance());
                 org.springframework.test.context.support.TestPropertySourceUtils.addInlinedPropertiesToEnvironment(context,
                         "egon.tianquan-shoubing.execution-grants.enabled=true");
                 context.register(TransactionConfiguration.class);
                 context.registerBean("transactionManager", PlatformTransactionManager.class,
                         () -> new DataSourceTransactionManager(logical));
                 context.registerBean("oauthExecutionPrimaryGuard", OAuthExecutionPrimaryGuard.class, () -> guard);
+                context.registerBean(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity.class,
+                        top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity::singleGroup);
+                context.registerBean(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl.SubjectRevocationTaskRepository.class,
+                        () -> mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.impl.SubjectRevocationTaskRepository.class));
                 context.registerBean(OAuthAuthorityService.class, () -> authority(guard));
                 context.registerBean(OAuthExecutionGrantService.class, () -> grantService(guard));
+                context.registerBean(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.TokenRevocationServiceImpl.class,
+                        () -> revocationService(logical));
                 context.refresh();
                 OAuthAuthorityService authority = context.getBean(OAuthAuthorityService.class);
                 assertTrue(AopUtils.isAopProxy(authority));
@@ -83,6 +90,11 @@ class OAuthExecutionPrimaryGuardPostgresTest {
                 var request = new OAuthExecutionGrantService.IssueRequest("TIANJI_AGENT_RUN_EXECUTION",
                         "d4c0f428-12ca-487c-a600-303883a19031", "a".repeat(64), false, java.time.Instant.now().plusSeconds(60));
                 assertThrows(NullPointerException.class, () -> grant.issue(null, "fixture", request));
+                var ticket = new OpaqueExecutionGrantCodec.Ticket("9" + "1".repeat(62), "ENC:v1:fixture");
+                assertThrows(NullPointerException.class, () -> grant.revoke(null, "fixture", ticket));
+                var revoke = context.getBean(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.TokenRevocationServiceImpl.class);
+                assertTrue(AopUtils.isAopProxy(revoke));
+                assertThrows(NullPointerException.class, () -> revoke.revokeExecutionGrant(null, ticket.grantId(), java.time.Instant.now()));
             }
         } finally {
             ((AutoCloseable) logical).close();
@@ -124,6 +136,22 @@ class OAuthExecutionPrimaryGuardPostgresTest {
                 mock(OAuthAuthorityService.class), guard,
                 mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository.class),
                 mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent.class),
-                new com.fasterxml.jackson.databind.ObjectMapper(), java.time.Clock.systemUTC());
+                new com.fasterxml.jackson.databind.ObjectMapper(), java.time.Clock.systemUTC(),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService.class));
+    }
+
+    private static top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.TokenRevocationServiceImpl revocationService(DataSource logical) {
+        return new top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.TokenRevocationServiceImpl(
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthTokenRepository.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditRepository.class),
+                mock(top.egon.cola.component.outbox.api.TransactionalOutbox.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSecurityProjectionComponent.class),
+                mock(OAuthManagementRealmResolver.class), java.time.Clock.systemUTC(), java.time.Duration.ofSeconds(30),
+                new DataSourceTransactionManager(logical));
     }
 }

@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 
@@ -29,18 +30,30 @@ public class OAuthExecutionGrantService {
     private final OAuthRevocationRepository revocations;
     private final OpaqueExecutionGrantCodec codec;
     private final Clock clock;
+    private final TokenRevocationService revocationWriter;
 
     public OAuthExecutionGrantService(OAuthExecutionGrantProperties properties, OAuthAuthorityService authority,
             @Qualifier("oauthExecutionPrimaryGuard") OAuthExecutionPrimaryGuard primary,
             @Qualifier("oAuthRevocationRepository") OAuthRevocationRepository revocations,
             @Qualifier("oauthPayloadCipherComponent") OAuthPayloadCipherComponent cipher,
             @Qualifier("jacksonObjectMapper") ObjectMapper mapper, @Qualifier("idpClock") Clock clock) {
+        this(properties, authority, primary, revocations, cipher, mapper, clock, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public OAuthExecutionGrantService(OAuthExecutionGrantProperties properties, OAuthAuthorityService authority,
+            @Qualifier("oauthExecutionPrimaryGuard") OAuthExecutionPrimaryGuard primary,
+            @Qualifier("oAuthRevocationRepository") OAuthRevocationRepository revocations,
+            @Qualifier("oauthPayloadCipherComponent") OAuthPayloadCipherComponent cipher,
+            @Qualifier("jacksonObjectMapper") ObjectMapper mapper, @Qualifier("idpClock") Clock clock,
+            @Qualifier("tokenRevocationService") TokenRevocationService revocationWriter) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.authority = Objects.requireNonNull(authority, "authority");
         this.primary = Objects.requireNonNull(primary, "primary");
         this.revocations = Objects.requireNonNull(revocations, "revocations");
         this.codec = new OpaqueExecutionGrantCodec(cipher, mapper);
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.revocationWriter = revocationWriter;
         if (!properties.enabled() || properties.bindings().isEmpty()) throw new IllegalArgumentException("EXECUTION_GRANT_DISABLED");
     }
 
@@ -112,6 +125,37 @@ public class OAuthExecutionGrantService {
         return new Resolution(envelope.grantId(), user.issuer(), user.tenantId(), user.subject(), user.resource(),
                 envelope.purpose(), envelope.intentId(), envelope.bindingSha256(), envelope.sessionRequired(),
                 envelope.expiresAt(), envelope.intentDeadlineAt(), user.scopes());
+    }
+
+    /** A fresh USER proof can revoke all copies of the same resource/run intent. */
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    void revoke(OAuthAuthorityService.Caller caller, String userToken, OpaqueExecutionGrantCodec.Ticket ticket) {
+        primary.requirePrimaryTransaction();
+        if (revocationWriter == null) throw unavailable();
+        Objects.requireNonNull(caller, "caller");
+        ExecutionGrantEnvelope envelope;
+        try { envelope = codec.open(caller.realm(), ticket); }
+        catch (IllegalArgumentException invalid) { throw rejected(); }
+        StoredUserExecutionProof current = authority.captureExecutionUser(caller, caller.sourceResource(), userToken,
+                IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE);
+        if (!envelope.user().issuer().equals(current.issuer()) || envelope.user().tenantId() != current.tenantId()
+                || !envelope.user().subject().equals(current.subject())
+                || !envelope.user().resourceUri().equals(current.resourceUri())) throw rejected();
+        Instant now = clock.instant();
+        var binding = properties.bindings().stream().filter(candidate -> candidate.issuer().equals(current.issuer())
+                && candidate.tenantId() == current.tenantId() && candidate.purpose().equals(envelope.purpose())
+                && candidate.source().resourceUri().equals(envelope.source().resourceUri())
+                && candidate.source().binding().matches(caller, current, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, now))
+                .findFirst().orElseThrow(OAuthExecutionGrantService::rejected);
+        authority.requireExecutionService(caller, binding.source().binding(), current, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE);
+        if (!binding.source().binding().matches(caller, current, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, clock.instant())) {
+            throw rejected();
+        }
+        try {
+            revocationWriter.revokeExecutionGrant(caller.realm(), envelope.grantId(), envelope.intentDeadlineAt());
+        } catch (UnsupportedOperationException unavailable) {
+            throw unavailable();
+        }
     }
 
     private static void requireScopes(OAuthExecutionGrantProperties.Binding binding, Set<String> scopes, boolean session) {
