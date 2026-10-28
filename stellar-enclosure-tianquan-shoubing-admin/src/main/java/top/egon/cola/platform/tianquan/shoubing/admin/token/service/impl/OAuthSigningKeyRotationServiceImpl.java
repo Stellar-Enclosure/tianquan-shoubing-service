@@ -39,6 +39,9 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyRotat
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSigningKeyBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthKeyStatusEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSigningKeyRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.SigningKeyService;
 
 @Service("oauthSigningKeyRotationService")
@@ -81,6 +84,8 @@ public class OAuthSigningKeyRotationServiceImpl {
     private final Clock clock;
     @Qualifier("transactionManager")
     private final PlatformTransactionManager transactionManager;
+    @Qualifier("oAuthSecurityStateRepository")
+    private final OAuthSecurityStateRepository securityStates;
 
     @PostConstruct
     void validateProperties() {
@@ -114,7 +119,7 @@ public class OAuthSigningKeyRotationServiceImpl {
     }
 
     private void rotateRealm(TrustedRealmBO realm) {
-        OAuthRealmBO currentRealm = realms.findByRealmKeyForUpdate(realm).orElse(null);
+        OAuthRealmBO currentRealm = realms.findByRealmKey(realm).orElse(null);
         if (currentRealm == null || !"ACTIVE".equals(currentRealm.getStatus())
                 || currentRealm.getActiveKid() == null || currentRealm.getActiveKid().isBlank()) {
             return;
@@ -147,6 +152,18 @@ public class OAuthSigningKeyRotationServiceImpl {
         Instant activeSince = active.getActivatedAt() == null ? active.getPublishedAt() : active.getActivatedAt();
         Instant publishAfter = activeSince.plus(properties.getPeriod()).minus(properties.getPrepublish());
         if (!publishAfter.isAfter(now)) {
+            if (!OAuthTransactionFences.activeRealm(realms, realm)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before key rotation");
+            }
+            var state = securityStates.findByTarget(realm, OAuthSecurityTargetEnum.REALM, "self")
+                    .orElseThrow(() -> new org.springframework.dao.TransientDataAccessResourceException("OAuth realm state is not yet visible"));
+            if (currentRealm.getId() == null || active.getId() == null || !securityStates.fenceRealmForKeyPublication(
+                    realm, state.getId(), state.getVersion(), currentRealm.getId(), Math.addExact(currentRealm.getVersion(), 1L),
+                    active.getId(), active.getVersion(), active.getKid(), now)) {
+                throw new org.springframework.dao.TransientDataAccessResourceException("OAuth signing key directory is not yet visible");
+            }
+            state.setVersion(Math.addExact(state.getVersion(), 1L));
+            OAuthTransactionFences.securityStateWritten(realm, state);
             signingKeys.publish(realm, generateKey(realm));
             recordRotation(realm, "SIGNING_KEY_PUBLISHED", now);
         }

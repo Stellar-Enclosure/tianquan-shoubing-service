@@ -39,6 +39,9 @@ public interface OAuthSecurityStateRepository {
     boolean fenceRealmIfAuthorizationTokensInactive(TrustedRealmBO realm, long id, long expectedVersion,
             long authorizationId, Instant now);
 
+    boolean fenceRealmForKeyPublication(TrustedRealmBO realm, long id, long expectedVersion,
+            long realmId, long realmVersion, long keyId, long keyVersion, String kid, Instant now);
+
     boolean fenceSubjectDelivery(TrustedRealmBO realm, long id, long expectedVersion,
             String subject, long sourceRevision, long previousRevision, Instant now);
     boolean fenceSubjectDeliveryDuplicate(TrustedRealmBO realm, long id, long expectedVersion,

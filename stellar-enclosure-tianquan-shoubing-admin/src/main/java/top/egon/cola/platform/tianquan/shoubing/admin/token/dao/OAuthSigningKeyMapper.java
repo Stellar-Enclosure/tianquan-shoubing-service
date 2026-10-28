@@ -23,6 +23,11 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.po.OAuthSigni
 @Validated
 public interface OAuthSigningKeyMapper extends EgonColaMapper<OAuthSigningKeyPO> {
 
+    int fenceObserved(@Param("tenantId") Long tenantId, @Param("id") long id, @Param("kid") String kid,
+            @Param("expectedVersion") long expectedVersion, @Param("status") OAuthKeyStatusEnum status,
+            @Param("requireActiveBinding") boolean requireActiveBinding, @Param("realmKey") String realmKey,
+            @Param("trustVersion") long trustVersion, @Param("now") java.time.Instant now, @Param("actor") String actor);
+
     @Validated(EgonColaModelValidationGroups.Query.class)
     OAuthSigningKeyPO selectByKid(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)

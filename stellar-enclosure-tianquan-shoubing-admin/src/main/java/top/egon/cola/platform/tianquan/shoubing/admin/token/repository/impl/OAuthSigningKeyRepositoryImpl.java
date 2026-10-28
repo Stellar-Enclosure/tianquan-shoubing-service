@@ -80,6 +80,19 @@ public class OAuthSigningKeyRepositoryImpl extends EgonColaRepository<OAuthSigni
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceObserved(TrustedRealmBO realm, OAuthSigningKeyBO key, boolean requireActiveRealmBinding) {
+        Objects.requireNonNull(key, "key");
+        String kid = requiredKid(key.getKid());
+        if (key.getId() == null || key.getId() <= 0 || key.getVersion() < 0 || key.getStatus() == null) {
+            throw new IllegalArgumentException("OAUTH_SIGNING_KEY_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceObserved(tenant, key.getId(), kid,
+                key.getVersion(), key.getStatus(), requireActiveRealmBinding, realm.getRealmKey(), realm.getTrustVersion(),
+                clock.instant().truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<OAuthSigningKeyBO> findByStatuses(
             TrustedRealmBO trustedRealm,
@@ -107,7 +120,7 @@ public class OAuthSigningKeyRepositoryImpl extends EgonColaRepository<OAuthSigni
         validateSigningKey(key);
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthSigningKeyPO current = baseMapper.selectByKidForUpdate(tenantId, kid);
+                OAuthSigningKeyPO current = baseMapper.selectByKid(tenantId, kid);
                 OAuthSigningKeyPO value = converter.toSource(key);
                 value.setTenantId(tenantId);
                 if (current == null) {

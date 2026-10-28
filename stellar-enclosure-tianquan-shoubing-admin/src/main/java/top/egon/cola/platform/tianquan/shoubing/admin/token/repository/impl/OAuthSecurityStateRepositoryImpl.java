@@ -146,6 +146,19 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
 
     @Override
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRealmForKeyPublication(TrustedRealmBO realm, long id, long expectedVersion,
+            long realmId, long realmVersion, long keyId, long keyVersion, String kid, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || realmId <= 0 || realmVersion < 0 || keyId <= 0 || keyVersion < 0
+                || kid == null || !kid.matches("[A-Za-z0-9_-]{1,128}") || now == null) {
+            throw new IllegalArgumentException("OAUTH_SECURITY_STATE_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceRealmForKeyPublication(
+                tenant, id, expectedVersion, realmId, realmVersion, keyId, keyVersion, kid,
+                now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public boolean fenceSubjectDelivery(TrustedRealmBO realm, long id, long expectedVersion,
             String subject, long sourceRevision, long previousRevision, Instant now) {
         if (id <= 0 || expectedVersion < 0 || subject == null || !subject.matches("[A-Za-z0-9._~-]{1,64}")

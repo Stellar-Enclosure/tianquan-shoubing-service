@@ -28,6 +28,8 @@ public interface OAuthSigningKeyRepository {
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotBlank @Pattern(regexp = "[A-Za-z0-9_-]{1,128}") @Size(max = 128) String kid);
 
+    boolean fenceObserved(TrustedRealmBO realm, OAuthSigningKeyBO key, boolean requireActiveRealmBinding);
+
     List<OAuthSigningKeyBO> findByStatuses(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotNull @Size(min = 1, max = 5) Collection<@NotNull OAuthKeyStatusEnum> statuses,

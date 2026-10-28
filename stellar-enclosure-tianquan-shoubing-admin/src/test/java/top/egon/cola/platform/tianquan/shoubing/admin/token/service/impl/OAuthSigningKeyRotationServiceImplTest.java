@@ -36,6 +36,9 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyRotat
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSigningKeyBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthKeyStatusEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSigningKeyRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.SigningKeyService;
 
 class OAuthSigningKeyRotationServiceImplTest {
@@ -67,6 +70,7 @@ class OAuthSigningKeyRotationServiceImplTest {
     private final OAuthManagementRealmResolver realmResolver = mock(OAuthManagementRealmResolver.class);
     private final OAuthKeyRotationProperties properties = new OAuthKeyRotationProperties();
     private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+    private final OAuthSecurityStateRepository securityStates = mock(OAuthSecurityStateRepository.class);
     private OAuthSigningKeyRotationServiceImpl service;
 
     @BeforeEach
@@ -77,13 +81,18 @@ class OAuthSigningKeyRotationServiceImplTest {
         when(realmResolver.platformRealm()).thenReturn(PLATFORM);
         OAuthRealmBO row = realmRow();
         when(realms.findAllByStoragePartition(PLATFORM)).thenReturn(List.of(row));
-        when(realms.findByRealmKeyForUpdate(any(TrustedRealmBO.class))).thenReturn(Optional.of(row));
+        when(realms.findByRealmKey(any(TrustedRealmBO.class))).thenReturn(Optional.of(row));
+        when(realms.fenceActiveObservedVersion(TENANT)).thenReturn(true);
+        when(securityStates.findByTarget(TENANT, OAuthSecurityTargetEnum.REALM, "self")).thenReturn(Optional.of(
+                OAuthSecurityStateBO.builder().id(77L).version(0L).targetType(OAuthSecurityTargetEnum.REALM).targetKey("self").build()));
+        when(securityStates.fenceRealmForKeyPublication(eq(TENANT), anyLong(), anyLong(), anyLong(), anyLong(),
+                anyLong(), anyLong(), anyString(), any())).thenReturn(true);
         when(projection.isIssuerReady(any(TrustedRealmBO.class))).thenReturn(true);
         when(audits.save(eq(TENANT), any(OAuthAuditBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
         service = new OAuthSigningKeyRotationServiceImpl(realms, keys, signingKeys, keyCipher,
                 projection, audits, outbox, realmResolver, properties, Clock.fixed(NOW, ZoneOffset.UTC),
-                transactionManager);
+                transactionManager, securityStates);
     }
 
     @Test
@@ -136,6 +145,19 @@ class OAuthSigningKeyRotationServiceImplTest {
         assertThat(published.getValue().getPublicJwk()).contains("\"kty\":\"RSA\"")
                 .contains("\"alg\":\"RS256\"");
         verify(signingKeys, never()).activate(any(), anyString(), anyLong());
+        verify(realms, never()).findByRealmKeyForUpdate(any());
+    }
+
+    @Test
+    void aPublishedKeyMissingFromReplicaPreventsNewPublication() {
+        OAuthSigningKeyBO active = key("old-kid", OAuthKeyStatusEnum.ACTIVE,
+                NOW.minus(properties.getPeriod()).plus(properties.getPrepublish()).minusSeconds(1));
+        when(keys.findByStatuses(any(TrustedRealmBO.class), anyCollection(), eq(0L), eq(8))).thenReturn(List.of(active));
+        when(securityStates.fenceRealmForKeyPublication(eq(TENANT), anyLong(), anyLong(), anyLong(), anyLong(),
+                anyLong(), anyLong(), anyString(), any())).thenReturn(false);
+        service.rotateDueRealms();
+        verify(signingKeys, never()).publish(any(), any());
+        verify(transactionManager).rollback(any());
     }
 
     private static OAuthSigningKeyBO key(String kid, OAuthKeyStatusEnum status, Instant activatedAt) {

@@ -180,6 +180,20 @@
                           WHERE t.tenant_id = #{tenantId} AND t.authorization_pk = #{authorizationId}
                             AND t.consumed_at IS NULL AND t.revoked_at IS NULL AND t.deleted_at IS NULL)
     </update>
+    <update id="fenceRealmForKeyPublication">
+        UPDATE tianquan_oauth.oauth_security_state s
+        SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
+          AND s.target_type = 'REALM' AND s.target_key = 'self' AND s.deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_realm r
+                      WHERE r.tenant_id = #{tenantId} AND r.id = #{realmId} AND r.version = #{realmVersion}
+                        AND r.status = 'ACTIVE' AND r.active_kid = #{kid} AND r.deleted_at IS NULL)
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_signing_key k
+                      WHERE k.tenant_id = #{tenantId} AND k.id = #{keyId} AND k.version = #{keyVersion}
+                        AND k.kid = #{kid} AND k.status = 'ACTIVE' AND k.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_signing_key p
+                          WHERE p.tenant_id = #{tenantId} AND p.status = 'PUBLISHED' AND p.deleted_at IS NULL)
+    </update>
     <update id="fenceSubjectDelivery">
         UPDATE tianquan_oauth.oauth_security_state s
         SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}

@@ -33,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSigningKeyBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.converter.SigningKeyViewConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.dto.PublishSigningKeyDTO;
@@ -101,12 +102,15 @@ public class SigningKeyServiceImpl implements SigningKeyService {
         TrustedRealmBO realm = requireRealm(trustedRealm);
         PublishSigningKeyDTO input = Objects.requireNonNull(command, "command");
         String kid = requiredKid(input.getKid());
-        OAuthRealmBO registeredRealm = realms.findByRealmKeyForUpdate(realm)
+        OAuthRealmBO registeredRealm = realms.findByRealmKey(realm)
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_SIGNING_REALM_NOT_FOUND"));
         if (!"ACTIVE".equals(registeredRealm.getStatus())) {
             throw new IllegalStateException("OAUTH_SIGNING_REALM_NOT_ACTIVE");
         }
-        if (keys.findByKidForUpdate(realm, kid).isPresent()) {
+        if (!OAuthTransactionFences.activeRealm(realms, realm)) {
+            throw new OptimisticLockingFailureException("OAuth realm changed before signing key publication");
+        }
+        if (keys.findByKid(realm, kid).isPresent()) {
             throw new IllegalStateException("OAUTH_SIGNING_KEY_ALREADY_EXISTS");
         }
         JsonNode publicJwk = validatedPublicJwk(kid, input.getPublicJwk());
@@ -129,15 +133,19 @@ public class SigningKeyServiceImpl implements SigningKeyService {
     public SigningKeyVO activate(TrustedRealmBO trustedRealm, String kid, long expectedVersion) {
         TrustedRealmBO realm = requireRealm(trustedRealm);
         String exactKid = requiredKid(kid);
-        OAuthRealmBO currentRealm = realms.findByRealmKeyForUpdate(realm)
+        OAuthRealmBO currentRealm = realms.findByRealmKey(realm)
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_SIGNING_REALM_NOT_FOUND"));
-        OAuthSigningKeyBO target = keys.findByKidForUpdate(realm, exactKid)
+        OAuthSigningKeyBO target = keys.findByKid(realm, exactKid)
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_SIGNING_KEY_NOT_FOUND"));
         if (target.getVersion() != expectedVersion) {
             throw new OptimisticLockingFailureException("OAUTH_SIGNING_KEY_VERSION_CONFLICT");
         }
         if (target.getStatus() == OAuthKeyStatusEnum.ACTIVE
                 && exactKid.equals(currentRealm.getActiveKid())) {
+            if (!OAuthTransactionFences.realm(realms, realm) || !keys.fenceObserved(realm, target, true)) {
+                throw new OptimisticLockingFailureException("OAuth active signing key changed");
+            }
+            target.setVersion(Math.addExact(target.getVersion(), 1L));
             return view(realm, currentRealm, target);
         }
         if (target.getStatus() != OAuthKeyStatusEnum.PUBLISHED
@@ -181,9 +189,12 @@ public class SigningKeyServiceImpl implements SigningKeyService {
     public SigningKeyVO retire(TrustedRealmBO trustedRealm, String kid, long expectedVersion) {
         TrustedRealmBO realm = requireRealm(trustedRealm);
         String exactKid = requiredKid(kid);
-        OAuthRealmBO currentRealm = realms.findByRealmKeyForUpdate(realm)
+        OAuthRealmBO currentRealm = realms.findByRealmKey(realm)
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_SIGNING_REALM_NOT_FOUND"));
-        OAuthSigningKeyBO target = keys.findByKidForUpdate(realm, exactKid)
+        if (!OAuthTransactionFences.realm(realms, realm)) {
+            throw new OptimisticLockingFailureException("OAuth realm changed before signing key retirement");
+        }
+        OAuthSigningKeyBO target = keys.findByKid(realm, exactKid)
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_SIGNING_KEY_NOT_FOUND"));
         if (target.getVersion() != expectedVersion) {
             throw new OptimisticLockingFailureException("OAUTH_SIGNING_KEY_VERSION_CONFLICT");
@@ -192,6 +203,10 @@ public class SigningKeyServiceImpl implements SigningKeyService {
             throw new IllegalStateException("OAUTH_ACTIVE_SIGNING_KEY_CANNOT_RETIRE");
         }
         if (target.getStatus() == OAuthKeyStatusEnum.RETIRED) {
+            if (!keys.fenceObserved(realm, target, false)) {
+                throw new OptimisticLockingFailureException("OAuth retired signing key changed");
+            }
+            target.setVersion(Math.addExact(target.getVersion(), 1L));
             return view(realm, currentRealm, target);
         }
         if (target.getStatus() != OAuthKeyStatusEnum.VERIFY_ONLY

@@ -68,6 +68,9 @@ class SigningKeyServiceImplTest {
         service = new SigningKeyServiceImpl(keys, realms, cipher, views, objectMapper,
                 Clock.fixed(NOW, ZoneOffset.UTC), new OAuthKeyRotationProperties(),
                 Duration.ofHours(8), Duration.ofSeconds(30));
+        when(realms.fenceActiveObservedVersion(TENANT)).thenReturn(true);
+        when(realms.fenceObservedVersion(TENANT)).thenReturn(true);
+        when(keys.fenceObserved(eq(TENANT), any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
         when(views.toTarget(any(OAuthSigningKeyBO.class), eq(TENANT.getIssuer()), anyBoolean()))
                 .thenAnswer(invocation -> {
                     OAuthSigningKeyBO value = invocation.getArgument(0);
@@ -81,8 +84,8 @@ class SigningKeyServiceImplTest {
     @Test
     void publishesRealmBoundRsaKeyAndStoresOnlyTheCiphertext() throws Exception {
         KeyPair pair = rsaKeyPair();
-        when(realms.findByRealmKeyForUpdate(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 0L, 0L)));
-        when(keys.findByKidForUpdate(TENANT, "key-1")).thenReturn(Optional.empty());
+        when(realms.findByRealmKey(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 0L, 0L)));
+        when(keys.findByKid(TENANT, "key-1")).thenReturn(Optional.empty());
         when(cipher.decryptPrivateKey(TENANT, "key-1", CIPHERTEXT)).thenReturn(privatePem(pair));
         when(keys.save(eq(TENANT), any(OAuthSigningKeyBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
@@ -90,6 +93,8 @@ class SigningKeyServiceImplTest {
         SigningKeyVO result = service.publish(TENANT, publishCommand("key-1", pair, CIPHERTEXT));
 
         assertThat(result.getKid()).isEqualTo("key-1");
+        verify(realms, org.mockito.Mockito.never()).findByRealmKeyForUpdate(any());
+        verify(keys, org.mockito.Mockito.never()).findByKidForUpdate(any(), anyString());
         assertThat(result.getIssuer()).isEqualTo(TENANT.getIssuer().toASCIIString());
         var saved = org.mockito.ArgumentCaptor.forClass(OAuthSigningKeyBO.class);
         verify(keys).save(eq(TENANT), saved.capture(), eq(0L));
@@ -101,8 +106,8 @@ class SigningKeyServiceImplTest {
     void rejectsPublicAndPrivateKeyPairMismatchBeforeSaving() throws Exception {
         KeyPair suppliedPrivate = rsaKeyPair();
         KeyPair differentPublic = rsaKeyPair();
-        when(realms.findByRealmKeyForUpdate(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 0L, 0L)));
-        when(keys.findByKidForUpdate(TENANT, "key-2")).thenReturn(Optional.empty());
+        when(realms.findByRealmKey(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 0L, 0L)));
+        when(keys.findByKid(TENANT, "key-2")).thenReturn(Optional.empty());
         when(cipher.decryptPrivateKey(TENANT, "key-2", CIPHERTEXT)).thenReturn(privatePem(suppliedPrivate));
 
         assertThatThrownBy(() -> service.publish(TENANT,
@@ -117,8 +122,8 @@ class SigningKeyServiceImplTest {
         KeyPair pair = rsaKeyPair();
         OAuthSigningKeyBO published = key("key-3", pair, OAuthKeyStatusEnum.PUBLISHED,
                 NOW.minusSeconds(24 * 60 * 60L), 0L);
-        when(realms.findByRealmKeyForUpdate(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 4L, 8L)));
-        when(keys.findByKidForUpdate(TENANT, "key-3")).thenReturn(Optional.of(published));
+        when(realms.findByRealmKey(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 4L, 8L)));
+        when(keys.findByKid(TENANT, "key-3")).thenReturn(Optional.of(published));
         OAuthSigningKeyBO previous = key("old-key", pair, OAuthKeyStatusEnum.ACTIVE, NOW.minusSeconds(172800), 2L);
         when(keys.findByStatuses(eq(TENANT), eq(EnumSet.of(OAuthKeyStatusEnum.ACTIVE)), eq(0L), eq(8)))
                 .thenReturn(List.of(previous));
@@ -142,15 +147,39 @@ class SigningKeyServiceImplTest {
 
     @Test
     void rejectsStaleKeyVersionWithoutUpdatingEitherRecord() {
-        when(realms.findByRealmKeyForUpdate(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 1L, 1L)));
+        when(realms.findByRealmKey(TENANT)).thenReturn(Optional.of(realm("ACTIVE", null, 1L, 1L)));
         OAuthSigningKeyBO key = OAuthSigningKeyBO.builder().version(2L).kid("key-4").build();
-        when(keys.findByKidForUpdate(TENANT, "key-4")).thenReturn(Optional.of(key));
+        when(keys.findByKid(TENANT, "key-4")).thenReturn(Optional.of(key));
 
         assertThatThrownBy(() -> service.activate(TENANT, "key-4", 1L))
                 .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class)
                 .hasMessage("OAUTH_SIGNING_KEY_VERSION_CONFLICT");
         org.mockito.Mockito.verify(keys, org.mockito.Mockito.never()).save(any(), any(), anyLong());
         org.mockito.Mockito.verify(realms, org.mockito.Mockito.never()).save(any(), any(), anyLong());
+    }
+
+    @Test
+    void repeatedActivationRequiresPrimaryKeyAndRealmProof() throws Exception {
+        KeyPair pair = rsaKeyPair();
+        var active = key("key-active", pair, OAuthKeyStatusEnum.ACTIVE, NOW.minusSeconds(100), 2L);
+        when(realms.findByRealmKey(TENANT)).thenReturn(Optional.of(realm("ACTIVE", "key-active", 3L, 1L)));
+        when(keys.findByKid(TENANT, "key-active")).thenReturn(Optional.of(active));
+        when(keys.fenceObserved(TENANT, active, true)).thenReturn(false);
+        assertThatThrownBy(() -> service.activate(TENANT, "key-active", 2L))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(keys, org.mockito.Mockito.never()).findByKidForUpdate(any(), anyString());
+        verify(realms, org.mockito.Mockito.never()).findByRealmKeyForUpdate(any());
+    }
+
+    @Test
+    void repeatedRetirementStillFencesTheObservedKey() throws Exception {
+        KeyPair pair = rsaKeyPair();
+        var retired = key("key-retired", pair, OAuthKeyStatusEnum.RETIRED, NOW.minusSeconds(100), 2L);
+        when(realms.findByRealmKey(TENANT)).thenReturn(Optional.of(realm("ACTIVE", "other", 3L, 1L)));
+        when(keys.findByKid(TENANT, "key-retired")).thenReturn(Optional.of(retired));
+        assertThat(service.retire(TENANT, "key-retired", 2L).getVersion()).isEqualTo(3L);
+        verify(keys).fenceObserved(TENANT, retired, false);
+        verify(keys, org.mockito.Mockito.never()).findByKidForUpdate(any(), anyString());
     }
 
     private static PublishSigningKeyDTO publishCommand(String kid, KeyPair pair, String ciphertext) throws Exception {
