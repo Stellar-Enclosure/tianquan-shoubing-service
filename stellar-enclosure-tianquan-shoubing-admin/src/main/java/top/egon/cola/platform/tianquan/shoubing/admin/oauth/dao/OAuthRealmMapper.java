@@ -76,6 +76,10 @@ public interface OAuthRealmMapper extends EgonColaMapper<OAuthRealmPO> {
             @Param("realmKey") @NotBlank(groups = EgonColaModelValidationGroups.Query.class)
             @Size(max = 64, groups = EgonColaModelValidationGroups.Query.class) String realmKey);
 
+    int fenceObservedVersion(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("realmKey") String realmKey, @Param("expectedVersion") long expectedVersion,
+            @Param("now") java.time.Instant now, @Param("actor") String actor);
+
     @Validated(EgonColaModelValidationGroups.Query.class)
     List<OAuthRealmPO> selectDirectory(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)

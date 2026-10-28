@@ -25,7 +25,15 @@ public class OAuthSsoLifecycleService {
 
     @Transactional
     public void logout(TrustedRealmBO realm, String authenticationDigest, String bindingDigest, String subject) {
-        realms.findByRealmKeyForUpdate(realm).orElseThrow(() -> new IllegalStateException("OAUTH_SSO_REALM_MISSING"));
+        if (!realms.fenceObservedVersion(realm)) {
+            throw new org.springframework.dao.TransientDataAccessResourceException("SSO realm version is not yet visible");
+        }
+        logoutWithRealmFence(realm, authenticationDigest, bindingDigest, subject);
+    }
+
+    /** The caller must have fenced this realm in the enclosing transaction. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    void logoutWithRealmFence(TrustedRealmBO realm, String authenticationDigest, String bindingDigest, String subject) {
         var current = authentications.findByJtiDigest(realm, authenticationDigest)
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_SSO_AUTHENTICATION_MISSING"));
         if (!Objects.equals(current.getBrowserBindingDigest(), bindingDigest) || !Objects.equals(current.getSubject(), subject)) {

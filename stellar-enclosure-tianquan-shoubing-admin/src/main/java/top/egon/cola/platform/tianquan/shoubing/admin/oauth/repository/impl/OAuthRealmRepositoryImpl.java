@@ -82,6 +82,18 @@ public class OAuthRealmRepositoryImpl extends EgonColaRepository<OAuthRealmMappe
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm) {
+        return withTrustedStoragePartition(trustedRealm, tenantId -> {
+            OAuthRealmPO candidate = baseMapper.selectByRealmKey(tenantId, trustedRealm.getRealmKey());
+            if (candidate == null) { return false; }
+            requireCurrentMatchesTrustedRealm(trustedRealm, candidate);
+            return baseMapper.fenceObservedVersion(tenantId, candidate.getId(), trustedRealm.getRealmKey(),
+                    candidate.getVersion(), clock.instant().truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1;
+        });
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<OAuthRealmBO> findAllByStoragePartition(@NotNull @Valid TrustedRealmBO trustedRealm) {
         return withTrustedStoragePartition(trustedRealm, tenantId -> baseMapper

@@ -19,6 +19,8 @@ public interface OAuthRealmRepository {
 
     Optional<OAuthRealmBO> findByRealmKeyForUpdate(@NotNull @Valid TrustedRealmBO trustedRealm);
 
+    boolean fenceObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm);
+
     List<OAuthRealmBO> findAllByStoragePartition(@NotNull @Valid TrustedRealmBO trustedRealm);
 
     OAuthRealmBO save(

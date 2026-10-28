@@ -661,6 +661,7 @@ class OAuthConsentRoundTripTest {
         var active = fixture.authenticationFacts.values().iterator().next();
         fixture.authenticationFacts.put("tenant:1001:other", active.toBuilder().id(9999L).jtiDigest("9".repeat(64)).browserBindingDigest("8".repeat(64)).build());
         MvcResult form = mvc.perform(request(get("/tenants/1001/logout")).cookie(pending.cookies())).andExpect(status().isOk()).andReturn(); pending.browser().accept(form);
+        clearInvocations(fixture.realmRepository);
         mvc.perform(request(post("/tenants/1001/logout")).cookie(pending.cookies()).contentType("application/x-www-form-urlencoded"))
                 .andExpect(status().isForbidden());
         MvcResult ended = mvc.perform(request(post("/tenants/1001/logout")).cookie(pending.cookies()).contentType("application/x-www-form-urlencoded")
@@ -669,6 +670,8 @@ class OAuthConsentRoundTripTest {
         assertEquals("ACTIVE", fixture.authenticationFacts.get("tenant:1001:other").getStatus());
         assertEquals("REVOKED", fixture.authenticationFacts.entrySet().stream().filter(entry -> !entry.getKey().endsWith(":other")).findFirst().orElseThrow().getValue().getStatus());
         assertTrue(fixture.authorizations.values().stream().allMatch(value -> "REVOKED".equals(value.getStatus())));
+        verify(fixture.realmRepository, times(1)).fenceObservedVersion(any());
+        verify(fixture.realmRepository, never()).findByRealmKeyForUpdate(any());
         assertEquals(1, fixture.identityEvents.stream().filter(event -> "IDENTITY_SSO_REVOKED".equals(event.eventType())).count());
         pending.browser().accept(ended);
         mvc.perform(request(get("/tenants/1001/logout")).cookie(pending.cookies())).andExpect(status().isUnauthorized());
@@ -1324,6 +1327,7 @@ class OAuthConsentRoundTripTest {
             when(issuers.resolveCurrentIssuer()).thenAnswer(i -> realm(URI.create(
                     AuthorizationServerContextHolder.getContext().getIssuer())));
             when(realmRepository.findByRealmKeyForUpdate(any())).thenAnswer(i -> Optional.of(realmFact(i.getArgument(0))));
+            when(realmRepository.fenceObservedVersion(any())).thenReturn(true);
             when(realmRepository.findByIssuer(any())).thenAnswer(i -> Optional.of(realmFact(i.getArgument(0))));
             when(signingKeyRepository.findByStatuses(any(), anySet(), anyLong(), anyInt())).thenAnswer(i -> {
                 if (failSigning) { throw new TransientDataAccessResourceException("fixture signing key lookup failure"); }

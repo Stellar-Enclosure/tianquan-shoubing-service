@@ -63,6 +63,13 @@
         FOR UPDATE
     </select>
 
+    <update id="fenceObservedVersion">
+        UPDATE tianquan_oauth.oauth_realm
+        SET version = version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE tenant_id = #{tenantId} AND id = #{id} AND realm_key = #{realmKey}
+          AND version = #{expectedVersion} AND deleted_at IS NULL
+    </update>
+
     <select id="selectDirectory" resultMap="OAuthRealmPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_realm

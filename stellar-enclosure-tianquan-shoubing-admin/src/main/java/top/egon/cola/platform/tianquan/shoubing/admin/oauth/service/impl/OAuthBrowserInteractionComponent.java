@@ -291,7 +291,9 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
     @Transactional
     public String completeLogout(HttpServletRequest request, org.springframework.security.core.Authentication authentication) {
         var realm = realm(request);
-        realms.findByRealmKeyForUpdate(realm).orElseThrow(OAuthBrowserInteractionComponent::rejected);
+        if (!realms.fenceObservedVersion(realm)) {
+            throw new org.springframework.dao.TransientDataAccessResourceException("SSO realm version is not yet visible");
+        }
         var interaction = require(request, true);
         if (!"LOGOUT".equals(interaction.getPurpose()) || !authentication.isAuthenticated()
                 || !interaction.getRestrictedSubject().equals(authentication.getName()) || !(authentication.getDetails() instanceof Map<?, ?> details)
@@ -299,7 +301,7 @@ public class OAuthBrowserInteractionComponent implements RequestCache, CsrfToken
         if (interaction.getRedirectUri() != null && clients.findById(realm, interaction.getClientPk())
                 .filter(client -> client.getStatus() == OAuthClient.Status.ACTIVE
                         && client.getPostLogoutRedirectUris().contains(interaction.getRedirectUri())).isEmpty()) { throw rejected(); }
-        sso.logout(realm, interaction.getAuthenticationJtiDigest(), interaction.getBrowserBindingDigest(), interaction.getRestrictedSubject());
+        sso.logoutWithRealmFence(realm, interaction.getAuthenticationJtiDigest(), interaction.getBrowserBindingDigest(), interaction.getRestrictedSubject());
         long version = interaction.getVersion();
         interaction.setVersion(version + 1).setState("CONSUMED").setConsumedAt(clock.instant());
         interactions.save(realm, interaction, version);

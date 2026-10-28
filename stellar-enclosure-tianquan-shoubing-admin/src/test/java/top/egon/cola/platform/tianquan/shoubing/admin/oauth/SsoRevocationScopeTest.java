@@ -10,7 +10,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthorizationBO;
-import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository;
@@ -38,7 +37,7 @@ class SsoRevocationScopeTest {
     @BeforeEach void setUp() {
         current = OAuthAuthenticationBO.builder().id(42L).jtiDigest(CURRENT).subject("alice").browserBindingDigest(BINDING)
                 .status("ACTIVE").version(3L).build();
-        when(realms.findByRealmKeyForUpdate(realm)).thenReturn(Optional.of(OAuthRealmBO.builder().build()));
+        when(realms.fenceObservedVersion(realm)).thenReturn(true);
         when(authentications.findByJtiDigest(realm, CURRENT)).thenReturn(Optional.of(current));
         when(authentications.fenceRevokedWithoutLiveAuthorizations(realm, 42L, CURRENT, 4L, NOW)).thenReturn(true);
     }
@@ -54,6 +53,8 @@ class SsoRevocationScopeTest {
         assertEquals("REVOKED", first.getStatus()); assertEquals("REVOKED", second.getStatus());
         assertEquals(NOW, current.getRevokedAt());
         verify(authentications).save(realm, current, 3L);
+        verify(realms).fenceObservedVersion(realm);
+        verify(realms, never()).findByRealmKeyForUpdate(any());
         verify(grants).save(realm, first, 0L); verify(grants).save(realm, second, 5L);
         verify(authentications).fenceRevokedWithoutLiveAuthorizations(realm, 42L, CURRENT, 4L, NOW);
         verify(authentications, never()).findByJtiDigestForUpdate(any(), anyString());
@@ -82,6 +83,18 @@ class SsoRevocationScopeTest {
 
         verify(transactions).rollback(any());
         verifyNoInteractions(grants, events);
+    }
+
+    @Test void staleRealmVersionRollsBackBeforeAuthenticationOrGrantWrites() {
+        when(realms.fenceObservedVersion(realm)).thenReturn(false);
+        var transactions = mock(org.springframework.transaction.PlatformTransactionManager.class);
+        when(transactions.getTransaction(any())).thenReturn(new org.springframework.transaction.support.SimpleTransactionStatus());
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
+
+        assertThrows(org.springframework.dao.TransientDataAccessResourceException.class,
+                () -> transaction.executeWithoutResult(status -> service.logout(realm, CURRENT, BINDING, "alice")));
+        verify(transactions).rollback(any());
+        verifyNoInteractions(authentications, grants, events);
     }
 
     @Test void staleGrantRollsBackTheAuthenticationChangeAndDoesNotPublishAnEvent() {
