@@ -31,6 +31,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthGr
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthResourceBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthGrantRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceGrantTransactionCoordinator;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.OAuthClientRevokeCommand;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
 import top.egon.cola.platform.tianquan.shoubing.core.audit.IdentitySecurityEventPort;
@@ -61,6 +62,7 @@ class OAuthClientServiceImplTest {
     private final OAuthRealmRepository realms = mock(OAuthRealmRepository.class);
     private final OAuthResourceRepository resources = mock(OAuthResourceRepository.class);
     private final OAuthGrantRepository grants = mock(OAuthGrantRepository.class);
+    private final ResourceGrantTransactionCoordinator grantTransactions = mock(ResourceGrantTransactionCoordinator.class);
     private final OAuthClientViewConverter views = mock(OAuthClientViewConverter.class);
     private final IdentitySecurityEventPort events = mock(IdentitySecurityEventPort.class);
     private final TokenRevocationService revocations = mock(TokenRevocationService.class);
@@ -75,7 +77,9 @@ class OAuthClientServiceImplTest {
         when(realms.findByRealmKey(tenantB)).thenReturn(Optional.of(realmRow(tenantB)));
         when(realms.findByRealmKey(platform)).thenReturn(Optional.of(realmRow(platform)));
         when(realms.fenceActiveObservedVersion(any())).thenReturn(true);
-        service = new OAuthClientServiceImpl(clients, realms, resources, grants, views, events, revocations,
+        when(grantTransactions.execute(any(), any(), any())).thenAnswer(invocation ->
+                ((java.util.function.Supplier<?>) invocation.getArgument(2)).get());
+        service = new OAuthClientServiceImpl(clients, realms, resources, grants, grantTransactions, views, events, revocations,
                 new SecureRandom(), Clock.fixed(NOW, ZoneOffset.UTC), "test");
         when(views.toCreatedTarget(any(OAuthClientBO.class), any(URI.class), nullable(String.class)))
                 .thenAnswer(invocation -> {
@@ -253,6 +257,64 @@ class OAuthClientServiceImplTest {
     }
 
     @Test
+    void resourceUriAdditionVersionChecksEvenAnUnchangedDelegationGrant() {
+        String uri = "https://api.example/orders";
+        OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
+        OAuthGrantBO grant = OAuthGrantBO.builder().id(71L).version(4L).clientPk(44L)
+                .resourceServerId("orders-resource").grantType(ResourceGrantType.USER_DELEGATION)
+                .status(ClientResourceGrant.Status.ACTIVE).resourceVersion(2L).allowedScopes(List.of()).build();
+        when(resources.findByResourceUri(platform, URI.create(uri))).thenReturn(Optional.of(resource()));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
+        when(grants.findGrant(tenantA, 44L, "orders-resource", ResourceGrantType.USER_DELEGATION)).thenReturn(Optional.of(grant));
+
+        service.putResourceUri(tenantA, platform, "orders-web", uri);
+
+        verify(grantTransactions).execute(eq(platform), argThat(values -> values.size() == 1 && values.getFirst().getId() == 81L), any());
+        verify(grants).save(eq(tenantA), argThat(value -> value.getId() == 71L && value.getVersion() == 5L
+                && value.getStatus() == ClientResourceGrant.Status.ACTIVE), eq(4L));
+        verify(grants, never()).findGrantForUpdate(any(), any(), any(), any());
+    }
+
+    @Test
+    void resourceUriRemovalDisablesVisibleGrantWithoutALockingRead() {
+        String uri = "https://api.example/orders";
+        OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
+        OAuthGrantBO grant = OAuthGrantBO.builder().id(71L).version(4L).clientPk(44L)
+                .resourceServerId("orders-resource").grantType(ResourceGrantType.USER_DELEGATION)
+                .status(ClientResourceGrant.Status.ACTIVE).resourceVersion(2L).allowedScopes(List.of()).build();
+        when(resources.findByResourceUri(platform, URI.create(uri))).thenReturn(Optional.of(resource()));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
+        when(grants.findGrant(tenantA, 44L, "orders-resource", ResourceGrantType.USER_DELEGATION)).thenReturn(Optional.of(grant));
+
+        service.deleteResourceUri(tenantA, platform, "orders-web", uri);
+
+        verify(grants).save(eq(tenantA), argThat(value -> value.getVersion() == 5L
+                && value.getStatus() == ClientResourceGrant.Status.DISABLED), eq(4L));
+        verify(grants, never()).findGrantForUpdate(any(), any(), any(), any());
+        verify(clients, never()).fenceGrantAbsent(any(), any(), any(), any());
+    }
+
+    @Test
+    void resourceUriRemovalRejectsAReplicaMissUnlessPrimaryProvesAbsence() {
+        String uri = "https://api.example/orders";
+        OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
+        when(resources.findByResourceUri(platform, URI.create(uri))).thenReturn(Optional.of(resource()));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
+        when(grants.findGrant(tenantA, 44L, "orders-resource", ResourceGrantType.USER_DELEGATION)).thenReturn(Optional.empty());
+        when(clients.fenceGrantAbsent(eq(tenantA), any(), eq("orders-resource"), eq(ResourceGrantType.USER_DELEGATION)))
+                .thenReturn(false, true);
+
+        assertThatThrownBy(() -> service.deleteResourceUri(tenantA, platform, "orders-web", uri))
+                .isInstanceOf(org.springframework.dao.TransientDataAccessResourceException.class);
+        service.deleteResourceUri(tenantA, platform, "orders-web", uri);
+        verify(grants, never()).save(any(), any(), anyLong());
+        verify(grants, never()).findGrantForUpdate(any(), any(), any(), any());
+    }
+
+    @Test
     void serviceClientsCannotRegisterBrowserBindingOrLogoutRedirects() {
         assertThatThrownBy(() -> service.create(platform, platform, serviceClient().setBrowserBound(true), "admin"))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -284,7 +346,7 @@ class OAuthClientServiceImplTest {
                         .build());
 
         OAuthClientServiceImpl localService = new OAuthClientServiceImpl(
-                clients, realms, resources, grants, views, events, revocations,
+                clients, realms, resources, grants, grantTransactions, views, events, revocations,
                 new SecureRandom(), Clock.fixed(NOW, ZoneOffset.UTC), "local");
         OAuthClientVO updated = localService.putRedirectUri(
                 tenantA, "orders-web", "http://127.0.0.1:18121/oauth/callback");

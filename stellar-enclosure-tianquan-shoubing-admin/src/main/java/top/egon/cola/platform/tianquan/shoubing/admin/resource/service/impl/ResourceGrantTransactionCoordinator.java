@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthResourceBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceFenceRepository;
@@ -24,6 +25,9 @@ public class ResourceGrantTransactionCoordinator {
 
     public <T> T execute(TrustedRealmBO platform, List<OAuthResourceBO> resources, Supplier<T> action) {
         Objects.requireNonNull(action, "action");
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("OAUTH_RESOURCE_GRANT_AMBIENT_TRANSACTION_UNSUPPORTED");
+        }
         if (resources == null || resources.isEmpty() || resources.stream().anyMatch(value -> value == null || value.getId() == null)
                 || resources.stream().map(OAuthResourceBO::getId).distinct().count() != resources.size()) {
             throw new IllegalArgumentException("OAUTH_RESOURCE_FENCE_SET_INVALID");

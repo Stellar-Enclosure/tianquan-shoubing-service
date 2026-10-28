@@ -33,6 +33,9 @@ public interface OAuthClientRepository {
 
     boolean fenceGrantObservedVersion(TrustedRealmBO trustedRealm, OAuthClientBO client, long expectedVersion, OAuthGrantBO grant);
 
+    boolean fenceGrantAbsent(TrustedRealmBO trustedRealm, OAuthClientBO client, String resourceServerId,
+            top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceGrantType grantType);
+
     List<OAuthClientBO> findAllByRealm(@NotNull @Valid TrustedRealmBO trustedRealm);
 
     OAuthClientBO save(

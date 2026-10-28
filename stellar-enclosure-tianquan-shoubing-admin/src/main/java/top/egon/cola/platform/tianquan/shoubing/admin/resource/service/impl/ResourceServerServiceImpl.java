@@ -203,7 +203,6 @@ public class ResourceServerServiceImpl implements ResourceServerService {
     }
 
     @Override
-    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public ClientResourceGrantVO putGrant(
             TrustedRealmBO clientRealm,
             TrustedRealmBO platformRealm,
@@ -223,7 +222,6 @@ public class ResourceServerServiceImpl implements ResourceServerService {
     }
 
     @Override
-    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public void deleteGrant(
             TrustedRealmBO clientRealm,
             TrustedRealmBO platformRealm,
@@ -283,7 +281,6 @@ public class ResourceServerServiceImpl implements ResourceServerService {
     }
 
     @Override
-    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public List<ClientResourceGrantVO> batchGrants(
             TrustedRealmBO clientRealm,
             TrustedRealmBO platformRealm,

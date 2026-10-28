@@ -17,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +38,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthGr
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthResourceBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthGrantRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceGrantTransactionCoordinator;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.OAuthClientService;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.OAuthClientRevokeCommand;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
@@ -67,6 +69,8 @@ public class OAuthClientServiceImpl implements OAuthClientService {
     @NonNull
     @Qualifier("oAuthGrantRepository")
     private final OAuthGrantRepository grants;
+    @NonNull
+    private final ResourceGrantTransactionCoordinator grantTransactions;
     @NonNull
     @Qualifier("OAuthClientViewConverterImpl")
     private final OAuthClientViewConverter views;
@@ -283,58 +287,69 @@ public class OAuthClientServiceImpl implements OAuthClientService {
     }
 
     @Override
-    @Transactional
     public OAuthClientVO putResourceUri(
             TrustedRealmBO trustedRealm,
             TrustedRealmBO platformRealm,
             String clientId,
             String resourceUri) {
         TrustedRealmBO realm = requireRealm(trustedRealm);
-        lockRealm(realm);
-        OAuthClientBO client = lockUserClient(realm, clientId);
+        TrustedRealmBO platform = requirePlatformRealm(platformRealm);
         String exactUri = exactHttpsUri(resourceUri, "resourceUri");
-        OAuthResourceBO resource = activeResource(platformRealm, exactUri);
-        List<String> resourceUris = new ArrayList<>(client.getResourceUris());
-        if (!resourceUris.contains(exactUri)) {
-            resourceUris.add(exactUri);
-        }
-        OAuthClientBO saved = clients.save(realm, copy(client)
-                .version(Math.addExact(client.getVersion(), 1L))
-                .resourceUris(sorted(resourceUris))
-                .updatedAt(clock.instant())
-                .build(), client.getVersion());
-        recordSecurityChange(realm, client, saved, "CLIENT_RESOURCE_CHANGED");
-        saveUserDelegationGrant(realm, saved, resource);
-        return view(saved, realm);
+        OAuthResourceBO resource = activeResource(platform, exactUri);
+        return grantTransactions.execute(platform, List.of(resource), () -> {
+            lockRealm(realm);
+            OAuthClientBO client = lockUserClient(realm, clientId);
+            List<String> resourceUris = new ArrayList<>(client.getResourceUris());
+            if (!resourceUris.contains(exactUri)) resourceUris.add(exactUri);
+            OAuthClientBO saved = clients.save(realm, copy(client)
+                    .version(Math.addExact(client.getVersion(), 1L))
+                    .resourceUris(sorted(resourceUris))
+                    .updatedAt(clock.instant())
+                    .build(), client.getVersion());
+            recordSecurityChange(realm, client, saved, "CLIENT_RESOURCE_CHANGED");
+            saveUserDelegationGrant(realm, saved, resource);
+            return view(saved, realm);
+        });
     }
 
     @Override
-    @Transactional
     public OAuthClientVO deleteResourceUri(
             TrustedRealmBO trustedRealm,
             TrustedRealmBO platformRealm,
             String clientId,
             String resourceUri) {
         TrustedRealmBO realm = requireRealm(trustedRealm);
-        lockRealm(realm);
-        OAuthClientBO client = lockUserClient(realm, clientId);
+        TrustedRealmBO platform = requirePlatformRealm(platformRealm);
         String exactUri = exactHttpsUri(resourceUri, "resourceUri");
-        OAuthResourceBO resource = activeResource(platformRealm, exactUri);
-        List<String> resourceUris = new ArrayList<>(client.getResourceUris());
-        resourceUris.remove(exactUri);
-        OAuthClientBO saved = clients.save(realm, copy(client)
-                .version(Math.addExact(client.getVersion(), 1L))
-                .resourceUris(sorted(resourceUris))
-                .updatedAt(clock.instant())
-                .build(), client.getVersion());
-        recordSecurityChange(realm, client, saved, "CLIENT_RESOURCE_CHANGED");
-        grants.findGrantForUpdate(realm, saved.getId(), resource.getResourceServerId(), ResourceGrantType.USER_DELEGATION)
-                .ifPresent(grant -> grants.save(realm, copyGrant(grant)
+        OAuthResourceBO resource = activeResource(platform, exactUri);
+        return grantTransactions.execute(platform, List.of(resource), () -> {
+            lockRealm(realm);
+            OAuthClientBO client = lockUserClient(realm, clientId);
+            List<String> resourceUris = new ArrayList<>(client.getResourceUris());
+            resourceUris.remove(exactUri);
+            OAuthClientBO saved = clients.save(realm, copy(client)
+                    .version(Math.addExact(client.getVersion(), 1L))
+                    .resourceUris(sorted(resourceUris))
+                    .updatedAt(clock.instant())
+                    .build(), client.getVersion());
+            recordSecurityChange(realm, client, saved, "CLIENT_RESOURCE_CHANGED");
+            OAuthGrantBO grant = grants.findGrant(realm, saved.getId(), resource.getResourceServerId(),
+                    ResourceGrantType.USER_DELEGATION).orElse(null);
+            if (grant == null) {
+                if (!clients.fenceGrantAbsent(realm, saved, resource.getResourceServerId(), ResourceGrantType.USER_DELEGATION)) {
+                    throw new TransientDataAccessResourceException("OAuth grant is not yet visible or the client changed");
+                }
+                saved.setVersion(Math.addExact(saved.getVersion(), 1L));
+                OAuthTransactionFences.clientWritten(realm, saved);
+            } else {
+                grants.save(realm, copyGrant(grant)
                         .version(Math.addExact(grant.getVersion(), 1L))
                         .status(ClientResourceGrant.Status.DISABLED)
                         .resourceVersion(resource.getVersion())
-                        .build(), grant.getVersion()));
-        return view(saved, realm);
+                        .build(), grant.getVersion());
+            }
+            return view(saved, realm);
+        });
     }
 
     private OAuthClientVO saveClient(TrustedRealmBO realm, OAuthClientBO current, OAuthClientBO proposed) {
@@ -414,8 +429,7 @@ public class OAuthClientServiceImpl implements OAuthClientService {
                     .status(ClientResourceGrant.Status.ACTIVE)
                     .resourceVersion(resource.getVersion())
                     .build(), 0L);
-        } else if (current.getStatus() != ClientResourceGrant.Status.ACTIVE
-                || !Objects.equals(current.getResourceVersion(), resource.getVersion())) {
+        } else {
             grants.save(realm, copyGrant(current)
                     .version(Math.addExact(current.getVersion(), 1L))
                     .status(ClientResourceGrant.Status.ACTIVE)

@@ -121,6 +121,21 @@ public class OAuthClientRepositoryImpl extends EgonColaRepository<OAuthClientMap
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceGrantAbsent(TrustedRealmBO realm, OAuthClientBO client, String resourceServerId,
+            top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceGrantType grantType) {
+        Objects.requireNonNull(client, "client");
+        if (client.getId() == null || client.getId() <= 0 || client.getVersion() < 0) {
+            throw new IllegalArgumentException("OAUTH_GRANT_FENCE_INVALID");
+        }
+        String resource = required(resourceServerId, "resourceServerId");
+        String type = Objects.requireNonNull(grantType, "grantType").name();
+        return withTrustedStoragePartition(realm,
+                tenant -> baseMapper.fenceGrantAbsent(tenant, client, resource, type,
+                        clock.instant().truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<OAuthClientBO> findAllByRealm(@NotNull @Valid TrustedRealmBO trustedRealm) {
         return withTrustedStoragePartition(trustedRealm, tenantId -> baseMapper

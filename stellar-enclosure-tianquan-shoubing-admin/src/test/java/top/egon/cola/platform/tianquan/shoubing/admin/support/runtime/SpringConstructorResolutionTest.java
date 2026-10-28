@@ -98,6 +98,7 @@ class SpringConstructorResolutionTest {
             registerNamedMock(context, "tokenRevocationService", TokenRevocationService.class);
             registerNamedMock(context, "oAuthResourceRepository", OAuthResourceRepository.class);
             registerNamedMock(context, "oAuthGrantRepository", OAuthGrantRepository.class);
+            registerNamedMock(context, "resourceGrantTransactionCoordinator", top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceGrantTransactionCoordinator.class);
             registerNamedMock(context, "OAuthClientViewConverterImpl", OAuthClientViewConverter.class);
             registerNamedMock(context, "identityOutboxPublisher", IdentitySecurityEventPort.class);
             context.registerBean("idpSecureRandom", SecureRandom.class, () -> new SecureRandom());
