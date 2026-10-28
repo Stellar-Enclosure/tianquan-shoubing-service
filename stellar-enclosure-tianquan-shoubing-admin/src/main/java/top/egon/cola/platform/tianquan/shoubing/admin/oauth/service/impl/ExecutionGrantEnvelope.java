@@ -12,8 +12,9 @@ import java.util.UUID;
 record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding source, ServiceBinding verifier,
         long sourceRealmGeneration, long sourceClientGeneration, long sourceAuthorizationId, String sourceTokenDigest,
         String sourceTokenJti, Instant sourceTokenRetainUntil, String sourceSigningKeyId, String purpose, String intentId,
-        String bindingSha256, boolean sessionRequired,
-        Instant notBefore, Instant expiresAt, StoredUserExecutionProof user) {
+        String bindingSha256, String policySha256, boolean sessionRequired,
+        Instant notBefore, Instant expiresAt, Instant intentDeadlineAt, StoredUserExecutionProof user) {
+    static final Instant MAX_INTENT_DEADLINE = Instant.parse("9999-12-30T23:59:59Z");
 
     ExecutionGrantEnvelope {
         source = Objects.requireNonNull(source, "source");
@@ -26,7 +27,9 @@ record ExecutionGrantEnvelope(int schemaVersion, String grantId, ServiceBinding 
                 || sourceSigningKeyId == null || !sourceSigningKeyId.matches("[A-Za-z0-9_-]{1,128}")
                 || purpose == null || !purpose.matches("[A-Z][A-Z0-9_]{0,95}") || !uuid(intentId)
                 || bindingSha256 == null || !bindingSha256.matches("[0-9a-f]{64}")
-                || notBefore == null || expiresAt == null || !expiresAt.isAfter(notBefore)
+                || policySha256 == null || !policySha256.matches("[0-9a-f]{64}")
+                || notBefore == null || expiresAt == null || intentDeadlineAt == null || !expiresAt.isAfter(notBefore)
+                || expiresAt.isAfter(intentDeadlineAt) || intentDeadlineAt.isAfter(MAX_INTENT_DEADLINE)
                 || notBefore.isBefore(Instant.ofEpochSecond(user.authenticationTime()))
                 || Duration.between(notBefore, expiresAt).compareTo(Duration.ofHours(8)) > 0
                 || !source.resourceUri().equals(user.resourceUri())

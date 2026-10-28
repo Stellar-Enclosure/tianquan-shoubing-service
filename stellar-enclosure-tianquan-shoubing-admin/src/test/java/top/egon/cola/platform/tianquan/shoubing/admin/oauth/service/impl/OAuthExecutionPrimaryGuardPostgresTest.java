@@ -65,16 +65,24 @@ class OAuthExecutionPrimaryGuardPostgresTest {
             assertThrows(OAuth2AuthenticationException.class,
                     () -> transaction.executeWithoutResult(status -> guard.requirePrimaryTransaction()));
             try (var context = new AnnotationConfigApplicationContext()) {
+                org.springframework.test.context.support.TestPropertySourceUtils.addInlinedPropertiesToEnvironment(context,
+                        "egon.tianquan-shoubing.execution-grants.enabled=true");
                 context.register(TransactionConfiguration.class);
                 context.registerBean("transactionManager", PlatformTransactionManager.class,
                         () -> new DataSourceTransactionManager(logical));
                 context.registerBean("oauthExecutionPrimaryGuard", OAuthExecutionPrimaryGuard.class, () -> guard);
                 context.registerBean(OAuthAuthorityService.class, () -> authority(guard));
+                context.registerBean(OAuthExecutionGrantService.class, () -> grantService(guard));
                 context.refresh();
                 OAuthAuthorityService authority = context.getBean(OAuthAuthorityService.class);
                 assertTrue(AopUtils.isAopProxy(authority));
                 assertThrows(NullPointerException.class,
                         () -> authority.captureExecutionUser(null, java.net.URI.create("https://api.example/orders"), "fixture"));
+                OAuthExecutionGrantService grant = context.getBean(OAuthExecutionGrantService.class);
+                assertTrue(AopUtils.isAopProxy(grant));
+                var request = new OAuthExecutionGrantService.IssueRequest("TIANJI_AGENT_RUN_EXECUTION",
+                        "d4c0f428-12ca-487c-a600-303883a19031", "a".repeat(64), false, java.time.Instant.now().plusSeconds(60));
+                assertThrows(NullPointerException.class, () -> grant.issue(null, "fixture", request));
             }
         } finally {
             ((AutoCloseable) logical).close();
@@ -103,5 +111,19 @@ class OAuthExecutionPrimaryGuardPostgresTest {
                 java.time.Clock.systemUTC());
         authority.setExecutionPrimary(guard);
         return authority;
+    }
+
+    private static OAuthExecutionGrantService grantService(OAuthExecutionPrimaryGuard guard) {
+        var source = new OAuthExecutionGrantProperties.Service(11, "agent", "agent", "platform", "tianji", "test",
+                "https://api.example/tianji");
+        var verifier = new OAuthExecutionGrantProperties.Service(20, "rbac", "rbac", "platform", "jianshen", "test",
+                "https://api.example/jianshen");
+        var binding = new OAuthExecutionGrantProperties.Binding("https://idp.example/tenants/101", 101, source, verifier,
+                "TIANJI_AGENT_RUN_EXECUTION", java.util.Set.of("tianji:agent:start"), java.util.Set.of(), java.time.Duration.ofMinutes(30));
+        return new OAuthExecutionGrantService(new OAuthExecutionGrantProperties(true, List.of(binding)),
+                mock(OAuthAuthorityService.class), guard,
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository.class),
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent.class),
+                new com.fasterxml.jackson.databind.ObjectMapper(), java.time.Clock.systemUTC());
     }
 }

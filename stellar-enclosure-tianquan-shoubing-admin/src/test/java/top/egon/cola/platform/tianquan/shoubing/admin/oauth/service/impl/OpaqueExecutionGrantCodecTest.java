@@ -141,23 +141,28 @@ class OpaqueExecutionGrantCodecTest {
         var value = envelope(INTENT, "c".repeat(64));
         assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, value.grantId(),
                 value.source(), value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
-                PURPOSE, INTENT, value.bindingSha256(), false, NOW,
-                NOW.plusSeconds(28_801), value.user()));
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), false, NOW,
+                NOW.plusSeconds(28_801), NOW.plusSeconds(86_400), value.user()));
         assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, value.grantId(),
                 value.source(), value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
-                PURPOSE, INTENT, value.bindingSha256(), false, NOW.minusSeconds(1),
-                NOW.plusSeconds(3_600), value.user()));
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), false, NOW.minusSeconds(1),
+                NOW.plusSeconds(3_600), NOW.plusSeconds(7_200), value.user()));
         assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, value.grantId(),
                 value.source(), value.source(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
-                PURPOSE, INTENT, value.bindingSha256(), false, NOW,
-                NOW.plusSeconds(3_600), value.user()));
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), false, NOW,
+                NOW.plusSeconds(3_600), NOW.plusSeconds(7_200), value.user()));
+        assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, value.grantId(),
+                value.source(), value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), false, NOW,
+                NOW.plusSeconds(3_600), NOW.plusSeconds(600), value.user()));
         var wrongResource = new ExecutionGrantEnvelope.ServiceBinding(15, "agent-service", "agent", "platform",
                 "tianji", "test", "https://api.example/other");
         String id = OpaqueExecutionGrantCodec.grantId(value.user(), wrongResource, PURPOSE, INTENT);
         assertNotEquals(value.grantId(), id);
         assertThrows(IllegalArgumentException.class, () -> new ExecutionGrantEnvelope(1, id, wrongResource,
                 value.verifier(), 1, 2, 33, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
-                PURPOSE, INTENT, value.bindingSha256(), false, NOW, NOW.plusSeconds(3_600), value.user()));
+                PURPOSE, INTENT, value.bindingSha256(), "f".repeat(64), false, NOW, NOW.plusSeconds(3_600),
+                NOW.plusSeconds(7_200), value.user()));
     }
 
     private static ExecutionGrantEnvelope envelope(String intent, String binding) {
@@ -172,8 +177,8 @@ class OpaqueExecutionGrantCodecTest {
                 "jianshen", "test", "https://api.example/jianshen");
         String id = OpaqueExecutionGrantCodec.grantId(user, source, PURPOSE, intent);
         return new ExecutionGrantEnvelope(1, id, source, verifier, 1, 2, 33, "e".repeat(64), "301",
-                NOW.plusSeconds(86_400), "source-key", PURPOSE, intent, binding, false,
-                NOW, NOW.plusSeconds(3_600), user);
+                NOW.plusSeconds(86_400), "source-key", PURPOSE, intent, binding, "f".repeat(64), false,
+                NOW, NOW.plusSeconds(3_600), NOW.plusSeconds(7_200), user);
     }
 
     private OAuthAuthorityService.Caller caller(ExecutionGrantEnvelope.ServiceBinding binding, String appId,

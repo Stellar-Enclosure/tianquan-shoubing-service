@@ -176,6 +176,33 @@ class OAuthExecutionUserProofTest {
         when(resources.findByResourceUri(platform, AUTHORITY)).thenReturn(Optional.of(OAuthResourceBO.builder()
                 .resourceServerId("idp").resourceUri(AUTHORITY).version(1).status(ResourceServerStatus.ACTIVE).build()));
         when(grants.findGrant(realm, 11L, "idp", ResourceGrantType.CLIENT_CREDENTIALS)).thenReturn(Optional.of(serviceGrant));
+        var verifierClient = OAuthClientBO.builder().id(20L).clientId("rbac-service").appId("rbac")
+                .purpose(OAuthClientPurposeEnum.SERVICE).status(OAuthClient.Status.ACTIVE)
+                .allowedScopes(List.of(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE)).build();
+        var verifierFamily = OAuthAuthorizationBO.builder().id(41L).clientPk(20L).principalName("rbac-service")
+                .principalType("SERVICE").audiences(List.of(AUTHORITY.toString()))
+                .authorizedScopes(List.of(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE))
+                .status("ACTIVE").absoluteExpiresAt(NOW.plusSeconds(300)).build();
+        var verifierClaims = SignedTokenClaimsBO.builder().issuer(ISSUER).audience(Set.of(AUTHORITY))
+                .subject("rbac-service").scope(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE)).tenantId(101L)
+                .principalType("SERVICE").jti("401").issuedAt(NOW).notBefore(NOW).expiresAt(NOW.plusSeconds(300))
+                .clientId("rbac-service").authorizationId("41").clientRegistrationId("20").scopeContext("TENANT")
+                .sourceBiz("platform").sourceApp("jianshen").sourceEnv("test").appId("rbac").credentialId("credential")
+                .resourceVersion(1L).securityVersion(OAuthSecurityVersionBO.builder().realm(1).client(2).build())
+                .tokenUse(OAuthTokenTypeEnum.ACCESS).build();
+        var verifierToken = OAuthTokenBO.builder().id(42L).authorizationPk(41L).jti("401").tokenType(OAuthTokenTypeEnum.ACCESS)
+                .retainUntil(NOW.plusSeconds(86_400)).metadata(OAuthTokenMetadataBO.builder().claims(verifierClaims).build()).build();
+        var verifierResource = OAuthResourceBO.builder().resourceServerId("jianshen")
+                .resourceUri(URI.create("https://api.example/jianshen")).bizCode("platform").appCode("jianshen")
+                .environment("test").managementClientId("rbac-service").version(1).status(ResourceServerStatus.ACTIVE).build();
+        var verifierGrant = OAuthGrantBO.builder().clientPk(20L).resourceServerId("idp")
+                .grantType(ResourceGrantType.CLIENT_CREDENTIALS).status(ClientResourceGrant.Status.ACTIVE)
+                .allowedScopes(List.of(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE)).resourceVersion(1L).build();
+        when(clients.findById(realm, 20L)).thenReturn(Optional.of(verifierClient));
+        when(authorizations.findById(realm, 41L)).thenReturn(Optional.of(verifierFamily));
+        when(tokens.findByTokenDigest(realm, "f".repeat(64))).thenReturn(Optional.of(verifierToken));
+        when(resources.findBySource(platform, "platform", "jianshen", "test")).thenReturn(Optional.of(verifierResource));
+        when(grants.findGrant(realm, 20L, "idp", ResourceGrantType.CLIENT_CREDENTIALS)).thenReturn(Optional.of(verifierGrant));
         when(states.findByTarget(eq(realm), any(), anyString())).thenAnswer(call -> {
             OAuthSecurityTargetEnum type = call.getArgument(1);
             long generation = switch (type) {
@@ -370,6 +397,23 @@ class OAuthExecutionUserProofTest {
     }
 
     @Test
+    void verifier_is_a_separately_authenticated_service_with_its_own_scope_and_facts() {
+        var sourceCaller = caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+        var user = service.captureExecutionUser(sourceCaller, TARGET, "user-proof");
+        var envelope = envelope(user);
+        var principal = new ServiceIdentityPrincipal("rbac-service", "101", "rbac-service", "401", AUTHORITY, 1,
+                Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE), "platform", "jianshen", "test", "credential",
+                NOW.minusSeconds(1), NOW.plusSeconds(300), "rbac", ServiceTokenContext.TENANT);
+        var caller = new OAuthAuthorityService.Caller(principal, realm, 20,
+                URI.create("https://api.example/jianshen"), 1L, 2L, 41L, "f".repeat(64),
+                NOW.plusSeconds(86_400), "verifier-key");
+        assertDoesNotThrow(() -> service.requireExecutionService(caller, envelope.verifier(), user,
+                IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE));
+        assertThrows(AccessDeniedException.class, () -> service.requireExecutionService(caller, envelope.source(), user,
+                IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+    }
+
+    @Test
     void issuing_service_revocation_client_rotation_and_scope_changes_invalidate_the_recorded_source() {
         var caller = caller(Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
         var envelope = envelope(service.captureExecutionUser(caller, TARGET, "user-proof"));
@@ -439,7 +483,8 @@ class OAuthExecutionUserProofTest {
         String purpose = "TIANJI_AGENT_RUN_EXECUTION";
         return new ExecutionGrantEnvelope(1, OpaqueExecutionGrantCodec.grantId(user, source, purpose, intent),
                 source, verifier, 1, 2, 21, "e".repeat(64), "301", NOW.plusSeconds(86_400), "source-key",
-                purpose, intent, "c".repeat(64), false, NOW, NOW.plusSeconds(3_600), user);
+                purpose, intent, "c".repeat(64), "f".repeat(64), false, NOW, NOW.plusSeconds(3_600),
+                NOW.plusSeconds(7_200), user);
     }
 
     private OAuthAuthorityTokenVerifier.VerifiedAccess proof() {
