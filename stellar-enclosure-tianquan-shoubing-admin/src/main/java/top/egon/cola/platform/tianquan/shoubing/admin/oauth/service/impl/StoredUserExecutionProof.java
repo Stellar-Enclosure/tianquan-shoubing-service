@@ -23,6 +23,7 @@ record StoredUserExecutionProof(String issuer, long tenantId, long issuerTrustVe
                 || signingKeyId == null || !signingKeyId.matches("[A-Za-z0-9_-]{1,128}")
                 || realmGeneration < 0 || clientGeneration < 0 || subjectGeneration < 0
                 || !text(acr, 64) || authenticationTime < 0 || authenticationExpiresAt <= authenticationTime
+                || authenticationExpiresAt - authenticationTime > 28_800
                 || authorizationExpiresAt <= authenticationTime || refreshGeneration < 0 || tokenRetainUntil == null
                 || scopes == null || scopes.isEmpty() || scopes.size() > 64
                 || scopes.stream().anyMatch(scope -> scope == null || !scope.matches("[A-Za-z0-9:._-]{1,128}"))) {

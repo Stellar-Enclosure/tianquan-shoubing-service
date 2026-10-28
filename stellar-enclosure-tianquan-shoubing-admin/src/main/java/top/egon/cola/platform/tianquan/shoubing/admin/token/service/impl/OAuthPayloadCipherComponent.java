@@ -34,7 +34,7 @@ public class OAuthPayloadCipherComponent {
     private static final int TAG_BITS = 128;
     private static final int TAG_BYTES = TAG_BITS / Byte.SIZE;
     private static final Set<String> ALLOWED_PURPOSES = Set.of(
-            "authorization-attributes", "token-value", "token-metadata", "signing-key", "browser-interaction");
+            "authorization-attributes", "token-value", "token-metadata", "signing-key", "browser-interaction", "execution-grant");
 
     @Qualifier("oauthKeyEncryptionProperties")
     private final OAuthKeyEncryptionProperties properties;
