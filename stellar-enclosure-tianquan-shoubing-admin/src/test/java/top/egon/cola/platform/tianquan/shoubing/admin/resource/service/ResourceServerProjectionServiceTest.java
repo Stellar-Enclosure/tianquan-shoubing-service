@@ -34,13 +34,23 @@ class ResourceServerProjectionServiceTest {
         assertThrows(IllegalArgumentException.class, () -> service.projectResource(resource, OAuthClientBO.builder().id(5L).build()));
     }
 
+    @Test void olderReplicaVersionIsRetryableRatherThanAContractFailure() {
+        when(realms.platformRealm()).thenReturn(realm);
+        var requested = OAuthResourceBO.builder().resourceServerId("api").resourceUri(URI.create("https://api.example"))
+                .managementClientPk(3L).version(4).build();
+        var stale = OAuthResourceBO.builder().resourceServerId("api").resourceUri(URI.create("https://api.example"))
+                .managementClientPk(3L).version(3).build();
+        when(resources.findByResourceServerId(realm, "api")).thenReturn(Optional.of(stale));
+        assertThrows(IllegalStateException.class, () -> service.projectResource(requested, OAuthClientBO.builder().id(3L).build()));
+    }
+
     @Test void disablingGrantCannotBeAcknowledgedWhileDatabaseStillAllowsIt() {
         var resource = OAuthResourceBO.builder().resourceServerId("api").build();
         var client = OAuthClientBO.builder().id(3L).purpose(OAuthClientPurposeEnum.SERVICE).build();
         var grant = OAuthGrantBO.builder().clientPk(3L).resourceServerId("api").grantType(ResourceGrantType.CLIENT_CREDENTIALS)
                 .status(ClientResourceGrant.Status.ACTIVE).version(2).build();
         when(grants.findGrant(realm, 3L, "api", ResourceGrantType.CLIENT_CREDENTIALS)).thenReturn(Optional.of(grant));
-        assertThrows(IllegalArgumentException.class, () -> service.deleteServiceGrant(realm, client, resource, grant));
+        assertThrows(IllegalStateException.class, () -> service.deleteServiceGrant(realm, client, resource, grant));
         grant.setStatus(ClientResourceGrant.Status.DISABLED);
         assertDoesNotThrow(() -> service.deleteServiceGrant(realm, client, resource, grant));
     }

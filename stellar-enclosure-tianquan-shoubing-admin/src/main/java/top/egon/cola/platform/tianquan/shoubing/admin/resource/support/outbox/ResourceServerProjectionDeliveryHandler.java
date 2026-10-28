@@ -2,8 +2,6 @@ package top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.List;
-import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.regex.Pattern;
 import lombok.NonNull;
@@ -105,7 +103,8 @@ public final class ResourceServerProjectionDeliveryHandler implements DeliveryHa
             JsonNode root = objectMapper.readTree(context.payload());
             if (root == null || !root.isObject()
                     || root.path("schemaVersion").asInt(-1) != SCHEMA_VERSION
-                    || !context.destination().equals(requiredText(root, "eventType"))) {
+                    || !context.destination().equals(requiredText(root, "eventType"))
+                    || !Objects.equals(context.messageId(), requiredText(root, "eventId"))) {
                 throw new IllegalArgumentException("RESOURCE_PROJECTION_EVENT_ENVELOPE_INVALID");
             }
             return root;
@@ -123,12 +122,12 @@ public final class ResourceServerProjectionDeliveryHandler implements DeliveryHa
         requireAggregate(envelope, "IDENTITY_RESOURCE_SERVER", resourceId, resourceVersion);
         TrustedRealmBO platform = realms.platformRealm();
         OAuthResourceBO current = resources.findByResourceServerId(platform, resourceId)
-                .orElseThrow(() -> new IllegalArgumentException("RESOURCE_PROJECTION_RESOURCE_NOT_FOUND"));
+                .orElseThrow(() -> new IllegalStateException("RESOURCE_PROJECTION_RESOURCE_NOT_VISIBLE"));
         if (current.getVersion() < resourceVersion) {
             throw new IllegalStateException("RESOURCE_PROJECTION_RESOURCE_VERSION_NOT_VISIBLE");
         }
         OAuthClientBO managementClient = clients.findByClientId(platform, current.getManagementClientId())
-                .orElseThrow(() -> new IllegalArgumentException("RESOURCE_PROJECTION_MANAGEMENT_CLIENT_NOT_FOUND"));
+                .orElseThrow(() -> new IllegalStateException("RESOURCE_PROJECTION_MANAGEMENT_CLIENT_NOT_VISIBLE"));
         projections.projectResource(current, managementClient);
     }
 
@@ -146,13 +145,13 @@ public final class ResourceServerProjectionDeliveryHandler implements DeliveryHa
         requireAggregate(envelope, "IDENTITY_SERVICE_RESOURCE_GRANT", aggregateId, grantVersion);
 
         OAuthClientBO client = clients.findByClientId(clientRealm, clientId)
-                .orElseThrow(() -> new IllegalArgumentException("RESOURCE_PROJECTION_CLIENT_NOT_FOUND"));
+                .orElseThrow(() -> new IllegalStateException("RESOURCE_PROJECTION_CLIENT_NOT_VISIBLE"));
         TrustedRealmBO platform = realms.platformRealm();
         OAuthResourceBO resource = resources.findByResourceServerId(platform, resourceId)
-                .orElseThrow(() -> new IllegalArgumentException("RESOURCE_PROJECTION_RESOURCE_NOT_FOUND"));
+                .orElseThrow(() -> new IllegalStateException("RESOURCE_PROJECTION_RESOURCE_NOT_VISIBLE"));
         OAuthGrantBO current = grants.findGrant(clientRealm, client.getId(), resourceId,
                         ResourceGrantType.CLIENT_CREDENTIALS)
-                .orElseGet(() -> tombstone(client, resource, grantVersion));
+                .orElseThrow(() -> new IllegalStateException("RESOURCE_PROJECTION_GRANT_NOT_VISIBLE"));
         if (current.getVersion() < grantVersion) {
             throw new IllegalStateException("RESOURCE_PROJECTION_GRANT_VERSION_NOT_VISIBLE");
         }
@@ -180,18 +179,6 @@ public final class ResourceServerProjectionDeliveryHandler implements DeliveryHa
             throw new IllegalArgumentException("RESOURCE_PROJECTION_REALM_REGISTRY_MISMATCH");
         }
         return realm;
-    }
-
-    private static OAuthGrantBO tombstone(OAuthClientBO client, OAuthResourceBO resource, long version) {
-        return OAuthGrantBO.builder()
-                .version(version)
-                .clientPk(client.getId())
-                .resourceServerId(resource.getResourceServerId())
-                .grantType(ResourceGrantType.CLIENT_CREDENTIALS)
-                .allowedScopes(List.of())
-                .status(ClientResourceGrant.Status.DISABLED)
-                .resourceVersion(resource.getVersion())
-                .build();
     }
 
     private static void requireAggregate(JsonNode envelope, String aggregateType, String aggregateId, long version) {

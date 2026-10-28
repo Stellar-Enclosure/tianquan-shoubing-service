@@ -27,7 +27,10 @@ public class ResourceServerProjectionService {
         Objects.requireNonNull(resource, "resource"); Objects.requireNonNull(client, "client");
         var current = resources.findByResourceServerId(realms.platformRealm(), resource.getResourceServerId())
                 .orElseThrow(() -> new IllegalStateException("RESOURCE_AUTHORITY_FACT_MISSING"));
-        if (current.getVersion() < resource.getVersion() || !Objects.equals(current.getManagementClientPk(), client.getId())
+        if (current.getVersion() < resource.getVersion()) {
+            throw new IllegalStateException("RESOURCE_AUTHORITY_VERSION_NOT_VISIBLE");
+        }
+        if (!Objects.equals(current.getManagementClientPk(), client.getId())
                 || !Objects.equals(current.getResourceUri(), resource.getResourceUri())) {
             throw new IllegalArgumentException("RESOURCE_AUTHORITY_BINDING_MISMATCH");
         }
@@ -42,7 +45,7 @@ public class ResourceServerProjectionService {
     public void deleteServiceGrant(TrustedRealmBO realm, OAuthClientBO client, OAuthResourceBO resource, OAuthGrantBO grant) {
         var current = requireCommittedGrant(realm, client, resource, grant);
         if ("ACTIVE".equals(current.getStatus().name())) {
-            throw new IllegalArgumentException("RESOURCE_GRANT_DISABLE_NOT_COMMITTED");
+            throw new IllegalStateException("RESOURCE_GRANT_DISABLE_NOT_COMMITTED");
         }
     }
 

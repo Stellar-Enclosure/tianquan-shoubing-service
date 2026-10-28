@@ -141,6 +141,29 @@ class ResourceServerProjectionDeliveryHandlerTest {
         assertThat(result.code()).isEqualTo("RESOURCE_PROJECTION_DEPENDENCY_UNAVAILABLE");
     }
 
+    @Test
+    void missingReplicaFactsRetryWithoutInventingATombstone() throws Exception {
+        assertThat(handler.deliver(resourceEvent(3L)).kind()).isEqualTo(DeliveryResult.Kind.RETRYABLE_FAILURE);
+        var client = serviceClient("svc", 22L);
+        when(clients.findByClientId(TENANT, "svc")).thenReturn(Optional.of(client));
+        when(resources.findByResourceServerId(PLATFORM, "resource-a")).thenReturn(Optional.of(resource()));
+        assertThat(handler.deliver(grantEvent("tenant:7", "7", 3L)).kind()).isEqualTo(DeliveryResult.Kind.RETRYABLE_FAILURE);
+        verify(projections, never()).deleteServiceGrant(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(projections, never()).projectServiceGrant(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void mismatchedOutboxIdentityIsRejectedBeforeAnyProjection() throws Exception {
+        var original = resourceEvent(1L);
+        var mismatched = new DeliveryContext("different-id", original.channel(), original.destination(), original.payload(),
+                original.contentType(), original.schemaVersion(), original.headers(), original.traceId(),
+                original.attempt(), original.maxAttempts(), original.deadline());
+        assertThat(handler.deliver(mismatched).kind()).isEqualTo(DeliveryResult.Kind.PERMANENT_FAILURE);
+        org.mockito.Mockito.verifyNoInteractions(resources, clients, grants, projections);
+    }
+
     private DeliveryContext resourceEvent(long eventVersion) throws Exception {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("resourceServerId", "resource-a");
