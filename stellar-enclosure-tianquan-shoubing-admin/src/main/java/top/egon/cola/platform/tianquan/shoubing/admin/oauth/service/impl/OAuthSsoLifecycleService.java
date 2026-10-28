@@ -26,26 +26,30 @@ public class OAuthSsoLifecycleService {
     @Transactional
     public void logout(TrustedRealmBO realm, String authenticationDigest, String bindingDigest, String subject) {
         realms.findByRealmKeyForUpdate(realm).orElseThrow(() -> new IllegalStateException("OAUTH_SSO_REALM_MISSING"));
-        var current = authentications.findByJtiDigestForUpdate(realm, authenticationDigest)
+        var current = authentications.findByJtiDigest(realm, authenticationDigest)
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_SSO_AUTHENTICATION_MISSING"));
         if (!Objects.equals(current.getBrowserBindingDigest(), bindingDigest) || !Objects.equals(current.getSubject(), subject)) {
             throw new IllegalArgumentException("OAUTH_SSO_BINDING_MISMATCH");
         }
-        if ("REVOKED".equals(current.getStatus())) { return; }
         long version = current.getVersion();
-        current.setVersion(version + 1).setStatus("REVOKED").setRevokedAt(clock.instant()).setReasonCode("CURRENT_SSO_LOGOUT");
+        if ("REVOKED".equals(current.getStatus())) {
+            current.setVersion(Math.addExact(version, 1L));
+            authentications.save(realm, current, version);
+            return;
+        }
+        current.setVersion(Math.addExact(version, 1L)).setStatus("REVOKED").setRevokedAt(clock.instant()).setReasonCode("CURRENT_SSO_LOGOUT");
         authentications.save(realm, current, version);
         long after = 0L;
         while (true) {
             var grants = authorizations.findByAuthentication(realm, authenticationDigest, after, 500);
             for (var candidate : grants) {
                 after = Math.max(after, candidate.getId());
-                var grant = authorizations.findByIdForUpdate(realm, candidate.getId()).orElseThrow();
+                var grant = candidate;
                 if (!authenticationDigest.equals(grant.getAuthenticationJtiDigest()) || !subject.equals(grant.getPrincipalName())) {
                     throw new IllegalStateException("OAUTH_SSO_GRANT_BINDING_MISMATCH");
                 }
                 long grantVersion = grant.getVersion();
-                grant.setVersion(grantVersion + 1).setStatus("REVOKED").setRevokedAt(clock.instant());
+                grant.setVersion(Math.addExact(grantVersion, 1L)).setStatus("REVOKED").setRevokedAt(clock.instant());
                 authorizations.save(realm, grant, grantVersion);
             }
             if (grants.size() < 500) { break; }

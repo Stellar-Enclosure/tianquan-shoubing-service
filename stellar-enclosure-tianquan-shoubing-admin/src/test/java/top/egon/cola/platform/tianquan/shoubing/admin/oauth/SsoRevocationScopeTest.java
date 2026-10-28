@@ -39,15 +39,13 @@ class SsoRevocationScopeTest {
         current = OAuthAuthenticationBO.builder().jtiDigest(CURRENT).subject("alice").browserBindingDigest(BINDING)
                 .status("ACTIVE").version(3L).build();
         when(realms.findByRealmKeyForUpdate(realm)).thenReturn(Optional.of(OAuthRealmBO.builder().build()));
-        when(authentications.findByJtiDigestForUpdate(realm, CURRENT)).thenReturn(Optional.of(current));
+        when(authentications.findByJtiDigest(realm, CURRENT)).thenReturn(Optional.of(current));
     }
 
     @Test void oneSsoLogoutClosesItsTwoClientsAndLeavesAnotherAuthenticationUntouched() {
         var first = OAuthAuthorizationBO.builder().id(11L).clientPk(21L).principalName("alice").authenticationJtiDigest(CURRENT).status("ACTIVE").version(0L).build();
         var second = OAuthAuthorizationBO.builder().id(12L).clientPk(22L).principalName("alice").authenticationJtiDigest(CURRENT).status("ACTIVE").version(5L).build();
         when(grants.findByAuthentication(realm, CURRENT, 0L, 500)).thenReturn(List.of(first, second));
-        when(grants.findByIdForUpdate(realm, 11L)).thenReturn(Optional.of(first));
-        when(grants.findByIdForUpdate(realm, 12L)).thenReturn(Optional.of(second));
 
         service.logout(realm, CURRENT, BINDING, "alice");
 
@@ -56,6 +54,8 @@ class SsoRevocationScopeTest {
         assertEquals(NOW, current.getRevokedAt());
         verify(authentications).save(realm, current, 3L);
         verify(grants).save(realm, first, 0L); verify(grants).save(realm, second, 5L);
+        verify(authentications, never()).findByJtiDigestForUpdate(any(), anyString());
+        verify(grants, never()).findByIdForUpdate(any(), anyLong());
         verify(grants, never()).findByPrincipalName(any(), anyString(), anyString(), anyLong(), anyInt());
         verify(authentications, never()).findActiveByBrowser(any(), anyString(), anyLong(), anyInt());
         verify(events).append(argThat(event -> "CURRENT_SSO_LOGOUT".equals(event.reason())));
@@ -68,10 +68,43 @@ class SsoRevocationScopeTest {
         verifyNoInteractions(grants, events);
     }
 
+    @Test void staleAuthenticationCausesTheOwningTransactionToRollBack() {
+        doThrow(new org.springframework.dao.OptimisticLockingFailureException("stale"))
+                .when(authentications).save(eq(realm), any(), eq(3L));
+        var transactions = mock(org.springframework.transaction.PlatformTransactionManager.class);
+        when(transactions.getTransaction(any())).thenReturn(new org.springframework.transaction.support.SimpleTransactionStatus());
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
+
+        assertThrows(org.springframework.dao.OptimisticLockingFailureException.class,
+                () -> transaction.executeWithoutResult(status -> service.logout(realm, CURRENT, BINDING, "alice")));
+
+        verify(transactions).rollback(any());
+        verifyNoInteractions(grants, events);
+    }
+
+    @Test void staleGrantRollsBackTheAuthenticationChangeAndDoesNotPublishAnEvent() {
+        var grant = OAuthAuthorizationBO.builder().id(11L).clientPk(21L).principalName("alice")
+                .authenticationJtiDigest(CURRENT).status("ACTIVE").version(2L).build();
+        when(grants.findByAuthentication(realm, CURRENT, 0L, 500)).thenReturn(List.of(grant));
+        doThrow(new org.springframework.dao.OptimisticLockingFailureException("stale grant"))
+                .when(grants).save(eq(realm), any(), eq(2L));
+        var transactions = mock(org.springframework.transaction.PlatformTransactionManager.class);
+        when(transactions.getTransaction(any())).thenReturn(new org.springframework.transaction.support.SimpleTransactionStatus());
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
+
+        assertThrows(org.springframework.dao.OptimisticLockingFailureException.class,
+                () -> transaction.executeWithoutResult(status -> service.logout(realm, CURRENT, BINDING, "alice")));
+
+        verify(authentications).save(eq(realm), any(), eq(3L));
+        verify(transactions).rollback(any());
+        verifyNoInteractions(events);
+    }
+
     @Test void repeatedCompletedLogoutIsIdempotent() {
         current.setStatus("REVOKED").setRevokedAt(NOW);
         service.logout(realm, CURRENT, BINDING, "alice");
-        verify(authentications, never()).save(any(), any(), anyLong());
+        verify(authentications).save(realm, current, 3L);
+        assertEquals(4L, current.getVersion());
         verifyNoInteractions(grants, events);
     }
 
