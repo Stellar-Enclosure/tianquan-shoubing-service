@@ -41,6 +41,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRea
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.SasAuthorizationConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.SasRegisteredClientConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.TenantIssuerService;
@@ -67,6 +68,8 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
     private final OAuthRealmRepository realmRepository;
     @Qualifier("oAuthAuthorizationRepository")
     private final OAuthAuthorizationRepository authorizationRepository;
+    @Qualifier("oAuthAuthenticationRepository")
+    private final OAuthAuthenticationRepository authentications;
     @Qualifier("oAuthTokenRepository")
     private final OAuthTokenRepository tokenRepository;
     @Qualifier("oAuthClientRepository")
@@ -175,6 +178,14 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
                 value.setClientBrowserBindingDigest(interaction.getClientBrowserBindingDigest());
                 if (!Objects.equals(client.getId(), interaction.getClientPk()) || !value.getResourceUri().equals(interaction.getResourceUri())) {
                     throw new IllegalArgumentException("OAUTH_AUTHORIZATION_INTERACTION_MISMATCH");
+                }
+                var authentication = authentications.findByJtiDigest(trustedRealm, value.getAuthenticationJtiDigest())
+                        .filter(candidate -> "ACTIVE".equals(candidate.getStatus())
+                                && Objects.equals(candidate.getSubject(), value.getPrincipalName()))
+                        .orElseThrow(() -> new org.springframework.dao.TransientDataAccessResourceException("OAuth authentication is not visible"));
+                if (!authentications.fenceActive(trustedRealm, authentication.getId(), authentication.getJtiDigest(),
+                        value.getPrincipalName(), authentication.getVersion(), clock.instant())) {
+                    throw new org.springframework.dao.OptimisticLockingFailureException("OAuth authentication changed before authorization creation");
                 }
             }
         }

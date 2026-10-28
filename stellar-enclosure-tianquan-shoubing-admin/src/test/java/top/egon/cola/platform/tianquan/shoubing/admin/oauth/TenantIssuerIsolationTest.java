@@ -468,6 +468,7 @@ class TenantIssuerIsolationTest {
                 issuerService,
                 mock(OAuthRealmRepository.class),
                 authorizations,
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class),
                 tokens,
                 clients,
                 org.mapstruct.factory.Mappers.getMapper(SasAuthorizationConverter.class),

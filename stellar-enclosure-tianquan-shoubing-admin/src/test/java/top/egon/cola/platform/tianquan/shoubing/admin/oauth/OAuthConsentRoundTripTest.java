@@ -676,6 +676,52 @@ class OAuthConsentRoundTripTest {
     }
 
     @Test
+    void authorizationCreationRejectsAuthenticationThatLostItsPrimaryFence() throws Exception {
+        BrowserCookies browser = new BrowserCookies();
+        MvcResult start = mvc.perform(authorize(1001L)).andExpect(status().isSeeOther()).andReturn();
+        browser.accept(start);
+        MvcResult loginPage = mvc.perform(request(get("/tenants/1001/login")).cookie(browser.cookies()))
+                .andExpect(status().isOk()).andReturn();
+        browser.accept(loginPage);
+        MvcResult login = mvc.perform(request(post("/tenants/1001/login")).cookie(browser.cookies())
+                .contentType("application/x-www-form-urlencoded").param("username", "fixture-user").param("password", "fixture-password")
+                .param("_csrf", hidden(loginPage.getResponse().getContentAsString(), "_csrf")))
+                .andExpect(status().isSeeOther()).andReturn();
+        browser.accept(login);
+        fixture.failAuthenticationFence = true;
+        fixture.lastAuthorizationFailure = null;
+        clearInvocations(fixture.authorizationRepository);
+
+        mvc.perform(authorize(1001L).cookie(browser.cookies())).andReturn();
+
+        var failure = assertInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class,
+                fixture.lastAuthorizationFailure);
+        assertEquals("temporarily_unavailable", failure.getError().getErrorCode());
+        verify(fixture.authorizationRepository, never()).save(any(), any(), anyLong());
+        assertTrue(fixture.authorizations.isEmpty());
+    }
+
+    @Test
+    void ssoLogoutRetainsTheSessionAndRollsBackWhenAReplicaMissesAGrant() throws Exception {
+        Pending pending = startThroughRealLogin(1001L);
+        token(approve(pending, consentCsrf(pending)), VERIFIER);
+        MvcResult form = mvc.perform(request(get("/tenants/1001/logout")).cookie(pending.cookies()))
+                .andExpect(status().isOk()).andReturn();
+        pending.browser().accept(form);
+        fixture.failLogoutFence = true;
+
+        MvcResult failure = mvc.perform(request(post("/tenants/1001/logout")).cookie(pending.cookies())
+                .contentType("application/x-www-form-urlencoded")
+                .param("_csrf", hidden(form.getResponse().getContentAsString(), "_csrf")))
+                .andExpect(status().isServiceUnavailable()).andReturn();
+
+        assertTrue(fixture.authenticationFacts.values().stream().allMatch(value -> "ACTIVE".equals(value.getStatus())));
+        assertTrue(fixture.authorizations.values().stream().allMatch(value -> "ACTIVE".equals(value.getStatus())));
+        assertTrue(fixture.identityEvents.stream().noneMatch(event -> "IDENTITY_SSO_REVOKED".equals(event.eventType())));
+        assertTrue(failure.getResponse().getHeaders("Set-Cookie").stream().noneMatch(value -> value.contains("Max-Age=0")));
+    }
+
+    @Test
     void discoveryAdvertisesSqlLogoutAndTheSessionEndpointIsRetired() throws Exception {
         mvc.perform(request(get("/tenants/1001/.well-known/openid-configuration")))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.end_session_endpoint").doesNotExist())
@@ -1142,6 +1188,8 @@ class OAuthConsentRoundTripTest {
         boolean publicClient;
         boolean browserBound;
         boolean failTokenLookup;
+        boolean failAuthenticationFence;
+        boolean failLogoutFence;
         List<String> userGrantScopes = List.of("orders.read", "orders.write");
         long grantResourceVersion;
         long userGrantVersion;
@@ -1168,7 +1216,7 @@ class OAuthConsentRoundTripTest {
             deviceSessions.clear(); authorizations.clear(); tokens.clear(); consents.clear(); events.clear(); audits.clear(); authenticationFacts.clear(); interactionFacts.clear(); identityEvents.clear();
             mustChangePassword = false;
             failCodeSave = false; failEnqueue = false; failConsentSave = false; failSigning = false; publicClient = false; browserBound = false;
-            failTokenLookup = false;
+            failTokenLookup = false; failAuthenticationFence = false; failLogoutFence = false;
             userGrantScopes = List.of("orders.read", "orders.write"); grantResourceVersion = 0L;
             userGrantVersion = 0L; userGrantStatus = ClientResourceGrant.Status.ACTIVE;
             clock.now = Instant.now();
@@ -1240,6 +1288,28 @@ class OAuthConsentRoundTripTest {
                 if (value.getId() == null) { value.setId(ids.incrementAndGet()); }
                 authenticationFacts.put(key(i.getArgument(0), value.getJtiDigest()), value.toBuilder().build());
                 return value.toBuilder().build();
+            });
+            when(authenticationRepository.fenceActive(any(), anyLong(), anyString(), anyString(), anyLong(), any())).thenAnswer(i -> {
+                if (failAuthenticationFence) { return false; }
+                String factKey = key(i.getArgument(0), i.getArgument(2));
+                var fact = authenticationFacts.get(factKey);
+                if (fact == null || !Objects.equals(fact.getId(), i.getArgument(1))
+                        || !Objects.equals(fact.getSubject(), i.getArgument(3)) || fact.getVersion() != (long) i.getArgument(4)
+                        || !"ACTIVE".equals(fact.getStatus()) || !fact.getExpiresAt().isAfter(i.getArgument(5))) { return false; }
+                authenticationFacts.put(factKey, fact.toBuilder().version(fact.getVersion() + 1).build());
+                return true;
+            });
+            when(authenticationRepository.fenceRevokedWithoutLiveAuthorizations(any(), anyLong(), anyString(), anyLong(), any())).thenAnswer(i -> {
+                if (failLogoutFence) { return false; }
+                TrustedRealmBO realm = i.getArgument(0); String digest = i.getArgument(2);
+                String factKey = key(realm, digest); var fact = authenticationFacts.get(factKey);
+                if (fact == null || !Objects.equals(fact.getId(), i.getArgument(1)) || fact.getVersion() != (long) i.getArgument(3)
+                        || !"REVOKED".equals(fact.getStatus()) || authorizations.values().stream().anyMatch(value ->
+                                Objects.equals(value.getTenantId(), realm.getStoragePartitionId())
+                                && Objects.equals(value.getAuthenticationJtiDigest(), digest) && value.getDeletedAt() == null
+                                && Set.of("ACTIVE", "PENDING_CONSENT").contains(value.getStatus()))) { return false; }
+                authenticationFacts.put(factKey, fact.toBuilder().version(fact.getVersion() + 1).build());
+                return true;
             });
             when(userRepository.findByIdentitySub(anyString())).thenAnswer(i -> Optional.of(new top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUser(
                     i.getArgument(0), "fixture-user", "fixture-user", "Fixture user", top.egon.cola.platform.tianquan.shoubing.core.identity.IdentityUserStatus.ACTIVE, 0, null, null, 0L)));

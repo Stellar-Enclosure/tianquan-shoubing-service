@@ -36,10 +36,11 @@ class SsoRevocationScopeTest {
     private OAuthAuthenticationBO current;
 
     @BeforeEach void setUp() {
-        current = OAuthAuthenticationBO.builder().jtiDigest(CURRENT).subject("alice").browserBindingDigest(BINDING)
+        current = OAuthAuthenticationBO.builder().id(42L).jtiDigest(CURRENT).subject("alice").browserBindingDigest(BINDING)
                 .status("ACTIVE").version(3L).build();
         when(realms.findByRealmKeyForUpdate(realm)).thenReturn(Optional.of(OAuthRealmBO.builder().build()));
         when(authentications.findByJtiDigest(realm, CURRENT)).thenReturn(Optional.of(current));
+        when(authentications.fenceRevokedWithoutLiveAuthorizations(realm, 42L, CURRENT, 4L, NOW)).thenReturn(true);
     }
 
     @Test void oneSsoLogoutClosesItsTwoClientsAndLeavesAnotherAuthenticationUntouched() {
@@ -54,6 +55,7 @@ class SsoRevocationScopeTest {
         assertEquals(NOW, current.getRevokedAt());
         verify(authentications).save(realm, current, 3L);
         verify(grants).save(realm, first, 0L); verify(grants).save(realm, second, 5L);
+        verify(authentications).fenceRevokedWithoutLiveAuthorizations(realm, 42L, CURRENT, 4L, NOW);
         verify(authentications, never()).findByJtiDigestForUpdate(any(), anyString());
         verify(grants, never()).findByIdForUpdate(any(), anyLong());
         verify(grants, never()).findByPrincipalName(any(), anyString(), anyString(), anyLong(), anyInt());
@@ -105,7 +107,36 @@ class SsoRevocationScopeTest {
         service.logout(realm, CURRENT, BINDING, "alice");
         verify(authentications).save(realm, current, 3L);
         assertEquals(4L, current.getVersion());
-        verifyNoInteractions(grants, events);
+        verify(grants).findByAuthentication(realm, CURRENT, 0L, 500);
+        verify(authentications).fenceRevokedWithoutLiveAuthorizations(realm, 42L, CURRENT, 4L, NOW);
+        verifyNoInteractions(events);
+    }
+
+    @Test void aGrantMissingFromTheReplicaRollsBackLogoutInsteadOfReportingSuccess() {
+        when(grants.findByAuthentication(realm, CURRENT, 0L, 500)).thenReturn(List.of());
+        when(authentications.fenceRevokedWithoutLiveAuthorizations(realm, 42L, CURRENT, 4L, NOW)).thenReturn(false);
+        var transactions = mock(org.springframework.transaction.PlatformTransactionManager.class);
+        when(transactions.getTransaction(any())).thenReturn(new org.springframework.transaction.support.SimpleTransactionStatus());
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
+
+        assertThrows(org.springframework.dao.TransientDataAccessResourceException.class,
+                () -> transaction.executeWithoutResult(status -> service.logout(realm, CURRENT, BINDING, "alice")));
+        verify(transactions).rollback(any());
+        verifyNoInteractions(events);
+    }
+
+    @Test void repeatedLogoutRetriesGrantsMissedByAnEarlierAttempt() {
+        current.setStatus("REVOKED").setRevokedAt(NOW);
+        var grant = OAuthAuthorizationBO.builder().id(11L).clientPk(21L).principalName("alice")
+                .authenticationJtiDigest(CURRENT).status("ACTIVE").version(2L).build();
+        when(grants.findByAuthentication(realm, CURRENT, 0L, 500)).thenReturn(List.of(grant));
+
+        service.logout(realm, CURRENT, BINDING, "alice");
+
+        verify(grants).save(realm, grant, 2L);
+        assertEquals("REVOKED", grant.getStatus());
+        verify(authentications).fenceRevokedWithoutLiveAuthorizations(realm, 42L, CURRENT, 4L, NOW);
+        verifyNoInteractions(events);
     }
 
     @Test void auditFailureIsPropagatedToTheOwningTransaction() {

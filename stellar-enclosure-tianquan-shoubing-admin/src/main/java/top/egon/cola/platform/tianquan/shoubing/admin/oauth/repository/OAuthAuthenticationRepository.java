@@ -15,6 +15,10 @@ public interface OAuthAuthenticationRepository {
 
     OAuthAuthenticationBO save(TrustedRealmBO realm, OAuthAuthenticationBO value, long expectedVersion);
 
+    boolean fenceActive(TrustedRealmBO realm, long id, String key, String subject, long expectedVersion, Instant now);
+
+    boolean fenceRevokedWithoutLiveAuthorizations(TrustedRealmBO realm, long id, String key, long expectedVersion, Instant now);
+
     List<OAuthAuthenticationBO> findRetainedBefore(TrustedRealmBO realm, Instant now, long afterId, int limit);
 
     List<OAuthAuthenticationBO> findActiveByBrowser(TrustedRealmBO realm, String binding, long afterId, int limit);

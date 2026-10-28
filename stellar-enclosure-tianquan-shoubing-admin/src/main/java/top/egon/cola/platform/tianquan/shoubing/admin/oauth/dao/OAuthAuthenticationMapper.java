@@ -20,6 +20,14 @@ public interface OAuthAuthenticationMapper extends EgonColaMapper<OAuthAuthentic
     int updateExpectedVersion(@Param("tenantId") Long tenantId, @Param("po") OAuthAuthenticationPO po,
             @Param("expectedVersion") long expectedVersion);
 
+    int fenceActive(@Param("tenantId") Long tenantId, @Param("id") long id, @Param("key") String key,
+            @Param("subject") String subject, @Param("expectedVersion") long expectedVersion,
+            @Param("now") Instant now, @Param("actor") String actor);
+
+    int fenceRevokedWithoutLiveAuthorizations(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("key") String key, @Param("expectedVersion") long expectedVersion,
+            @Param("now") Instant now, @Param("actor") String actor);
+
     List<OAuthAuthenticationPO> selectByBrowser(@Param("tenantId") Long tenantId,
             @Param("binding") String binding, @Param("afterId") long afterId, @Param("limit") int limit);
     int deleteRetained(@Param("tenantId") Long tenantId, @Param("id") long id,

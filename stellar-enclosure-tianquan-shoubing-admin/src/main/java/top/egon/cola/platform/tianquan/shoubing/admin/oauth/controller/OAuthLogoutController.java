@@ -6,6 +6,7 @@ import java.net.URI;
 import java.time.Duration;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -41,7 +42,12 @@ public class OAuthLogoutController {
                 || !java.util.Set.of("_csrf").equals(request.getParameterMap().keySet()) || request.getParameterValues("_csrf").length != 1) {
             return ResponseEntity.badRequest().cacheControl(CacheControl.noStore()).build();
         }
-        String redirect = interactions.completeLogout(request, authentication);
+        String redirect;
+        try {
+            redirect = interactions.completeLogout(request, authentication);
+        } catch (DataAccessException unavailable) {
+            return ResponseEntity.status(503).cacheControl(CacheControl.noStore()).build();
+        }
         var realm = interactions.realm(request);
         for (String purpose : java.util.List.of("authn", "interaction", "csrf")) {
             OAuthBrowserInteractionComponent.setCookie(request, response, OAuthBrowserInteractionComponent.name(purpose, realm), "", Duration.ZERO);

@@ -99,6 +99,28 @@ public class OAuthAuthenticationRepositoryImpl extends EgonColaRepository<OAuthA
         });
     }
 
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceActive(TrustedRealmBO realm, long id, String key, String subject, long expectedVersion, Instant now) {
+        requireFence(id, key, expectedVersion, now);
+        if (subject == null || subject.isBlank()) { throw new IllegalArgumentException("OAUTH_STATE_SUBJECT_INVALID"); }
+        return withRealm(realm, tenant -> baseMapper.fenceActive(tenant, id, key, subject, expectedVersion,
+                now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRevokedWithoutLiveAuthorizations(TrustedRealmBO realm, long id, String key, long expectedVersion, Instant now) {
+        requireFence(id, key, expectedVersion, now);
+        return withRealm(realm, tenant -> baseMapper.fenceRevokedWithoutLiveAuthorizations(tenant, id, key, expectedVersion,
+                now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    private static void requireFence(long id, String key, long expectedVersion, Instant now) {
+        requireKey(key);
+        if (id <= 0 || expectedVersion < 0 || now == null) { throw new IllegalArgumentException("OAUTH_STATE_FENCE_INVALID"); }
+    }
+
     static void requireTransition(OAuthAuthenticationPO current, OAuthAuthenticationBO requested) {
         if (requested.getRetainUntil() == null) { throw new IllegalArgumentException("OAUTH_STATE_RETENTION_REQUIRED"); }
         if (requested.getAuthenticatedAt() == null || requested.getExpiresAt() == null

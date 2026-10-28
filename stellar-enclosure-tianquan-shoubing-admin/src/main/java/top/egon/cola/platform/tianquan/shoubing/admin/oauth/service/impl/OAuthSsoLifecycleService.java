@@ -32,12 +32,11 @@ public class OAuthSsoLifecycleService {
             throw new IllegalArgumentException("OAUTH_SSO_BINDING_MISMATCH");
         }
         long version = current.getVersion();
-        if ("REVOKED".equals(current.getStatus())) {
-            current.setVersion(Math.addExact(version, 1L));
-            authentications.save(realm, current, version);
-            return;
+        boolean alreadyRevoked = "REVOKED".equals(current.getStatus());
+        current.setVersion(Math.addExact(version, 1L));
+        if (!alreadyRevoked) {
+            current.setStatus("REVOKED").setRevokedAt(clock.instant()).setReasonCode("CURRENT_SSO_LOGOUT");
         }
-        current.setVersion(Math.addExact(version, 1L)).setStatus("REVOKED").setRevokedAt(clock.instant()).setReasonCode("CURRENT_SSO_LOGOUT");
         authentications.save(realm, current, version);
         long after = 0L;
         while (true) {
@@ -54,6 +53,13 @@ public class OAuthSsoLifecycleService {
             }
             if (grants.size() < 500) { break; }
         }
-        events.append(new IdentitySecurityEvent("IDENTITY_SSO_REVOKED", subject, "CURRENT_SSO_LOGOUT", "NATIVE_SSO", clock.instant()));
+        // The primary predicate catches grants that a lagging replica did not return.
+        if (!authentications.fenceRevokedWithoutLiveAuthorizations(realm, current.getId(), authenticationDigest,
+                current.getVersion(), clock.instant())) {
+            throw new org.springframework.dao.TransientDataAccessResourceException("SSO authorizations are not yet visible on a replica");
+        }
+        if (!alreadyRevoked) {
+            events.append(new IdentitySecurityEvent("IDENTITY_SSO_REVOKED", subject, "CURRENT_SSO_LOGOUT", "NATIVE_SSO", clock.instant()));
+        }
     }
 }
