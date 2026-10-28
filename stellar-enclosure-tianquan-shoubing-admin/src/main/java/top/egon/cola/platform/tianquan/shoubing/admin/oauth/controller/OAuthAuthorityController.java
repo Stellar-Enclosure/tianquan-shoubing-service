@@ -40,7 +40,7 @@ public class OAuthAuthorityController {
                 .cacheControl(CacheControl.noStore()).body(receipt);
     }
 
-    private static OAuthAuthorityService.Caller caller(HttpServletRequest request) {
+    static OAuthAuthorityService.Caller caller(HttpServletRequest request) {
         Object attribute = request.getAttribute(OAuthAuthorityAuthenticationFilter.CALLER_ATTRIBUTE);
         var authentication = SecurityContextHolder.getContext().getAuthentication();
         if (!(attribute instanceof OAuthAuthorityService.Caller caller)

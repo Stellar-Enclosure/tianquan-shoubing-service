@@ -164,6 +164,9 @@ import top.egon.cola.platform.tianquan.jianshen.contract.permission.annotation.*
 @PermissionMessage(pageCode="identity.protocol", key="jwksPreflight", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Native protocol: jwksPreflight"))
 @PermissionMessage(pageCode="identity.protocol", key="securityState", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Native protocol: securityState"))
 @PermissionMessage(pageCode="identity.protocol", key="auditAppend", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Native protocol: auditAppend"))
+@PermissionMessage(pageCode="identity.protocol", key="executionGrantIssue", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Execution grant: issue"))
+@PermissionMessage(pageCode="identity.protocol", key="executionGrantResolve", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Execution grant: resolve"))
+@PermissionMessage(pageCode="identity.protocol", key="executionGrantRevoke", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Execution grant: revoke"))
 @PermissionMessage(pageCode="identity.protocol", key="identityProfilesRpc", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Native identity directory: identityProfilesRpc"))
 @PermissionMessage(pageCode="identity.protocol", key="tenantMembershipRpc", defaultLocale="en-US", defaults=@LocalizedText(locale="en-US", text="Native identity directory: tenantMembershipRpc"))
 public final class IdentityPermissionMessages {

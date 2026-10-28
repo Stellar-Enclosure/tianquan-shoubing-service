@@ -17,6 +17,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocat
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceIdentityPrincipal;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 
 import java.net.URI;
@@ -106,6 +107,24 @@ class OAuthExecutionGrantServiceTest {
         verify(authority).requireExecutionService(eq(verifierCaller), eq(verifier.binding()), eq(user),
                 eq(IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE));
         verify(authority).requireRecordedExecutionSource(eq(realm), any(), eq(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE));
+    }
+
+    @Test
+    void transport_contract_preserves_the_sealed_intent_and_fresh_user_revocation() {
+        var request = new ExecutionGrantContract.IssueRequest("user-proof", PURPOSE, INTENT, "c".repeat(64),
+                true, NOW.plusSeconds(7_200));
+        var issued = service.issue(sourceCaller, request);
+        var result = service.resolve(verifierCaller, new ExecutionGrantContract.ResolveRequest(issued.ticket()));
+        assertEquals(issued.ticket().grantId(), result.grantId());
+        assertEquals(request.purpose(), result.purpose()); assertEquals(request.intentId(), result.intentId());
+        assertEquals(request.bindingSha256(), result.bindingSha256()); assertTrue(result.sessionRequired());
+        assertEquals(request.deadlineAt(), result.intentDeadlineAt()); assertEquals(issued.expiresAt(), result.expiresAt());
+        assertEquals("alice", result.subject()); assertEquals(user.scopes(), result.scopes());
+        var revokeCaller = caller(source, IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, 51, "501", "1".repeat(64));
+        when(authority.captureExecutionUser(revokeCaller, TARGET, "fresh-proof", IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE))
+                .thenReturn(user);
+        service.revoke(revokeCaller, new ExecutionGrantContract.RevokeRequest("fresh-proof", issued.ticket()));
+        verify(revocationWriter).revokeExecutionGrant(realm, result.grantId(), request.deadlineAt());
     }
 
     @Test

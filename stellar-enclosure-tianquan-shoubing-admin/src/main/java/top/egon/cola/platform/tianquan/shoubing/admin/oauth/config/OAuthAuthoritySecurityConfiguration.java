@@ -13,6 +13,7 @@ import org.springframework.security.web.context.NullSecurityContextRepository;
 import org.springframework.security.web.savedrequest.NullRequestCache;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter.OAuthAuthorityAuthenticationFilter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthAuthorityService;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract;
 
 @Configuration(proxyBeanMethods = false)
 public class OAuthAuthoritySecurityConfiguration {
@@ -22,7 +23,8 @@ public class OAuthAuthoritySecurityConfiguration {
     SecurityFilterChain authorityChain(HttpSecurity http,
             @Qualifier("oauthAuthorityService") OAuthAuthorityService service,
             @Qualifier("jacksonObjectMapper") ObjectMapper mapper) throws Exception {
-        return http.securityMatcher("/internal/v1/identity/security-state:resolve", "/internal/v1/identity/audit-events")
+        return http.securityMatcher("/internal/v1/identity/security-state:resolve", "/internal/v1/identity/audit-events",
+                        ExecutionGrantContract.ISSUE_PATH, ExecutionGrantContract.RESOLVE_PATH, ExecutionGrantContract.REVOKE_PATH)
                 .sessionManagement(value -> value.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .securityContext(value -> value.securityContextRepository(new NullSecurityContextRepository()))
                 .requestCache(value -> value.requestCache(new NullRequestCache()))

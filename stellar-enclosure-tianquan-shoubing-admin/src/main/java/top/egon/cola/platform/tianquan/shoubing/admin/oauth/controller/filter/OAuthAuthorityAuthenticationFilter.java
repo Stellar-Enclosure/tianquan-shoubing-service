@@ -1,6 +1,9 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.oauth.controller.filter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.core.JsonParser;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
@@ -16,22 +19,31 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.http.MediaType;
 import org.springframework.web.filter.OncePerRequestFilter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthAuthorityService;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpAuthenticationToken;
 
 /** Owner-local SERVICE authentication; no remote state/audit callback can recursively enter this chain. */
 public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilter {
 
     public static final String CALLER_ATTRIBUTE = OAuthAuthorityService.Caller.class.getName();
+    public static final String GRANT_BODY_ATTRIBUTE = OAuthAuthorityAuthenticationFilter.class.getName() + ".grantBody";
     private static final int MAX_BODY = 32 * 1024;
     private final OAuthAuthorityService authority;
     private final ObjectMapper mapper;
+    private final ObjectMapper grantMapper;
 
     public OAuthAuthorityAuthenticationFilter(OAuthAuthorityService authority, ObjectMapper mapper) {
         this.authority = authority;
         this.mapper = mapper;
+        this.grantMapper = mapper.copy().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, DeserializationFeature.FAIL_ON_TRAILING_TOKENS,
+                        DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES, DeserializationFeature.FAIL_ON_NULL_CREATOR_PROPERTIES,
+                        DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+                .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS);
     }
 
     @Override
@@ -44,19 +56,34 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
                 || headers.getFirst().length() > 16_391 || headers.getFirst().substring(7).contains(" ")) {
             failure(response, 401, "invalid_token"); return;
         }
-        byte[] body = request.getInputStream().readNBytes(MAX_BODY + 1);
-        if (body.length > MAX_BODY) { failure(response, 413, "request_too_large"); return; }
+        String path = request.getRequestURI().substring(request.getContextPath().length());
+        String scope = scope(path);
+        if (scope == null) { failure(response, 404, "not_found"); return; }
+        Class<?> grantType = grantType(path);
+        if (grantType != null) {
+            try {
+                if (Collections.list(request.getHeaders("Content-Type")).size() != 1 || request.getContentType() == null
+                        || !MediaType.APPLICATION_JSON.isCompatibleWith(MediaType.parseMediaType(request.getContentType()))) {
+                    failure(response, 415, "unsupported_media_type"); return;
+                }
+            } catch (IllegalArgumentException invalid) { failure(response, 415, "unsupported_media_type"); return; }
+        }
+        int maximum = grantType == null ? MAX_BODY : ExecutionGrantContract.MAX_REQUEST_BYTES;
+        byte[] body = request.getInputStream().readNBytes(maximum + 1);
+        if (body.length > maximum) { java.util.Arrays.fill(body, (byte) 0); failure(response, 413, "request_too_large"); return; }
         var previous = SecurityContextHolder.getContext();
         try {
-            String scope = request.getRequestURI().endsWith("/audit-events")
-                    ? IdentityAuthorityScopes.AUDIT_APPEND : IdentityAuthorityScopes.STATE_RESOLVE;
             var caller = authority.authenticateService(headers.getFirst().substring(7), scope);
+            if (grantType != null) {
+                try { request.setAttribute(GRANT_BODY_ATTRIBUTE, grantMapper.readValue(body, grantType)); }
+                catch (IOException | RuntimeException invalid) { failure(response, 400, "invalid_request"); return; }
+            }
             var authentication = new IdpAuthenticationToken(caller.principal(), caller.principal().scopes().stream()
                     .map(value -> new SimpleGrantedAuthority("SCOPE_" + value)).toList(), caller.realm().getIssuer());
             var context = SecurityContextHolder.createEmptyContext(); context.setAuthentication(authentication);
             SecurityContextHolder.setContext(context);
             request.setAttribute(CALLER_ATTRIBUTE, caller);
-            chain.doFilter(new BodyRequest(request, body), response);
+            chain.doFilter(new BodyRequest(request, grantType == null ? body : new byte[0]), response);
         } catch (OAuth2AuthenticationException rejected) {
             failure(response, "temporarily_unavailable".equals(rejected.getError().getErrorCode()) ? 503 : 401,
                     "temporarily_unavailable".equals(rejected.getError().getErrorCode()) ? "temporarily_unavailable" : "invalid_token");
@@ -68,9 +95,30 @@ public final class OAuthAuthorityAuthenticationFilter extends OncePerRequestFilt
             failure(response, 503, "temporarily_unavailable");
         } finally {
             request.removeAttribute(CALLER_ATTRIBUTE);
+            request.removeAttribute(GRANT_BODY_ATTRIBUTE);
             SecurityContextHolder.setContext(previous);
             java.util.Arrays.fill(body, (byte) 0);
         }
+    }
+
+    private static String scope(String path) {
+        return switch (path) {
+            case "/internal/v1/identity/security-state:resolve" -> IdentityAuthorityScopes.STATE_RESOLVE;
+            case "/internal/v1/identity/audit-events" -> IdentityAuthorityScopes.AUDIT_APPEND;
+            case ExecutionGrantContract.ISSUE_PATH -> IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE;
+            case ExecutionGrantContract.RESOLVE_PATH -> IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE;
+            case ExecutionGrantContract.REVOKE_PATH -> IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE;
+            default -> null;
+        };
+    }
+
+    private static Class<?> grantType(String path) {
+        return switch (path) {
+            case ExecutionGrantContract.ISSUE_PATH -> ExecutionGrantContract.IssueRequest.class;
+            case ExecutionGrantContract.RESOLVE_PATH -> ExecutionGrantContract.ResolveRequest.class;
+            case ExecutionGrantContract.REVOKE_PATH -> ExecutionGrantContract.RevokeRequest.class;
+            default -> null;
+        };
     }
 
     private void failure(HttpServletResponse response, int status, String code) throws IOException {

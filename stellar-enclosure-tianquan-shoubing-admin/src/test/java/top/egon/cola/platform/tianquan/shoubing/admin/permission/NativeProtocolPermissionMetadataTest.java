@@ -30,7 +30,7 @@ class NativeProtocolPermissionMetadataTest {
             assertThatThrownBy(()->method.invoke(null)).isInstanceOf(InvocationTargetException.class).hasCauseInstanceOf(UnsupportedOperationException.class);
         }
         var advisor=new Rbac3MethodAuthorizationManager(mock(AuthorizationService.class));
-        for(Class<?> controller:List.of(TenantLoginController.class,OAuthConsentController.class,OAuthLogoutController.class,OAuthPasswordChangeController.class,OAuthAuthorityController.class)) {
+        for(Class<?> controller:List.of(TenantLoginController.class,OAuthConsentController.class,OAuthLogoutController.class,OAuthPasswordChangeController.class,OAuthAuthorityController.class,OAuthExecutionGrantController.class)) {
             for(var method:controller.getDeclaredMethods()) if(AnnotatedElementUtils.findMergedAnnotation(method,RequestMapping.class)!=null) {
                 assertThat(method.getAnnotation(PermissionResource.class)).isNull();assertThat(advisor.supports(method,controller)).isFalse();
             }
@@ -51,10 +51,12 @@ class NativeProtocolPermissionMetadataTest {
         assertThat(rpc).containsExactlyInAnyOrder(paths("identityProfilesRpc").getFirst(),paths("tenantMembershipRpc").getFirst());
     }
     @Test void actualNativeControllerMappingsHaveMatchingMethodAndPathMetadata()throws Exception {
-        Map<String,String> declarations=Map.of("TenantLoginController.loginPage","loginPage","OAuthConsentController.consentPage","consentPage",
-                "OAuthLogoutController.form","logoutPage","OAuthLogoutController.logout","logout","OAuthPasswordChangeController.form","passwordChangePage",
-                "OAuthPasswordChangeController.change","passwordChange","OAuthAuthorityController.resolve","securityState","OAuthAuthorityController.append","auditAppend");
-        for(Class<?> controller:List.of(TenantLoginController.class,OAuthConsentController.class,OAuthLogoutController.class,OAuthPasswordChangeController.class,OAuthAuthorityController.class)) {
+        Map<String,String> declarations=Map.ofEntries(Map.entry("TenantLoginController.loginPage","loginPage"),Map.entry("OAuthConsentController.consentPage","consentPage"),
+                Map.entry("OAuthLogoutController.form","logoutPage"),Map.entry("OAuthLogoutController.logout","logout"),Map.entry("OAuthPasswordChangeController.form","passwordChangePage"),
+                Map.entry("OAuthPasswordChangeController.change","passwordChange"),Map.entry("OAuthAuthorityController.resolve","securityState"),Map.entry("OAuthAuthorityController.append","auditAppend"),
+                Map.entry("OAuthExecutionGrantController.issue","executionGrantIssue"),Map.entry("OAuthExecutionGrantController.resolve","executionGrantResolve"),
+                Map.entry("OAuthExecutionGrantController.revoke","executionGrantRevoke"));
+        for(Class<?> controller:List.of(TenantLoginController.class,OAuthConsentController.class,OAuthLogoutController.class,OAuthPasswordChangeController.class,OAuthAuthorityController.class,OAuthExecutionGrantController.class)) {
             for(var method:controller.getDeclaredMethods()) {
                 var mapping=AnnotatedElementUtils.findMergedAnnotation(method,RequestMapping.class);if(mapping==null)continue;
                 String declaration=declarations.get(controller.getSimpleName()+"."+method.getName());assertThat(declaration).isNotNull();

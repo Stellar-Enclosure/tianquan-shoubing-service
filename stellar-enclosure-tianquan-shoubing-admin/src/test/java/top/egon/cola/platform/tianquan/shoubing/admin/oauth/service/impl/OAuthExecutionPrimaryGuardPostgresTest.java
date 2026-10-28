@@ -92,6 +92,16 @@ class OAuthExecutionPrimaryGuardPostgresTest {
                 assertThrows(NullPointerException.class, () -> grant.issue(null, "fixture", request));
                 var ticket = new OpaqueExecutionGrantCodec.Ticket("9" + "1".repeat(62), "ENC:v1:fixture");
                 assertThrows(NullPointerException.class, () -> grant.revoke(null, "fixture", ticket));
+                var publicTicket = new top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract.Ticket(
+                        ticket.grantId(), ticket.ciphertext());
+                var publicRequest = new top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract.IssueRequest(
+                        "fixture", request.purpose(), request.intentId(), request.bindingSha256(), request.sessionRequired(), request.deadlineAt());
+                // A missing transaction would fail the primary guard before reaching the null-caller check.
+                assertThrows(NullPointerException.class, () -> grant.issue(null, publicRequest));
+                assertThrows(NullPointerException.class, () -> grant.resolve(null,
+                        new top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract.ResolveRequest(publicTicket)));
+                assertThrows(NullPointerException.class, () -> grant.revoke(null,
+                        new top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract.RevokeRequest("fixture", publicTicket)));
                 var revoke = context.getBean(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.TokenRevocationServiceImpl.class);
                 assertTrue(AopUtils.isAopProxy(revoke));
                 assertThrows(NullPointerException.class, () -> revoke.revokeExecutionGrant(null, ticket.grantId(), java.time.Instant.now()));

@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.*;
 @EnabledIfSystemProperty(named="permission.producer.enabled",matches="true")
 class PermissionProducerCoverageTest {
     static final String ROOT="top.egon.cola.platform.tianquan.shoubing.admin.";
-    static final Set<String> NATIVE_CONTROLLERS=Set.of("OAuthAuthorityController","OAuthConsentController","OAuthPasswordChangeController","TenantLoginController","OAuthLogoutController");
+    static final Set<String> NATIVE_CONTROLLERS=Set.of("OAuthAuthorityController","OAuthExecutionGrantController","OAuthConsentController","OAuthPasswordChangeController","TenantLoginController","OAuthLogoutController");
     private final ObjectMapper json=new ObjectMapper().findAndRegisterModules();
     @Test void currentMappingAndDtoInventoryExactlyMatchesTheCompilerFragment()throws Exception {
         var fragment=IdpPermissionFixture.fragment();
@@ -43,7 +43,7 @@ class PermissionProducerCoverageTest {
         for(Method method:NativeProtocolPermissionMetadata.class.getDeclaredMethods()) {
             match(mappings.mapping(method,NativeProtocolPermissionMetadata.class),method.getAnnotation(PermissionResource.class),resources,apis,false);
         }
-        assertThat(managed).isEqualTo(39);assertThat(apis).hasSize(62);assertThat(fields).hasSize(202);
+        assertThat(managed).isEqualTo(39);assertThat(apis).hasSize(65);assertThat(fields).hasSize(202);
         assertThat(resources.values().stream().filter(r->r.type()==ResourceType.API).map(PermissionManifest.ResourceDefinition::key).toList()).containsExactlyInAnyOrderElementsOf(apis);
         assertThat(resources.values().stream().filter(r->r.type()==ResourceType.FIELD).map(PermissionManifest.ResourceDefinition::key).toList()).containsExactlyInAnyOrderElementsOf(fields);
         assertThat(external).containsExactlyInAnyOrder("top.egon.cola.component.common.core.pojo.ResultRecord",

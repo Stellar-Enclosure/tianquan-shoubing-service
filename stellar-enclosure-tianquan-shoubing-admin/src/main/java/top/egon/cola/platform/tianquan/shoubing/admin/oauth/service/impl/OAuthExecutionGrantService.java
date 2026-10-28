@@ -13,6 +13,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevo
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent;
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
+import top.egon.cola.platform.tianquan.shoubing.contract.execution.ExecutionGrantContract;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -55,6 +56,31 @@ public class OAuthExecutionGrantService {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.revocationWriter = revocationWriter;
         if (!properties.enabled() || properties.bindings().isEmpty()) throw new IllegalArgumentException("EXECUTION_GRANT_DISABLED");
+    }
+
+    /** HTTP adapter entry points retain the same owner-local transaction and primary checks. */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ExecutionGrantContract.Issued issue(OAuthAuthorityService.Caller caller, ExecutionGrantContract.IssueRequest request) {
+        Objects.requireNonNull(request, "request");
+        Issued issued = issue(caller, request.userToken(), new IssueRequest(request.purpose(), request.intentId(),
+                request.bindingSha256(), request.sessionRequired(), request.deadlineAt()));
+        return new ExecutionGrantContract.Issued(new ExecutionGrantContract.Ticket(issued.ticket().grantId(),
+                issued.ticket().ciphertext()), issued.expiresAt());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ExecutionGrantContract.Resolution resolve(OAuthAuthorityService.Caller caller, ExecutionGrantContract.ResolveRequest request) {
+        Objects.requireNonNull(request, "request");
+        Resolution value = resolve(caller, new OpaqueExecutionGrantCodec.Ticket(request.ticket().grantId(), request.ticket().ciphertext()));
+        return new ExecutionGrantContract.Resolution(value.grantId(), value.issuer(), value.tenantId(), value.subject(),
+                value.resource(), value.purpose(), value.intentId(), value.bindingSha256(), value.sessionRequired(),
+                value.expiresAt(), value.intentDeadlineAt(), value.scopes());
+    }
+
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    public void revoke(OAuthAuthorityService.Caller caller, ExecutionGrantContract.RevokeRequest request) {
+        Objects.requireNonNull(request, "request");
+        revoke(caller, request.userToken(), new OpaqueExecutionGrantCodec.Ticket(request.ticket().grantId(), request.ticket().ciphertext()));
     }
 
     /** The caller and USER proof have already entered through the authenticated authority boundary. */
