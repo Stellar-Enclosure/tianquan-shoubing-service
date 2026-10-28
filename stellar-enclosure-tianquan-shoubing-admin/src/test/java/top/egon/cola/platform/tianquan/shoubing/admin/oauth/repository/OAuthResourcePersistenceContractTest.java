@@ -324,7 +324,7 @@ class OAuthResourcePersistenceContractTest {
         OAuthResourcePO storedResource = resourceRow(81L, 3L);
         AtomicBoolean resourceUpdated = new AtomicBoolean();
         OAuthResourceMapper resourceMapper = Mockito.mock(OAuthResourceMapper.class, invocation -> {
-            if (invocation.getMethod().getName().equals("selectByResourceServerIdForUpdate")) {
+            if (invocation.getMethod().getName().equals("selectByResourceServerId")) {
                 return storedResource;
             }
             if (invocation.getMethod().getName().equals("updateExpectedVersion")) {
@@ -375,7 +375,7 @@ class OAuthResourcePersistenceContractTest {
 
         AtomicReference<OAuthResourcePO> insertedResource = new AtomicReference<>();
         OAuthResourceMapper resourceMapper = Mockito.mock(OAuthResourceMapper.class, invocation -> {
-            if (invocation.getMethod().getName().equals("selectByResourceServerIdForUpdate")) {
+            if (invocation.getMethod().getName().equals("selectByResourceServerId")) {
                 return null;
             }
             if (invocation.getMethod().getName().equals("insert")) {

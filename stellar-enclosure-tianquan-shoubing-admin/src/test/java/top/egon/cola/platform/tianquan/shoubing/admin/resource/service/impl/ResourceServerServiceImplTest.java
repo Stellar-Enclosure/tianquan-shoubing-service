@@ -16,6 +16,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.converter.
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.dto.BatchClientResourceGrantDTO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.dto.BatchResourceServerActionDTO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.dto.CreateResourceServerDTO;
+import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.dto.DeleteClientResourceGrantDTO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.dto.ResourceVersionDTO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.dto.UpsertClientResourceGrantDTO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.vo.ClientResourceGrantVO;
@@ -80,6 +81,9 @@ class ResourceServerServiceImplTest {
             mock(TransactionalOutboxResourceServerEventAdapter.class);
     private final jakarta.validation.ValidatorFactory validatorFactory =
             jakarta.validation.Validation.buildDefaultValidatorFactory();
+    private final top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceFenceRepository fences =
+            mock(top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceFenceRepository.class);
+    private final ResourceGrantTransactionCoordinator transactions = mock(ResourceGrantTransactionCoordinator.class);
     private ResourceServerServiceImpl service;
 
     @org.junit.jupiter.api.AfterEach
@@ -90,7 +94,11 @@ class ResourceServerServiceImplTest {
     @BeforeEach
     void setUp() {
         service = new ResourceServerServiceImpl(resources, grants, clients,
-                resourceViews, grantViews, Clock.fixed(NOW, ZoneOffset.UTC), events, validatorFactory.getValidator());
+                resourceViews, grantViews, Clock.fixed(NOW, ZoneOffset.UTC), events, validatorFactory.getValidator(), fences, transactions);
+        when(fences.fenceCurrent(any(), any())).thenReturn(true);
+        when(clients.fenceObservedVersion(any(), any())).thenReturn(true);
+        when(transactions.execute(any(), any(), any())).thenAnswer(invocation ->
+                ((java.util.function.Supplier<?>) invocation.getArgument(2)).get());
         when(resourceViews.toTarget(any(OAuthResourceBO.class))).thenAnswer(invocation -> {
             OAuthResourceBO value = invocation.getArgument(0);
             return resourceView(value.getResourceServerId(), value.getAppCode(), value.getStatus(), value.getVersion());
@@ -152,7 +160,7 @@ class ResourceServerServiceImplTest {
         OAuthResourceBO disabled = resource("permission-tianquan-shoubing-prod", "tianquan-shoubing",
                 ResourceServerStatus.DISABLED).setVersion(0L);
         AtomicReference<OAuthResourceBO> current = new AtomicReference<>(disabled);
-        when(resources.findByResourceServerIdForUpdate(PLATFORM, disabled.getResourceServerId()))
+        when(resources.findByResourceServerId(PLATFORM, disabled.getResourceServerId()))
                 .thenAnswer(invocation -> Optional.of(current.get()));
         when(clients.findByClientId(PLATFORM, disabled.getManagementClientId()))
                 .thenReturn(Optional.of(managementClient(disabled.getManagementClientId(), 11L)));
@@ -173,14 +181,25 @@ class ResourceServerServiceImplTest {
     }
 
     @Test
+    void aReplicaNoOpMustStillMatchThePrimaryResource() {
+        var active = resource("orders-resource", "orders", ResourceServerStatus.ACTIVE);
+        when(resources.findByResourceServerId(PLATFORM, "orders-resource")).thenReturn(Optional.of(active));
+        when(fences.fenceCurrent(PLATFORM, active)).thenReturn(false);
+        assertThatThrownBy(() -> service.enable(PLATFORM, "orders-resource", new ResourceVersionDTO(0L)))
+                .isInstanceOf(OptimisticLockingFailureException.class);
+        verify(resources, never()).save(any(), any(), anyLong());
+        verify(events, never()).enqueueResourceProjection(any());
+    }
+
+    @Test
     void serviceGrantRequiresTenantContextAndProjectsOnlyServiceClientCredentials() {
         OAuthResourceBO resource = resource("permission-tianquan-jianshen-prod", "tianquan-jianshen",
                 ResourceServerStatus.ACTIVE);
         OAuthClientBO client = serviceClient("tianquan-shoubing-service", 21L);
-        when(clients.findByClientIdForUpdate(TENANT, client.getClientId())).thenReturn(Optional.of(client));
-        when(resources.findByResourceServerIdForUpdate(PLATFORM, resource.getResourceServerId()))
+        when(clients.findByClientId(TENANT, client.getClientId())).thenReturn(Optional.of(client));
+        when(resources.findByResourceServerId(PLATFORM, resource.getResourceServerId()))
                 .thenReturn(Optional.of(resource));
-        when(grants.findGrantForUpdate(TENANT, client.getId(), resource.getResourceServerId(),
+        when(grants.findGrant(TENANT, client.getId(), resource.getResourceServerId(),
                 ResourceGrantType.CLIENT_CREDENTIALS)).thenReturn(Optional.empty());
         when(grants.save(eq(TENANT), any(OAuthGrantBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
@@ -192,6 +211,10 @@ class ResourceServerServiceImplTest {
 
         assertThat(created.getTenantId()).isEqualTo("7");
         verify(events).enqueueServiceGrantProjection(eq(TENANT), eq(client), any(OAuthGrantBO.class));
+        verify(clients).fenceObservedVersion(TENANT, client);
+        verify(clients, never()).findByClientIdForUpdate(any(), any());
+        verify(resources, never()).findByResourceServerIdForUpdate(any(), any());
+        verify(grants, never()).findGrantForUpdate(any(), any(), any(), any());
         assertThatThrownBy(() -> service.putGrant(TENANT, PLATFORM, client.getClientId(),
                 resource.getResourceServerId(), UpsertClientResourceGrantDTO.builder()
                         .grantType(ResourceGrantType.CLIENT_CREDENTIALS).allowedScopes(Set.of())
@@ -201,15 +224,34 @@ class ResourceServerServiceImplTest {
     }
 
     @Test
+    void serviceGrantCanBeDisabledWithoutProvidingNewScopes() {
+        var resource = resource("orders-resource", "orders", ResourceServerStatus.ACTIVE);
+        var client = serviceClient("svc", 21L);
+        var grant = OAuthGrantBO.builder().id(77L).version(2L).clientPk(21L).resourceServerId("orders-resource")
+                .grantType(ResourceGrantType.CLIENT_CREDENTIALS).allowedScopes(List.of("orders:read"))
+                .status(ClientResourceGrant.Status.ACTIVE).resourceVersion(0L).build();
+        when(resources.findByResourceServerId(PLATFORM, "orders-resource")).thenReturn(Optional.of(resource));
+        when(clients.findByClientId(TENANT, "svc")).thenReturn(Optional.of(client));
+        when(grants.findGrant(TENANT, 21L, "orders-resource", ResourceGrantType.CLIENT_CREDENTIALS)).thenReturn(Optional.of(grant));
+        when(grants.save(eq(TENANT), any(), eq(2L))).thenAnswer(call -> call.getArgument(1));
+        service.deleteGrant(TENANT, PLATFORM, "svc", "orders-resource", DeleteClientResourceGrantDTO.builder()
+                .grantType(ResourceGrantType.CLIENT_CREDENTIALS).tenantId("7")
+                .expectedResourceVersion(0L).expectedGrantVersion(2L).build());
+        verify(grants).save(eq(TENANT), org.mockito.ArgumentMatchers.argThat(value ->
+                value.getStatus() == ClientResourceGrant.Status.DISABLED && value.getVersion() == 3L), eq(2L));
+        verify(events).enqueueServiceGrantProjection(eq(TENANT), eq(client), any());
+    }
+
+    @Test
     void userDelegationGrantHasNoTenantOrServiceProjection() {
         OAuthResourceBO resource = resource("permission-tianquan-shoubing-prod", "tianquan-shoubing",
                 ResourceServerStatus.ACTIVE);
         OAuthClientBO client = userClient("tianquan-shoubing-admin-web", 22L)
                 .setAllowedScopes(List.of("openid", "orders:read", "orders:write"));
-        when(clients.findByClientIdForUpdate(TENANT, client.getClientId())).thenReturn(Optional.of(client));
-        when(resources.findByResourceServerIdForUpdate(PLATFORM, resource.getResourceServerId()))
+        when(clients.findByClientId(TENANT, client.getClientId())).thenReturn(Optional.of(client));
+        when(resources.findByResourceServerId(PLATFORM, resource.getResourceServerId()))
                 .thenReturn(Optional.of(resource));
-        when(grants.findGrantForUpdate(TENANT, client.getId(), resource.getResourceServerId(),
+        when(grants.findGrant(TENANT, client.getId(), resource.getResourceServerId(),
                 ResourceGrantType.USER_DELEGATION)).thenReturn(Optional.empty());
         when(grants.save(eq(TENANT), any(OAuthGrantBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
@@ -235,13 +277,12 @@ class ResourceServerServiceImplTest {
                 .id(77L).version(2L).clientPk(client.getId()).resourceServerId(resource.getResourceServerId())
                 .grantType(ResourceGrantType.USER_DELEGATION).allowedScopes(List.of("orders:read", "orders:write"))
                 .status(ClientResourceGrant.Status.ACTIVE).resourceVersion(0L).build());
-        when(clients.findByClientIdForUpdate(TENANT, client.getClientId())).thenReturn(Optional.of(client));
         when(clients.findByClientId(TENANT, client.getClientId())).thenReturn(Optional.of(client));
-        when(resources.findByResourceServerIdForUpdate(PLATFORM, resource.getResourceServerId()))
+        when(resources.findByResourceServerId(PLATFORM, resource.getResourceServerId()))
                 .thenReturn(Optional.of(resource));
         when(resources.findByBizCodeAndEnvironmentAndAppCodeIn(PLATFORM, "permission", "prod", List.of("orders")))
                 .thenReturn(List.of(resource));
-        when(grants.findGrantForUpdate(TENANT, client.getId(), resource.getResourceServerId(),
+        when(grants.findGrant(TENANT, client.getId(), resource.getResourceServerId(),
                 ResourceGrantType.USER_DELEGATION)).thenAnswer(call -> Optional.of(current.get()));
         when(grants.listByClient(TENANT, client.getId(), 65)).thenAnswer(call -> List.of(current.get()));
         when(grants.save(eq(TENANT), any(OAuthGrantBO.class), anyLong())).thenAnswer(call -> {
@@ -276,8 +317,8 @@ class ResourceServerServiceImplTest {
     void directUserGrantSchemaValidationRejectsOversizeMalformedNullAndNegativeInputs() {
         OAuthResourceBO resource = resource("resource-user", "orders", ResourceServerStatus.ACTIVE);
         OAuthClientBO client = userClient("user-client", 22L).setAllowedScopes(List.of("orders:read"));
-        when(clients.findByClientIdForUpdate(TENANT, client.getClientId())).thenReturn(Optional.of(client));
-        when(resources.findByResourceServerIdForUpdate(PLATFORM, resource.getResourceServerId()))
+        when(clients.findByClientId(TENANT, client.getClientId())).thenReturn(Optional.of(client));
+        when(resources.findByResourceServerId(PLATFORM, resource.getResourceServerId()))
                 .thenReturn(Optional.of(resource));
         Set<String> oversized = java.util.stream.IntStream.range(0, 65)
                 .mapToObj(index -> "orders:" + index).collect(java.util.stream.Collectors.toSet());
@@ -304,8 +345,8 @@ class ResourceServerServiceImplTest {
     void userGrantCannotExceedClientOrContainIdentityScopesOrStaleResourceVersion() {
         OAuthResourceBO resource = resource("resource-user", "orders", ResourceServerStatus.ACTIVE);
         OAuthClientBO client = userClient("user-client", 22L).setAllowedScopes(List.of("openid", "orders:read"));
-        when(clients.findByClientIdForUpdate(TENANT, client.getClientId())).thenReturn(Optional.of(client));
-        when(resources.findByResourceServerIdForUpdate(PLATFORM, resource.getResourceServerId()))
+        when(clients.findByClientId(TENANT, client.getClientId())).thenReturn(Optional.of(client));
+        when(resources.findByResourceServerId(PLATFORM, resource.getResourceServerId()))
                 .thenReturn(Optional.of(resource));
         for (String scope : List.of("orders:write", "openid", "*", "s".repeat(129))) {
             assertThatThrownBy(() -> service.putGrant(TENANT, PLATFORM, client.getClientId(), resource.getResourceServerId(),
@@ -371,10 +412,10 @@ class ResourceServerServiceImplTest {
         OAuthResourceBO first = resource("resource-idp", "tianquan-shoubing", ResourceServerStatus.ACTIVE);
         OAuthResourceBO second = resource("resource-jianshen", "tianquan-jianshen", ResourceServerStatus.ACTIVE);
         OAuthClientBO client = serviceClient("caller-service", 61L);
-        when(clients.findByClientIdForUpdate(TENANT, client.getClientId())).thenReturn(Optional.of(client));
+        when(clients.findByClientId(TENANT, client.getClientId())).thenReturn(Optional.of(client));
         when(resources.findByBizCodeAndEnvironmentAndAppCodeIn(PLATFORM, "permission", "prod",
                 List.of("tianquan-shoubing", "tianquan-jianshen"))).thenReturn(List.of(first, second));
-        when(grants.findGrantForUpdate(eq(TENANT), eq(client.getId()), any(String.class),
+        when(grants.findGrant(eq(TENANT), eq(client.getId()), any(String.class),
                 eq(ResourceGrantType.CLIENT_CREDENTIALS))).thenReturn(Optional.empty());
         when(grants.save(eq(TENANT), any(OAuthGrantBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));

@@ -27,7 +27,7 @@ class IdpStatelessSchemaContractTest {
     @Test
     void manifestContainsTheOneFrozenVersionAndUnchangedHistory() throws Exception {
         var scripts = new ObjectMapper().readTree(bytes("db/egon-mp/repository-manifest.json")).path("scripts");
-        assertEquals(8, scripts.size());
+        assertEquals(9, scripts.size());
         assertEquals("238adf24fc3025f27ac5da91528b6110962977762f3ce751467a970a7c6acc23", scripts.get(0).path("sha256").asText());
         assertEquals("89210d641e6018b5c1e87a394bbe9d99eb90f64a7f86217ce2ec40a90afad5db", scripts.get(1).path("sha256").asText());
         for (var script : scripts) {

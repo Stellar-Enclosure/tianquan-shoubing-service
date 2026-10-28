@@ -28,6 +28,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRea
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.OAuthClientPurposeEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthGrantBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthResourceBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.converter.ClientResourceGrantViewConverter;
@@ -42,6 +43,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.vo.ClientR
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.vo.ResourceServerVO;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthGrantRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceRepository;
+import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceFenceRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.service.ResourceServerService;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.TransactionalOutboxResourceServerEventAdapter;
 import top.egon.cola.platform.tianquan.shoubing.core.oauth.OAuthClient;
@@ -84,6 +86,10 @@ public class ResourceServerServiceImpl implements ResourceServerService {
     @NonNull
     @Qualifier("defaultValidator")
     private final Validator validator;
+    @NonNull
+    private final OAuthResourceFenceRepository resourceFences;
+    @NonNull
+    private final ResourceGrantTransactionCoordinator grantTransactions;
 
     @Override
     @Transactional(readOnly = true)
@@ -122,6 +128,9 @@ public class ResourceServerServiceImpl implements ResourceServerService {
             throw new IllegalStateException("OAUTH_RESOURCE_ALREADY_EXISTS");
         }
         OAuthClientBO managementClient = managementClient(realm, input.managementClientId());
+        if (!OAuthTransactionFences.client(clients, realm, managementClient)) {
+            throw new OptimisticLockingFailureException("OAuth management client changed before resource creation");
+        }
         if (resources.findByManagementClientPk(realm, managementClient.getId()).isPresent()) {
             throw new IllegalStateException("OAUTH_RESOURCE_MANAGEMENT_CLIENT_ALREADY_BOUND");
         }
@@ -151,11 +160,12 @@ public class ResourceServerServiceImpl implements ResourceServerService {
     public ResourceServerVO enable(TrustedRealmBO platformRealm, String resourceServerId, ResourceVersionDTO command) {
         Objects.requireNonNull(command, "command");
         TrustedRealmBO realm = requirePlatform(platformRealm);
-        OAuthResourceBO current = resourceForUpdate(realm, resourceServerId);
+        OAuthResourceBO current = resource(realm, resourceServerId);
         if (current.getVersion() != command.expectedVersion()) {
             throw new OptimisticLockingFailureException("OAUTH_RESOURCE_VERSION_CONFLICT");
         }
         if (current.getStatus() == ResourceServerStatus.ACTIVE) {
+            fenceResource(realm, current);
             return resourceViews.toTarget(current);
         }
         OAuthResourceBO changed = copy(current)
@@ -173,11 +183,12 @@ public class ResourceServerServiceImpl implements ResourceServerService {
     public ResourceServerVO disable(TrustedRealmBO platformRealm, String resourceServerId, ResourceVersionDTO command) {
         Objects.requireNonNull(command, "command");
         TrustedRealmBO realm = requirePlatform(platformRealm);
-        OAuthResourceBO current = resourceForUpdate(realm, resourceServerId);
+        OAuthResourceBO current = resource(realm, resourceServerId);
         if (current.getVersion() != command.expectedVersion()) {
             throw new OptimisticLockingFailureException("OAUTH_RESOURCE_VERSION_CONFLICT");
         }
         if (current.getStatus() == ResourceServerStatus.DISABLED) {
+            fenceResource(realm, current);
             return resourceViews.toTarget(current);
         }
         OAuthResourceBO changed = copy(current)
@@ -192,22 +203,27 @@ public class ResourceServerServiceImpl implements ResourceServerService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public ClientResourceGrantVO putGrant(
             TrustedRealmBO clientRealm,
             TrustedRealmBO platformRealm,
             String clientId,
             String resourceServerId,
             UpsertClientResourceGrantDTO command) {
-        OAuthClientBO client = clientForUpdate(clientRealm, clientId);
-        OAuthResourceBO resource = resourceForUpdate(requirePlatform(platformRealm), resourceServerId);
-        OAuthGrantBO saved = upsertGrant(clientRealm, client, resource, Objects.requireNonNull(command, "command"));
-        enqueueServiceGrantProjection(clientRealm, client, saved);
-        return grantViews.toTarget(saved, clientRealm, client);
+        TrustedRealmBO realm = requireRealm(clientRealm);
+        TrustedRealmBO platform = requirePlatform(platformRealm);
+        OAuthResourceBO resource = resource(platform, resourceServerId);
+        UpsertClientResourceGrantDTO input = Objects.requireNonNull(command, "command");
+        return grantTransactions.execute(platform, List.of(resource), () -> {
+            OAuthClientBO client = clientForMutation(realm, clientId);
+            OAuthGrantBO saved = upsertGrant(realm, client, resource, input);
+            enqueueServiceGrantProjection(realm, client, saved);
+            return grantViews.toTarget(saved, realm, client);
+        });
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public void deleteGrant(
             TrustedRealmBO clientRealm,
             TrustedRealmBO platformRealm,
@@ -216,27 +232,19 @@ public class ResourceServerServiceImpl implements ResourceServerService {
             DeleteClientResourceGrantDTO command) {
         Objects.requireNonNull(command, "command");
         TrustedRealmBO realm = requireRealm(clientRealm);
-        OAuthClientBO client = clientForUpdate(realm, clientId);
-        OAuthResourceBO resource = resourceForUpdate(requirePlatform(platformRealm), resourceServerId);
+        TrustedRealmBO platform = requirePlatform(platformRealm);
+        OAuthResourceBO resource = resource(platform, resourceServerId);
         if (resource.getVersion() != command.getExpectedResourceVersion()) {
             throw new OptimisticLockingFailureException("OAUTH_RESOURCE_VERSION_CONFLICT");
         }
-        ResourceGrantType grantType = Objects.requireNonNull(command.getGrantType(), "grantType");
-        validateClientGrantContext(realm, client, grantType, command.getTenantId(), Set.of());
-        OAuthGrantBO grant = grants.findGrantForUpdate(realm, client.getId(), resource.getResourceServerId(), grantType)
-                .orElseThrow(() -> new NoSuchElementException("OAUTH_GRANT_NOT_FOUND"));
-        if (grant.getVersion() != command.getExpectedGrantVersion()) {
-            throw new OptimisticLockingFailureException("OAUTH_GRANT_VERSION_CONFLICT");
-        }
-        OAuthGrantBO disabled = copy(grant)
-                .version(Math.addExact(grant.getVersion(), 1L))
-                .status(ClientResourceGrant.Status.DISABLED)
-                .resourceVersion(resource.getVersion())
-                .build();
-        OAuthGrantBO saved = grants.save(realm, disabled, grant.getVersion());
-        if (grantType == ResourceGrantType.CLIENT_CREDENTIALS) {
-            enqueueServiceGrantProjection(realm, client, saved);
-        }
+        grantTransactions.execute(platform, List.of(resource), () -> {
+            OAuthClientBO client = clientForMutation(realm, clientId);
+            ResourceGrantType grantType = Objects.requireNonNull(command.getGrantType(), "grantType");
+            OAuthGrantBO saved = disableGrant(realm, client, resource, grantType, command.getTenantId(),
+                    command.getExpectedResourceVersion(), command.getExpectedGrantVersion());
+            if (grantType == ResourceGrantType.CLIENT_CREDENTIALS) enqueueServiceGrantProjection(realm, client, saved);
+            return null;
+        });
     }
 
     @Override
@@ -255,6 +263,7 @@ public class ResourceServerServiceImpl implements ResourceServerService {
             ResourceServerStatus status = command.action() == BatchResourceServerActionDTO.Action.ENABLE
                     ? ResourceServerStatus.ACTIVE : ResourceServerStatus.DISABLED;
             if (current.getStatus() == status) {
+                fenceResource(realm, current);
                 saved.add(current);
                 continue;
             }
@@ -274,7 +283,7 @@ public class ResourceServerServiceImpl implements ResourceServerService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public List<ClientResourceGrantVO> batchGrants(
             TrustedRealmBO clientRealm,
             TrustedRealmBO platformRealm,
@@ -283,38 +292,43 @@ public class ResourceServerServiceImpl implements ResourceServerService {
         Objects.requireNonNull(command, "command");
         TrustedRealmBO realm = requireRealm(clientRealm);
         TrustedRealmBO platform = requirePlatform(platformRealm);
-        OAuthClientBO client = clientForUpdate(realm, clientId);
         List<String> appCodes = explicitApps(command.getAppCodes(), command.getExpectedResourceVersions());
         validateGrantVersions(appCodes, command.getExpectedGrantVersions(), command.getAction());
         List<OAuthResourceBO> selected = selectResources(platform, command.getBizCode(), command.getEnvironment(), appCodes);
-        List<ClientResourceGrantVO> results = new ArrayList<>();
         for (OAuthResourceBO resource : selected) {
             long expectedResourceVersion = expected(command.getExpectedResourceVersions(), resource.getAppCode());
             if (resource.getVersion() != expectedResourceVersion) {
                 throw new OptimisticLockingFailureException("OAUTH_RESOURCE_VERSION_CONFLICT");
             }
-            Long expectedGrantVersion = command.getExpectedGrantVersions().get(resource.getAppCode());
-            if (command.getAction() == BatchClientResourceGrantDTO.Action.UPSERT) {
-                OAuthGrantBO grant = upsertGrant(realm, client, resource, UpsertClientResourceGrantDTO.builder()
-                        .grantType(command.getGrantType())
-                        .tenantId(command.getTenantId())
-                        .allowedScopes(command.getAllowedScopes())
-                        .expectedResourceVersion(expectedResourceVersion)
-                        .expectedGrantVersion(expectedGrantVersion)
-                        .build());
-                results.add(grantViews.toTarget(grant, realm, client));
-                enqueueServiceGrantProjection(realm, client, grant);
-            } else {
-                if (expectedGrantVersion == null) {
-                    throw new IllegalArgumentException("OAUTH_GRANT_EXPECTED_VERSION_REQUIRED");
-                }
-                OAuthGrantBO grant = disableGrant(realm, client, resource, command.getGrantType(), command.getTenantId(),
-                        expectedResourceVersion, expectedGrantVersion);
-                results.add(grantViews.toTarget(grant, realm, client));
-                enqueueServiceGrantProjection(realm, client, grant);
-            }
         }
-        return List.copyOf(results);
+        return grantTransactions.execute(platform, selected, () -> {
+            OAuthClientBO client = clientForMutation(realm, clientId);
+            List<ClientResourceGrantVO> results = new ArrayList<>();
+            for (OAuthResourceBO resource : selected) {
+                long expectedResourceVersion = expected(command.getExpectedResourceVersions(), resource.getAppCode());
+                Long expectedGrantVersion = command.getExpectedGrantVersions().get(resource.getAppCode());
+                if (command.getAction() == BatchClientResourceGrantDTO.Action.UPSERT) {
+                    OAuthGrantBO grant = upsertGrant(realm, client, resource, UpsertClientResourceGrantDTO.builder()
+                            .grantType(command.getGrantType())
+                            .tenantId(command.getTenantId())
+                            .allowedScopes(command.getAllowedScopes())
+                            .expectedResourceVersion(expectedResourceVersion)
+                            .expectedGrantVersion(expectedGrantVersion)
+                            .build());
+                    results.add(grantViews.toTarget(grant, realm, client));
+                    enqueueServiceGrantProjection(realm, client, grant);
+                } else {
+                    if (expectedGrantVersion == null) {
+                        throw new IllegalArgumentException("OAUTH_GRANT_EXPECTED_VERSION_REQUIRED");
+                    }
+                    OAuthGrantBO grant = disableGrant(realm, client, resource, command.getGrantType(), command.getTenantId(),
+                            expectedResourceVersion, expectedGrantVersion);
+                    results.add(grantViews.toTarget(grant, realm, client));
+                    enqueueServiceGrantProjection(realm, client, grant);
+                }
+            }
+            return List.copyOf(results);
+        });
     }
 
     @Override
@@ -343,11 +357,14 @@ public class ResourceServerServiceImpl implements ResourceServerService {
         new ValidationUtils(validator).validate(command);
         ResourceGrantType type = Objects.requireNonNull(command.getGrantType(), "grantType");
         Set<String> scopes = command.getAllowedScopes() == null ? Set.of() : canonicalScopes(command.getAllowedScopes());
+        if (type == ResourceGrantType.CLIENT_CREDENTIALS && scopes.isEmpty()) {
+            throw new IllegalArgumentException("OAUTH_SERVICE_GRANT_INVALID");
+        }
         validateClientGrantContext(realm, client, type, command.getTenantId(), scopes);
         if (resource.getVersion() != command.getExpectedResourceVersion()) {
             throw new OptimisticLockingFailureException("OAUTH_RESOURCE_VERSION_CONFLICT");
         }
-        OAuthGrantBO current = grants.findGrantForUpdate(realm, client.getId(), resource.getResourceServerId(), type)
+        OAuthGrantBO current = grants.findGrant(realm, client.getId(), resource.getResourceServerId(), type)
                 .orElse(null);
         if (current == null) {
             if (command.getExpectedGrantVersion() != null) {
@@ -389,7 +406,7 @@ public class ResourceServerServiceImpl implements ResourceServerService {
             throw new OptimisticLockingFailureException("OAUTH_RESOURCE_VERSION_CONFLICT");
         }
         validateClientGrantContext(realm, client, type, tenantId, Set.of());
-        OAuthGrantBO current = grants.findGrantForUpdate(realm, client.getId(), resource.getResourceServerId(), type)
+        OAuthGrantBO current = grants.findGrant(realm, client.getId(), resource.getResourceServerId(), type)
                 .orElseThrow(() -> new NoSuchElementException("OAUTH_GRANT_NOT_FOUND"));
         if (current.getVersion() != expectedGrantVersion) {
             throw new OptimisticLockingFailureException("OAUTH_GRANT_VERSION_CONFLICT");
@@ -417,16 +434,18 @@ public class ResourceServerServiceImpl implements ResourceServerService {
                     ClientResourceGrant.Status.ACTIVE, 0L);
             return;
         }
-        if (client.getPurpose() != OAuthClientPurposeEnum.SERVICE || scopes.isEmpty()) {
+        if (client.getPurpose() != OAuthClientPurposeEnum.SERVICE) {
             throw new IllegalArgumentException("OAUTH_SERVICE_GRANT_INVALID");
         }
         String realmTenant = realm.getBusinessTenantId() == null ? null : realm.getBusinessTenantId().toString();
         if (!Objects.equals(realmTenant, tenantId)) {
             throw new IllegalArgumentException("OAUTH_SERVICE_GRANT_TENANT_MISMATCH");
         }
-        new ClientResourceGrant(client.getClientId(), "grant-target", type, tenantId, scopes,
-                ClientResourceGrant.Status.ACTIVE, 0L,
-                realmTenant == null ? ServiceTokenContext.PLATFORM : ServiceTokenContext.TENANT);
+        if (!scopes.isEmpty()) {
+            new ClientResourceGrant(client.getClientId(), "grant-target", type, tenantId, scopes,
+                    ClientResourceGrant.Status.ACTIVE, 0L,
+                    realmTenant == null ? ServiceTokenContext.PLATFORM : ServiceTokenContext.TENANT);
+        }
     }
 
     private OAuthClientBO managementClient(TrustedRealmBO platformRealm, String clientId) {
@@ -441,14 +460,19 @@ public class ResourceServerServiceImpl implements ResourceServerService {
         return client;
     }
 
-    private OAuthClientBO clientForUpdate(TrustedRealmBO realm, String clientId) {
-        return clients.findByClientIdForUpdate(realm, exact(clientId, "clientId"))
+    private OAuthClientBO clientForMutation(TrustedRealmBO realm, String clientId) {
+        OAuthClientBO client = clients.findByClientId(realm, exact(clientId, "clientId"))
                 .orElseThrow(() -> new NoSuchElementException("OAUTH_CLIENT_NOT_FOUND"));
+        if (!OAuthTransactionFences.client(clients, realm, client)) {
+            throw new OptimisticLockingFailureException("OAuth client changed before grant mutation");
+        }
+        return client;
     }
 
-    private OAuthResourceBO resourceForUpdate(TrustedRealmBO realm, String resourceServerId) {
-        return resources.findByResourceServerIdForUpdate(realm, exact(resourceServerId, "resourceServerId"))
-                .orElseThrow(() -> new NoSuchElementException("OAUTH_RESOURCE_NOT_FOUND"));
+    private void fenceResource(TrustedRealmBO realm, OAuthResourceBO resource) {
+        if (!resourceFences.fenceCurrent(realm, resource)) {
+            throw new OptimisticLockingFailureException("OAuth resource changed before no-op mutation");
+        }
     }
 
     private OAuthResourceBO resource(TrustedRealmBO realm, String resourceServerId) {

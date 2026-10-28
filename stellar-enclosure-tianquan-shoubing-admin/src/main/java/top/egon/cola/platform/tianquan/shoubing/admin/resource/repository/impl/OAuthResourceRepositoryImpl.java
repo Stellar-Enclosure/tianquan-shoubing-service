@@ -162,7 +162,7 @@ public class OAuthResourceRepositoryImpl extends EgonColaRepository<OAuthResourc
         URI canonicalResourceUri = validateResource(resource);
         return withPlatformStoragePartition(platformRealm, tenantId -> {
             try {
-                OAuthResourcePO current = baseMapper.selectByResourceServerIdForUpdate(
+                OAuthResourcePO current = baseMapper.selectByResourceServerId(
                         tenantId, resource.getResourceServerId());
                 OAuthResourcePO value = converter.toSource(resource);
                 value.setTenantId(tenantId);

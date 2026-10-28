@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="top.egon.cola.platform.tianquan.shoubing.admin.resource.dao.OAuthResourceFenceMapper">
+    <select id="selectVersion" resultType="long">
+        SELECT version FROM tianquan_oauth.oauth_resource_fence
+        WHERE tenant_id = #{tenantId} AND id = #{id} AND deleted_at IS NULL
+    </select>
+    <update id="fenceObserved">
+        UPDATE tianquan_oauth.oauth_resource_fence f
+        SET version = f.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE f.tenant_id = #{tenantId} AND f.id = #{id} AND f.version = #{expectedVersion} AND f.deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_resource r
+                      WHERE r.tenant_id = #{tenantId} AND r.id = #{id} AND r.version = #{resourceVersion}
+                        AND r.resource_server_id = #{resourceServerId} AND r.deleted_at IS NULL)
+    </update>
+</mapper>

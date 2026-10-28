@@ -852,7 +852,7 @@ class OAuthConsentRoundTripTest {
                 .realmKey("platform").realmType(RealmTypeEnum.PLATFORM).storagePartitionId(9000L)
                 .trustVersion(0L).build();
         OAuthResourceRepository resources = mock(OAuthResourceRepository.class);
-        when(resources.findByResourceServerIdForUpdate(platform, "orders")).thenReturn(Optional.of(
+        when(resources.findByResourceServerId(platform, "orders")).thenReturn(Optional.of(
                 OAuthResourceBO.builder().id(601L).version(0L).resourceServerId("orders")
                         .resourceUri(RESOURCE).status(ResourceServerStatus.ACTIVE).build()));
         when(fixture.grantRepository.save(eq(realm), any(OAuthGrantBO.class), anyLong())).thenAnswer(call -> {
@@ -863,10 +863,16 @@ class OAuthConsentRoundTripTest {
             return saved;
         });
         try (var validatorFactory = Validation.buildDefaultValidatorFactory()) {
+            var resourceFences = mock(top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceFenceRepository.class);
+            var grantTransactions = mock(top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceGrantTransactionCoordinator.class);
+            when(grantTransactions.execute(any(), any(), any())).thenAnswer(call -> {
+                fixture.fencedClients.clear();
+                return ((java.util.function.Supplier<?>) call.getArgument(2)).get();
+            });
             ResourceServerServiceImpl management = new ResourceServerServiceImpl(resources, fixture.grantRepository,
                     fixture.clientRepository, Mappers.getMapper(ResourceServerViewConverter.class),
                     Mappers.getMapper(ClientResourceGrantViewConverter.class), fixture.clock,
-                    mock(TransactionalOutboxResourceServerEventAdapter.class), validatorFactory.getValidator());
+                    mock(TransactionalOutboxResourceServerEventAdapter.class), validatorFactory.getValidator(), resourceFences, grantTransactions);
             fixture.userGrantScopes = List.of();
             management.putGrant(realm, platform, CLIENT, "orders", UpsertClientResourceGrantDTO.builder()
                     .grantType(ResourceGrantType.USER_DELEGATION).allowedScopes(Set.of("orders.read"))

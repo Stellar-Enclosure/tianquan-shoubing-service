@@ -158,6 +158,8 @@ class SpringConstructorResolutionTest {
             registerNamedMock(context, "oAuthResourceRepository", OAuthResourceRepository.class);
             registerNamedMock(context, "oAuthGrantRepository", OAuthGrantRepository.class);
             registerNamedMock(context, "oAuthClientRepository", OAuthClientRepository.class);
+            registerNamedMock(context, "oAuthResourceFenceRepository", top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceFenceRepository.class);
+            registerNamedMock(context, "resourceGrantTransactionCoordinator", top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceGrantTransactionCoordinator.class);
             registerNamedMock(context, "resourceServerViewConverterImpl", ResourceServerViewConverter.class);
             registerNamedMock(context, "clientResourceGrantViewConverterImpl", ClientResourceGrantViewConverter.class);
             registerNamedMock(context, "transactionalOutbox", TransactionalOutbox.class);

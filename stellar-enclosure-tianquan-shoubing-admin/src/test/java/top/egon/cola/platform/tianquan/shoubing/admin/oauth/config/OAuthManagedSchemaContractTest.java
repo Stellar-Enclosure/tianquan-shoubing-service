@@ -57,7 +57,7 @@ class OAuthManagedSchemaContractTest {
             "oauth_identity_credential",
             "oauth_identity_tenant",
             "oauth_identity_membership",
-            "oauth_subject_tenant_history", "oauth_subject_revocation_task", "oauth_password_change_receipt", "oauth_subject_delivery_receipt",
+            "oauth_subject_tenant_history", "oauth_subject_revocation_task", "oauth_password_change_receipt", "oauth_subject_delivery_receipt", "oauth_resource_fence",
             "oauth_realm",
             "oauth_client",
             "oauth_grant",
@@ -101,7 +101,7 @@ class OAuthManagedSchemaContractTest {
         JsonNode manifest = objectMapper.readTree(requiredResource(MANIFEST_RESOURCE));
 
         assertEquals("tianquan-oauth", manifest.path("family").asText());
-        assertEquals(8, manifest.path("scripts").size());
+        assertEquals(9, manifest.path("scripts").size());
         JsonNode script = manifest.path("scripts").get(0);
         assertEquals("20261008_001", script.path("version").asText());
         assertEquals(SQL_RESOURCE, script.path("path").asText());
@@ -153,9 +153,19 @@ class OAuthManagedSchemaContractTest {
         byte[] deliveryBytes = requiredResource(delivery.path("path").asText());
         assertEquals(sha256(deliveryBytes), delivery.path("sha256").asText());
         assertTrue(new String(deliveryBytes, StandardCharsets.UTF_8).contains("UNIQUE (tenant_id, identity_sub, source_revision)"));
+        JsonNode resourceFence = manifest.path("scripts").get(8);
+        assertEquals("20261028_005", resourceFence.path("version").asText());
+        byte[] resourceFenceBytes = requiredResource(resourceFence.path("path").asText());
+        assertEquals(sha256(resourceFenceBytes), resourceFence.path("sha256").asText());
+        String resourceFenceSql = new String(resourceFenceBytes, StandardCharsets.UTF_8);
+        assertEquals(5, ((java.util.List<?>) splitter.invoke(null, resourceFenceSql)).size());
+        assertTrue(resourceFenceSql.indexOf("LOCK TABLE oauth_resource IN SHARE ROW EXCLUSIVE MODE")
+                < resourceFenceSql.indexOf("INSERT INTO oauth_resource_fence"));
+        assertTrue(resourceFenceSql.contains("BEFORE INSERT OR UPDATE OR DELETE ON oauth_resource"));
         String sql = new String(sqlBytes, StandardCharsets.UTF_8) + new String(statelessBytes, StandardCharsets.UTF_8)
                 + new String(deviceBytes, StandardCharsets.UTF_8) + new String(fanoutBytes, StandardCharsets.UTF_8)
-                + new String(receiptBytes, StandardCharsets.UTF_8) + new String(deliveryBytes, StandardCharsets.UTF_8);
+                + new String(receiptBytes, StandardCharsets.UTF_8) + new String(deliveryBytes, StandardCharsets.UTF_8)
+                + resourceFenceSql;
         Matcher tableMatcher = Pattern.compile(
                 "(?im)^\\s*CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([a-z0-9_]+)\\b"
         ).matcher(sql);
@@ -230,7 +240,7 @@ class OAuthManagedSchemaContractTest {
             var identities = new top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity(topology.profiles(), 9000L);
             for (String table : List.of("oauth_audit", "oauth_grant", "oauth_resource", "oauth_security_state",
                     "oauth_identity_user", "oauth_identity_credential", "oauth_identity_membership", "oauth_realm",
-                    "oauth_subject_tenant_history", "oauth_subject_revocation_task", "oauth_password_change_receipt", "oauth_subject_delivery_receipt")) {
+                    "oauth_subject_tenant_history", "oauth_subject_revocation_task", "oauth_password_change_receipt", "oauth_subject_delivery_receipt", "oauth_resource_fence")) {
                 assertEquals("legacy-id", identities.forTenant(table, 1001L).messageId("legacy-id"));
             }
         }

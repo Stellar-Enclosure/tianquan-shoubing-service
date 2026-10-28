@@ -40,6 +40,11 @@
       "version": "20261028_004",
       "path": "db/egon-mp/V20261028_004__ordered_subject_delivery.sql",
       "sha256": "2c7b1f2e57ce58f8c9098059593065bc0b2b0b317be7e82614959a41cbf31b6d"
+    },
+    {
+      "version": "20261028_005",
+      "path": "db/egon-mp/V20261028_005__coordinate_resource_grants.sql",
+      "sha256": "d24d3731048e02eb31f55caf16abbc8a901a9e3889052bcbddba541c055ec24a"
     }
   ]
 }
