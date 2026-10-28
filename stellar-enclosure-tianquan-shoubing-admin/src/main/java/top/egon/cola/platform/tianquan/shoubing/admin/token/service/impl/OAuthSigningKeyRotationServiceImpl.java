@@ -34,7 +34,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.audit.support.outbox.OAuth
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
-import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthScheduledRealmCatalog;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyRotationProperties;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSigningKeyBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthKeyStatusEnum;
@@ -76,8 +76,8 @@ public class OAuthSigningKeyRotationServiceImpl {
     private final OAuthAuditRepository audits;
     @Qualifier("transactionalOutbox")
     private final TransactionalOutbox outbox;
-    @Qualifier("oauthManagementRealmResolver")
-    private final OAuthManagementRealmResolver realmResolver;
+    @Qualifier("oauthScheduledRealmCatalog")
+    private final OAuthScheduledRealmCatalog scheduledRealms;
     @Qualifier("oauthKeyRotationProperties")
     private final OAuthKeyRotationProperties properties;
     @Qualifier("idpClock")
@@ -94,21 +94,20 @@ public class OAuthSigningKeyRotationServiceImpl {
 
     @Scheduled(cron = "${egon.tianquan-shoubing.oauth.key-rotation.schedule:0 0 2 * * *}", zone = "UTC")
     public void rotateDueRealms() {
-        TrustedRealmBO platformRealm = realmResolver.platformRealm();
-        List<OAuthRealmBO> registeredRealms = realms.findAllByStoragePartition(platformRealm);
+        List<OAuthRealmBO> registeredRealms = scheduledRealms.findAll();
         List<TrustedRealmBO> activeRealms = registeredRealms.stream()
                 .filter(realm -> "ACTIVE".equals(realm.getStatus()))
                 .map(OAuthSigningKeyRotationServiceImpl::trustedRealm)
                 .toList();
-        if (activeRealms.stream().anyMatch(realm -> !projection.isIssuerReady(realm))) {
-            log.warn("OAuth key rotation deferred because an issuer projection is not ready; issuerCount={}",
-                    activeRealms.size());
-            return;
-        }
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setName("oauthSigningKeyRotation");
         for (TrustedRealmBO realm : activeRealms) {
             try {
+                if (!projection.isIssuerReady(realm)) {
+                    log.warn("OAuth key rotation deferred because an issuer projection is not ready; issuerHash={}",
+                            Digests.sha256Hex(realm.getIssuer().toASCIIString()));
+                    continue;
+                }
                 transaction.executeWithoutResult(status -> rotateRealm(realm));
             } catch (RuntimeException failure) {
                 log.error("OAuth key rotation failed; issuerHash={} failureType={}",

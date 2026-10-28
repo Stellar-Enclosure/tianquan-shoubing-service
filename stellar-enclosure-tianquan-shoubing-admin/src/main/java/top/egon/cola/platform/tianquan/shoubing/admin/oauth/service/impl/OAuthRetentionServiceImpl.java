@@ -53,8 +53,8 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
     private final OAuthAuthorizationRepository authorizationRepository;
     @Qualifier("oAuthRealmRepository")
     private final OAuthRealmRepository realmRepository;
-    @Qualifier("oauthManagementRealmResolver")
-    private final OAuthManagementRealmResolver managementRealmResolver;
+    @Qualifier("oauthScheduledRealmCatalog")
+    private final OAuthScheduledRealmCatalog scheduledRealms;
     @Qualifier("outboxStore")
     private final OutboxStore outboxStore;
     @Qualifier("oAuthInteractionRepository")
@@ -96,8 +96,7 @@ public class OAuthRetentionServiceImpl implements OAuthRetentionService {
 
     @Scheduled(cron = "0 0 * * * *", zone = "UTC")
     public void cleanExpiredAllRealms() {
-        TrustedRealmBO platformRealm = managementRealmResolver.platformRealm();
-        List<OAuthRealmBO> registeredRealms = realmRepository.findAllByStoragePartition(platformRealm);
+        List<OAuthRealmBO> registeredRealms = scheduledRealms.findAll();
         RuntimeException failure = null;
         for (OAuthRealmBO registeredRealm : registeredRealms) {
             TrustedRealmBO trustedRealm = trustedRealm(registeredRealm);

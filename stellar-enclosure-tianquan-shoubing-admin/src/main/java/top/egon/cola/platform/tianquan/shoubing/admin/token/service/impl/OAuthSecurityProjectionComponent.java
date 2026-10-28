@@ -12,6 +12,9 @@ import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthSecuritySnapshotBO;
@@ -20,7 +23,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransac
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
-import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthScheduledRealmCatalog;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository;
@@ -38,8 +41,9 @@ public class OAuthSecurityProjectionComponent {
     @Qualifier("oAuthAuthorizationRepository") private final OAuthAuthorizationRepository authorizationRepository;
     @Qualifier("oAuthClientRepository") private final OAuthClientRepository clientRepository;
     @Qualifier("oAuthRealmRepository") private final OAuthRealmRepository realmRepository;
-    @Qualifier("oauthManagementRealmResolver") private final OAuthManagementRealmResolver managementRealmResolver;
+    @Qualifier("oauthScheduledRealmCatalog") private final OAuthScheduledRealmCatalog scheduledRealms;
     @Qualifier("egonColaMybatisPlusClock") private final Clock clock;
+    @Qualifier("transactionManager") private final PlatformTransactionManager transactionManager;
 
     /** An outbox acknowledgement verifies a committed fact; it does not create that fact. */
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -99,11 +103,21 @@ public class OAuthSecurityProjectionComponent {
         return Objects.requireNonNull(realmState, "realmState").getRevision();
     }
 
-    @Transactional
     public void recoverRegisteredRealms() {
-        for (OAuthRealmBO row : realmRepository.findAllByStoragePartition(managementRealmResolver.platformRealm())) {
-            recover(trustedRealm(row));
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("OAUTH_RECOVERY_AMBIENT_TRANSACTION_UNSUPPORTED");
         }
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        RuntimeException failure = null;
+        for (OAuthRealmBO row : scheduledRealms.findAll()) {
+            try {
+                transaction.executeWithoutResult(status -> recover(trustedRealm(row)));
+            } catch (RuntimeException realmFailure) {
+                if (failure == null) failure = realmFailure;
+                else failure.addSuppressed(realmFailure);
+            }
+        }
+        if (failure != null) throw failure;
     }
 
     @Transactional

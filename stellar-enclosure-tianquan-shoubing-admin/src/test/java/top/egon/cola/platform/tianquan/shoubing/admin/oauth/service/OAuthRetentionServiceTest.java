@@ -32,7 +32,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRea
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
-import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthScheduledRealmCatalog;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthRetentionServiceImpl;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthRevocationBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthTokenBO;
@@ -58,7 +58,7 @@ class OAuthRetentionServiceTest {
     private final OAuthTokenRepository tokenRepository = mock(OAuthTokenRepository.class);
     private final OAuthAuthorizationRepository authorizationRepository = mock(OAuthAuthorizationRepository.class);
     private final OAuthRealmRepository realmRepository = mock(OAuthRealmRepository.class);
-    private final OAuthManagementRealmResolver managementRealmResolver = mock(OAuthManagementRealmResolver.class);
+    private final OAuthScheduledRealmCatalog scheduledRealms = mock(OAuthScheduledRealmCatalog.class);
     private final OutboxStore outboxStore = mock(OutboxStore.class);
     private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
@@ -79,7 +79,7 @@ class OAuthRetentionServiceTest {
         when(realmRepository.fenceObservedVersion(any())).thenReturn(true);
         when(outboxStore.countBacklog()).thenReturn(0L);
         service = new OAuthRetentionServiceImpl(auditRepository, revocationRepository, tokenRepository,
-                authorizationRepository, realmRepository, managementRealmResolver, outboxStore, interactions, authentications, receipts, deadLetters, inboxes, clock,
+                authorizationRepository, realmRepository, scheduledRealms, outboxStore, interactions, authentications, receipts, deadLetters, inboxes, clock,
                 java.time.Duration.ofSeconds(30), transactionManager,
                 mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthDeviceSessionRepository.class));
     }
@@ -216,18 +216,10 @@ class OAuthRetentionServiceTest {
 
     @Test
     void hourlyJobEnumeratesOnlyRegistryBackedRealms() {
-        TrustedRealmBO platformRealm = TrustedRealmBO.builder()
-                .issuer(URI.create("https://idp.example/platform"))
-                .realmKey("platform")
-                .realmType(RealmTypeEnum.PLATFORM)
-                .storagePartitionId(9000L)
-                .trustVersion(0L)
-                .build();
         OAuthRealmBO registeredTenant = OAuthRealmBO.builder()
                 .issuer(TENANT.getIssuer()).realmKey(TENANT.getRealmKey()).realmType(RealmTypeEnum.TENANT)
                 .businessTenantId(1001L).storagePartitionId(1001L).trustVersion(0L).status("CLOSED").build();
-        when(managementRealmResolver.platformRealm()).thenReturn(platformRealm);
-        when(realmRepository.findAllByStoragePartition(platformRealm)).thenReturn(List.of(registeredTenant));
+        when(scheduledRealms.findAll()).thenReturn(List.of(registeredTenant));
         when(auditRepository.findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500))).thenReturn(List.of());
         when(revocationRepository.findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500))).thenReturn(List.of());
         when(authorizationRepository.findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500)))
@@ -235,7 +227,7 @@ class OAuthRetentionServiceTest {
 
         service.cleanExpiredAllRealms();
 
-        verify(realmRepository).findAllByStoragePartition(platformRealm);
+        verify(scheduledRealms).findAll();
         verify(auditRepository).findExpiredBefore(eq(TENANT), any(), eq(0L), eq(500));
     }
     @Test

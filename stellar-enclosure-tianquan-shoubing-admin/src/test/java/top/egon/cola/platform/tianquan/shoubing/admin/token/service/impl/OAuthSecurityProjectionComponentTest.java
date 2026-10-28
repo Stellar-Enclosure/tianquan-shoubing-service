@@ -19,7 +19,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTy
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
-import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthScheduledRealmCatalog;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository;
@@ -39,12 +39,14 @@ class OAuthSecurityProjectionComponentTest {
     private final OAuthAuthorizationRepository authorizations = mock(OAuthAuthorizationRepository.class);
     private final OAuthClientRepository clients = mock(OAuthClientRepository.class);
     private final OAuthRealmRepository realms = mock(OAuthRealmRepository.class);
-    private final OAuthManagementRealmResolver management = mock(OAuthManagementRealmResolver.class);
+    private final OAuthScheduledRealmCatalog scheduledRealms = mock(OAuthScheduledRealmCatalog.class);
+    private final org.springframework.transaction.PlatformTransactionManager transactions = mock(org.springframework.transaction.PlatformTransactionManager.class);
     private final Map<String, OAuthSecurityStateBO> rows = new HashMap<>();
     private OAuthSecurityProjectionComponent component;
 
     @BeforeEach void setUp() {
-        component = new OAuthSecurityProjectionComponent(states, revocations, authorizations, clients, realms, management, Clock.fixed(NOW, ZoneOffset.UTC));
+        component = new OAuthSecurityProjectionComponent(states, revocations, authorizations, clients, realms, scheduledRealms,
+                Clock.fixed(NOW, ZoneOffset.UTC), transactions);
         var row = OAuthRealmBO.builder().issuer(REALM.getIssuer()).realmKey(REALM.getRealmKey()).status("ACTIVE").activeKid("key").build();
         when(realms.findByRealmKey(REALM)).thenReturn(Optional.of(row));
         when(realms.fenceRecovery(eq(REALM), any(), anyList(), anyBoolean())).thenReturn(true);
@@ -120,6 +122,62 @@ class OAuthSecurityProjectionComponentTest {
         assertEquals(0L, component.recover(REALM));
         verify(states, times(1)).findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self");
         verify(states).save(eq(REALM), argThat(value -> value.getTargetType() == OAuthSecurityTargetEnum.REALM), eq(0L));
+    }
+
+    @Test void scheduledRecoveryUsesIndependentTransactionsAndContinuesAfterARealmFailure() {
+        var first = scheduledRealm(101L); var second = scheduledRealm(102L);
+        when(scheduledRealms.findAll()).thenReturn(List.of(first, second));
+        when(transactions.getTransaction(any())).thenAnswer(call -> new org.springframework.transaction.support.SimpleTransactionStatus());
+        var worker = spy(component);
+        doThrow(new IllegalStateException("first realm unavailable")).when(worker).recover(argThat(realm -> realm.getStoragePartitionId() == 101L));
+        doReturn(0L).when(worker).recover(argThat(realm -> realm.getStoragePartitionId() == 102L));
+
+        assertThrows(IllegalStateException.class, worker::recoverRegisteredRealms);
+
+        verify(worker).recover(argThat(realm -> realm.getStoragePartitionId() == 101L));
+        verify(worker).recover(argThat(realm -> realm.getStoragePartitionId() == 102L));
+        verify(transactions, times(2)).getTransaction(any());
+        verify(transactions).rollback(any()); verify(transactions).commit(any());
+    }
+
+    @Test void recoveryRollsBackOnePrimaryWithoutUndoingAnotherPrimary() {
+        var first = new org.h2.jdbcx.JdbcDataSource();
+        var second = new org.h2.jdbcx.JdbcDataSource();
+        first.setURL("jdbc:h2:mem:" + java.util.UUID.randomUUID().toString().replace("-", "") + ";DB_CLOSE_DELAY=-1");
+        second.setURL("jdbc:h2:mem:" + java.util.UUID.randomUUID().toString().replace("-", "") + ";DB_CLOSE_DELAY=-1");
+        var firstJdbc = new org.springframework.jdbc.core.JdbcTemplate(first);
+        var secondJdbc = new org.springframework.jdbc.core.JdbcTemplate(second);
+        firstJdbc.execute("CREATE TABLE recovered (id BIGINT)"); secondJdbc.execute("CREATE TABLE recovered (id BIGINT)");
+        var router = new org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource() {
+            @Override protected Object determineCurrentLookupKey() { return org.slf4j.MDC.get("tenantId"); }
+        };
+        router.setTargetDataSources(Map.of("101", first, "102", second));
+        router.setDefaultTargetDataSource(first); router.afterPropertiesSet();
+        var source = new org.springframework.jdbc.datasource.LazyConnectionDataSourceProxy(router);
+        var jdbc = new org.springframework.jdbc.core.JdbcTemplate(source);
+        var manager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(source);
+        var worker = spy(new OAuthSecurityProjectionComponent(states, revocations, authorizations, clients, realms,
+                scheduledRealms, Clock.fixed(NOW, ZoneOffset.UTC), manager));
+        when(scheduledRealms.findAll()).thenReturn(List.of(scheduledRealm(101L), scheduledRealm(102L)));
+        doAnswer(call -> {
+            TrustedRealmBO realm = call.getArgument(0);
+            org.slf4j.MDC.put("tenantId", realm.getStoragePartitionId().toString());
+            try {
+                jdbc.update("INSERT INTO recovered VALUES (?)", realm.getStoragePartitionId());
+                if (realm.getStoragePartitionId() == 101L) throw new IllegalStateException("first realm unavailable");
+                return 0L;
+            } finally { org.slf4j.MDC.remove("tenantId"); }
+        }).when(worker).recover(any());
+
+        assertThrows(IllegalStateException.class, worker::recoverRegisteredRealms);
+        assertEquals(0, firstJdbc.queryForObject("SELECT count(*) FROM recovered", Integer.class));
+        assertEquals(1, secondJdbc.queryForObject("SELECT count(*) FROM recovered", Integer.class));
+    }
+
+    private static OAuthRealmBO scheduledRealm(long id) {
+        return OAuthRealmBO.builder().issuer(URI.create("https://idp.example/tenants/" + id))
+                .realmKey("tenant:" + id).realmType(RealmTypeEnum.TENANT).storagePartitionId(id)
+                .businessTenantId(id).trustVersion(0L).status("ACTIVE").build();
     }
 
     @Test void incompleteReplicaCannotInitializeGenerations() {

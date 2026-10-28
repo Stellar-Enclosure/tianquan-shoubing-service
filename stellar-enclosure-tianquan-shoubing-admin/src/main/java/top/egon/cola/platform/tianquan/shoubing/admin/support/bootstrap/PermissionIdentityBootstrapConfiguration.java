@@ -46,10 +46,13 @@ import top.egon.cola.component.outbox.migration.OutboxManagedDdlInitializer;
         "top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.converter"})
 @MapperScan(basePackages = "top.egon.cola.platform.tianquan.shoubing.admin", annotationClass = org.apache.ibatis.annotations.Mapper.class)
 @Import({top.egon.cola.platform.tianquan.shoubing.admin.identity.repo.IdentityDirectoryContext.class,
+        top.egon.cola.platform.tianquan.shoubing.admin.tenant.repo.IdentityTenantRepository.class,
+        top.egon.cola.platform.tianquan.shoubing.admin.tenant.domain.converter.IdentityTenantConverterImpl.class,
         top.egon.cola.platform.tianquan.shoubing.admin.identity.repository.IdentityUserRepository.class,
         top.egon.cola.platform.tianquan.shoubing.admin.identity.domain.converter.IdentityUserConverterImpl.class,
         top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.TenantIssuerServiceImpl.class,
         top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver.class,
+        top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthScheduledRealmCatalog.class,
         top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthClientServiceImpl.class,
         top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceServerServiceImpl.class,
         top.egon.cola.platform.tianquan.shoubing.admin.resource.service.impl.ResourceGrantTransactionCoordinator.class,

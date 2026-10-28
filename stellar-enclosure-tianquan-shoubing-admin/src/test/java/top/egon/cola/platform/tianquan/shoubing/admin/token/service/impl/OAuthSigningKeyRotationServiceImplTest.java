@@ -31,7 +31,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealm
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
-import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthScheduledRealmCatalog;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.config.OAuthKeyRotationProperties;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSigningKeyBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthKeyStatusEnum;
@@ -44,13 +44,6 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.service.SigningKeySe
 class OAuthSigningKeyRotationServiceImplTest {
 
     private static final Instant NOW = Instant.parse("2026-10-08T12:00:00Z");
-    private static final TrustedRealmBO PLATFORM = TrustedRealmBO.builder()
-            .issuer(URI.create("https://idp.example/platform"))
-            .realmKey("platform")
-            .realmType(RealmTypeEnum.PLATFORM)
-            .storagePartitionId(9000L)
-            .trustVersion(0L)
-            .build();
     private static final TrustedRealmBO TENANT = TrustedRealmBO.builder()
             .issuer(URI.create("https://idp.example/tenants/1001"))
             .realmKey("tenant:1001")
@@ -67,7 +60,7 @@ class OAuthSigningKeyRotationServiceImplTest {
     private final OAuthSecurityProjectionComponent projection = mock(OAuthSecurityProjectionComponent.class);
     private final OAuthAuditRepository audits = mock(OAuthAuditRepository.class);
     private final TransactionalOutbox outbox = mock(TransactionalOutbox.class);
-    private final OAuthManagementRealmResolver realmResolver = mock(OAuthManagementRealmResolver.class);
+    private final OAuthScheduledRealmCatalog scheduledRealms = mock(OAuthScheduledRealmCatalog.class);
     private final OAuthKeyRotationProperties properties = new OAuthKeyRotationProperties();
     private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
     private final OAuthSecurityStateRepository securityStates = mock(OAuthSecurityStateRepository.class);
@@ -78,9 +71,8 @@ class OAuthSigningKeyRotationServiceImplTest {
         TransactionStatus status = mock(TransactionStatus.class);
         when(status.isNewTransaction()).thenReturn(true);
         when(transactionManager.getTransaction(any())).thenReturn(status);
-        when(realmResolver.platformRealm()).thenReturn(PLATFORM);
         OAuthRealmBO row = realmRow();
-        when(realms.findAllByStoragePartition(PLATFORM)).thenReturn(List.of(row));
+        when(scheduledRealms.findAll()).thenReturn(List.of(row));
         when(realms.findByRealmKey(any(TrustedRealmBO.class))).thenReturn(Optional.of(row));
         when(realms.fenceActiveObservedVersion(TENANT)).thenReturn(true);
         when(securityStates.findByTarget(TENANT, OAuthSecurityTargetEnum.REALM, "self")).thenReturn(Optional.of(
@@ -91,7 +83,7 @@ class OAuthSigningKeyRotationServiceImplTest {
         when(audits.save(eq(TENANT), any(OAuthAuditBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
         service = new OAuthSigningKeyRotationServiceImpl(realms, keys, signingKeys, keyCipher,
-                projection, audits, outbox, realmResolver, properties, Clock.fixed(NOW, ZoneOffset.UTC),
+                projection, audits, outbox, scheduledRealms, properties, Clock.fixed(NOW, ZoneOffset.UTC),
                 transactionManager, securityStates);
     }
 
@@ -108,6 +100,25 @@ class OAuthSigningKeyRotationServiceImplTest {
         verify(signingKeys, never()).activate(any(), anyString(), anyLong());
         verify(signingKeys, never()).retire(any(), anyString(), anyLong());
         verify(transactionManager, never()).getTransaction(any());
+    }
+
+    @Test
+    void unavailableIssuerDoesNotBlockKeyRotationForOtherTenantPartitions() {
+        var second = TrustedRealmBO.builder().issuer(URI.create("https://idp.example/tenants/1002"))
+                .realmKey("tenant:1002").realmType(RealmTypeEnum.TENANT).storagePartitionId(1002L)
+                .businessTenantId(1002L).trustVersion(0L).build();
+        var secondRow = OAuthRealmBO.builder().issuer(second.getIssuer()).realmKey(second.getRealmKey())
+                .realmType(second.getRealmType()).storagePartitionId(1002L).businessTenantId(1002L)
+                .trustVersion(0L).status("ACTIVE").build();
+        when(scheduledRealms.findAll()).thenReturn(List.of(realmRow(), secondRow));
+        when(projection.isIssuerReady(TENANT)).thenReturn(false);
+        when(projection.isIssuerReady(second)).thenReturn(true);
+        when(realms.findByRealmKey(second)).thenReturn(Optional.empty());
+
+        service.rotateDueRealms();
+
+        verify(realms).findByRealmKey(second);
+        verify(transactionManager).getTransaction(any());
     }
 
     @Test
