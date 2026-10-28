@@ -22,6 +22,9 @@ public interface OAuthSecurityStateRepository {
 
     boolean fenceRealmWhenTokenAbsent(TrustedRealmBO realm, long id, long expectedVersion, String tokenDigest, Instant now);
 
+    boolean advanceRealmIfRevocationAbsent(TrustedRealmBO realm, long id, long expectedVersion,
+            OAuthSecurityTargetEnum targetType, String targetKey, long revision, Instant now);
+
     Optional<OAuthSecurityStateBO> findByTarget(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotNull OAuthSecurityTargetEnum targetType,

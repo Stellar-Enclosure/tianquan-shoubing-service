@@ -26,11 +26,14 @@ import top.egon.cola.component.common.mybatis.routing.EgonColaPhysicalTargetBO;
 import top.egon.cola.component.common.mybatis.routing.EgonColaRouteResult;
 import top.egon.cola.component.common.mybatis.routing.EgonColaTwoLevelRouteStrategy;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthRealmMapper;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthClientMapper;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthRealmConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthRealmPO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.impl.OAuthRealmRepositoryImpl;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.dao.OAuthRevocationMapper;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -90,6 +93,72 @@ class OAuthRealmFenceTest {
         String sql = statement.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
         assertThat(sql).startsWith("update ").contains("tenant_id = ?", "id = ?", "realm_key = ?", "version = ?",
                 "version = version + 1", "deleted_at is null").doesNotContain("select", "for update");
+        MDC.put("tenantId", "101");
+        try {
+            Executor executor = mock(Executor.class);
+            var invocation = new Invocation(executor, Executor.class.getMethod("update", MappedStatement.class, Object.class),
+                    new Object[]{statement, parameters});
+            assertThatCode(() -> new EgonColaOriginalSqlGuardInterceptor(properties).intercept(invocation)).doesNotThrowAnyException();
+            var handler = configuration.newStatementHandler(executor, statement, parameters, RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
+            assertThatCode(() -> routeGuard.beforePrepare(handler, null, null)).doesNotThrowAnyException();
+        } finally {
+            MDC.remove("tenantId");
+        }
+    }
+
+    @Test
+    void clientFenceIsTenantScopedAndPassesTheWriteGuards() throws Exception {
+        var configuration = new Configuration();
+        String resource = "mapper/oauth/OAuthClientMapper.xml";
+        try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            new XMLMapperBuilder(input, configuration, resource, configuration.getSqlFragments()).parse();
+        }
+        configuration.setEnvironment(new Environment("test", new SpringManagedTransactionFactory(), mock(DataSource.class)));
+        var properties = new EgonColaMybatisPlusProperties();
+        var tenantGuard = new EgonColaTenantIdGuardInnerInterceptor(() -> "service:tianquan-shoubing", properties);
+        new CommonAnnotationBeanPostProcessor().postProcessBeforeInitialization(tenantGuard, "sqlGuard");
+        var routeGuard = new EgonColaLocalWriteGuardInnerInterceptor(query -> new EgonColaRouteResult(
+                List.of(new EgonColaPhysicalTargetBO("primary", "tianquan_oauth", query.logicalTable())), "a".repeat(64)),
+                tenantGuard, mock(EgonColaTwoLevelRouteStrategy.class), Map.of());
+        var parameters = Map.<String, Object>of("tenantId", 101L, "id", 42L, "clientId", "client-1",
+                "expectedVersion", 3L, "now", NOW, "actor", "service:tianquan-shoubing");
+        var statement = configuration.getMappedStatement(OAuthClientMapper.class.getName() + ".fenceObservedVersion");
+        String sql = statement.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
+        assertThat(sql).startsWith("update ").contains("tenant_id = ?", "id = ?", "client_id = ?", "version = ?",
+                "version = version + 1", "deleted_at is null").doesNotContain("select", "for update");
+        MDC.put("tenantId", "101");
+        try {
+            Executor executor = mock(Executor.class);
+            var invocation = new Invocation(executor, Executor.class.getMethod("update", MappedStatement.class, Object.class),
+                    new Object[]{statement, parameters});
+            assertThatCode(() -> new EgonColaOriginalSqlGuardInterceptor(properties).intercept(invocation)).doesNotThrowAnyException();
+            var handler = configuration.newStatementHandler(executor, statement, parameters, RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
+            assertThatCode(() -> routeGuard.beforePrepare(handler, null, null)).doesNotThrowAnyException();
+        } finally {
+            MDC.remove("tenantId");
+        }
+    }
+
+    @Test
+    void observedRevocationFenceIsVersionedAndRoutesAsAWrite() throws Exception {
+        var configuration = new Configuration();
+        String resource = "mapper/token/OAuthRevocationMapper.xml";
+        try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            new XMLMapperBuilder(input, configuration, resource, configuration.getSqlFragments()).parse();
+        }
+        configuration.setEnvironment(new Environment("test", new SpringManagedTransactionFactory(), mock(DataSource.class)));
+        var properties = new EgonColaMybatisPlusProperties();
+        var tenantGuard = new EgonColaTenantIdGuardInnerInterceptor(() -> "service:tianquan-shoubing", properties);
+        new CommonAnnotationBeanPostProcessor().postProcessBeforeInitialization(tenantGuard, "sqlGuard");
+        var routeGuard = new EgonColaLocalWriteGuardInnerInterceptor(query -> new EgonColaRouteResult(
+                List.of(new EgonColaPhysicalTargetBO("primary", "tianquan_oauth", query.logicalTable())), "a".repeat(64)),
+                tenantGuard, mock(EgonColaTwoLevelRouteStrategy.class), Map.of());
+        var parameters = Map.<String, Object>of("tenantId", 101L, "id", 42L, "targetType", OAuthSecurityTargetEnum.JTI,
+                "targetKey", "123456", "expectedVersion", 3L, "now", NOW, "actor", "service:tianquan-shoubing");
+        var statement = configuration.getMappedStatement(OAuthRevocationMapper.class.getName() + ".fenceObservedVersion");
+        String sql = statement.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
+        assertThat(sql).startsWith("update ").contains("tenant_id = ?", "id = ?", "target_type = ?", "target_key = ?",
+                "version = ?", "version = version + 1", "deleted_at is null").doesNotContain("select", "for update");
         MDC.put("tenantId", "101");
         try {
             Executor executor = mock(Executor.class);

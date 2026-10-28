@@ -43,6 +43,7 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
     String ATTRIBUTES_ATTRIBUTE = "oauthAuthorizationAttributes";
     String PRINCIPAL_TYPE_ATTRIBUTE = "oauthPrincipalType";
     String AUTHORIZATION_STATUS_ATTRIBUTE = "oauthAuthorizationStatus";
+    String AUTHORIZATION_VERSION_ATTRIBUTE = "oauthAuthorizationVersion";
     String ABSOLUTE_EXPIRES_AT_ATTRIBUTE = "oauthAbsoluteExpiresAt";
     String REVOKED_AT_ATTRIBUTE = "oauthRevokedAt";
     String REQUESTED_AUDIENCES_ATTRIBUTE = "oauthRequestedAudiences";
@@ -82,6 +83,7 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
                 .attribute(ATTRIBUTES_ATTRIBUTE, authorization.getAttributes())
                 .attribute(PRINCIPAL_TYPE_ATTRIBUTE, authorization.getPrincipalType())
                 .attribute(AUTHORIZATION_STATUS_ATTRIBUTE, authorization.getStatus())
+                .attribute(AUTHORIZATION_VERSION_ATTRIBUTE, authorization.getVersion())
                 .attribute(ABSOLUTE_EXPIRES_AT_ATTRIBUTE, authorization.getAbsoluteExpiresAt())
                 .attribute(REQUESTED_AUDIENCES_ATTRIBUTE, List.copyOf(authorization.getAudiences()))
                 .attribute(REFRESH_GENERATION_ATTRIBUTE, authorization.getRefreshGeneration());
@@ -389,7 +391,8 @@ public interface SasAuthorizationConverter extends BaseConverter<OAuthAuthorizat
         };
         builder.token(sasToken, metadata -> {
             metadata.put(OAuth2Authorization.Token.INVALIDATED_METADATA_NAME,
-                    token.getMetadata().isInvalidated() || token.getMetadata().isCodeConsumed());
+                    token.getMetadata().isInvalidated() || token.getMetadata().isCodeConsumed()
+                            || token.getRevokedAt() != null || token.getConsumedAt() != null);
             Map<String, Object> claims = claimsMap(token.getMetadata().getClaims(), objectMapper);
             if (claims != null && !claims.isEmpty()) {
                 metadata.put(OAuth2Authorization.Token.CLAIMS_METADATA_NAME, claims);

@@ -69,6 +69,10 @@ public interface OAuthClientMapper extends EgonColaMapper<OAuthClientPO> {
             @Param("clientId") @NotBlank(groups = EgonColaModelValidationGroups.Query.class)
             @Size(max = 128, groups = EgonColaModelValidationGroups.Query.class) String clientId);
 
+    int fenceObservedVersion(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("clientId") String clientId, @Param("expectedVersion") long expectedVersion,
+            @Param("now") java.time.Instant now, @Param("actor") String actor);
+
     @Validated(EgonColaModelValidationGroups.Query.class)
     List<OAuthClientPO> selectDirectory(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)

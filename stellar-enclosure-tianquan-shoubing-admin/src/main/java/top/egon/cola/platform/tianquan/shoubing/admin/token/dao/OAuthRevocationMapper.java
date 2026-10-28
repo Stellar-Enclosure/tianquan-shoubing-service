@@ -43,6 +43,10 @@ public interface OAuthRevocationMapper extends EgonColaMapper<OAuthRevocationPO>
             @Param("targetKey") @NotBlank(groups = EgonColaModelValidationGroups.Query.class)
             @Size(max = 128, groups = EgonColaModelValidationGroups.Query.class) String targetKey);
 
+    int fenceObservedVersion(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("targetType") OAuthSecurityTargetEnum targetType, @Param("targetKey") String targetKey,
+            @Param("expectedVersion") long expectedVersion, @Param("now") Instant now, @Param("actor") String actor);
+
     @Validated(EgonColaModelValidationGroups.Query.class)
     List<OAuthRevocationPO> selectByRevisionAfter(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)

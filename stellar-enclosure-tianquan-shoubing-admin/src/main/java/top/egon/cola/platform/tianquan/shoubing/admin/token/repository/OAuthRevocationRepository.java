@@ -29,6 +29,8 @@ public interface OAuthRevocationRepository {
             @NotNull OAuthSecurityTargetEnum targetType,
             @NotBlank @Size(max = 128) String targetKey);
 
+    boolean fenceObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm, @NotNull OAuthRevocationBO revocation);
+
     List<OAuthRevocationBO> findByRevisionAfter(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @PositiveOrZero long afterRevision,

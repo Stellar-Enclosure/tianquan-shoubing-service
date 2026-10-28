@@ -116,8 +116,9 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
     private void revokeInternal(TrustedRealmBO trustedRealm, RevokeOAuthTokenCommand command, boolean tokenWasObserved) {
         TrustedRealmBO realm = requireRealm(trustedRealm);
         RevokeOAuthTokenCommand input = Objects.requireNonNull(command, "command");
-        realmRepository.findByRealmKeyForUpdate(realm)
-                .orElseThrow(() -> unavailable("OAUTH_REVOCATION_REALM_MISSING"));
+        if (!realmRepository.fenceObservedVersion(realm)) {
+            throw unavailable("OAUTH_REVOCATION_REALM_NOT_READY");
+        }
         OAuthSecurityStateBO realmState = requiredState(realm, OAuthSecurityTargetEnum.REALM, "self");
         OAuthTokenBO tokenCandidate = tokenRepository.findByTokenDigest(realm, input.getTokenDigest())
                 .orElse(null);
@@ -138,9 +139,11 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         }
         OAuthClientBO clientCandidate = clientRepository.findById(realm, authorizationCandidate.getClientPk())
                 .orElseThrow(() -> unavailable("OAUTH_REVOCATION_CLIENT_MISSING"));
-        OAuthClientBO client = clientRepository.findByClientIdForUpdate(realm, clientCandidate.getClientId())
-                .filter(value -> Objects.equals(value.getId(), input.getClientPk()))
-                .orElseThrow(TokenRevocationServiceImpl::invalidClient);
+        if (!Objects.equals(clientCandidate.getId(), input.getClientPk())) { throw invalidClient(); }
+        if (!clientRepository.fenceObservedVersion(realm, clientCandidate)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth client changed before token revocation");
+        }
+        OAuthClientBO client = clientCandidate;
         OAuthSecurityStateBO clientState = requiredState(
                 realm, OAuthSecurityTargetEnum.CLIENT, Long.toString(client.getId()));
         OAuthSecurityStateBO subjectState = "USER".equals(authorizationCandidate.getPrincipalType())
@@ -174,13 +177,16 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
             tokenRepository.save(realm, revoked(token, now), token.getVersion());
         }
 
-        OAuthRevocationBO current = revocationRepository.findByTargetForUpdate(realm, targetType, targetKey)
+        OAuthRevocationBO current = revocationRepository.findByTarget(realm, targetType, targetKey)
                 .orElse(null);
         OAuthSecurityChangedEvent event;
         boolean enqueue = current == null;
         if (current == null) {
             long revision = nextRevision(realmState, clientState, subjectState);
-            saveRealmRevision(realm, realmState, revision);
+            if (!stateRepository.advanceRealmIfRevocationAbsent(realm, realmState.getId(), realmState.getVersion(),
+                    targetType, targetKey, revision, now)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth revocation or realm state changed");
+            }
             OAuthRevocationBO created = OAuthRevocationBO.builder()
                     .version(0L)
                     .targetType(targetType)
@@ -196,6 +202,9 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                     current.getExpiresAt(), current.getReasonCode(), current.getRevokedAt());
             saveAuditIfAbsent(realm, event, "TOKEN_REVOKED");
         } else {
+            if (!revocationRepository.fenceObservedVersion(realm, current)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth revocation changed after the candidate read");
+            }
             if (current.getExpiresAt() != null && expiresAt.isAfter(current.getExpiresAt())) {
                 throw unavailable("OAUTH_REVOCATION_EXPIRY_CONFLICT");
             }
@@ -305,6 +314,14 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                     .acr(authorization.getAcr())
                     .attributes(authorization.getAttributes())
                     .absoluteExpiresAt(authorization.getAbsoluteExpiresAt())
+                    .requestedScopes(authorization.getRequestedScopes())
+                    .resourceUri(authorization.getResourceUri())
+                    .authenticationJtiDigest(authorization.getAuthenticationJtiDigest())
+                    .clientBrowserBindingDigest(authorization.getClientBrowserBindingDigest())
+                    .interactionId(authorization.getInteractionId())
+                    .deviceSessionId(authorization.getDeviceSessionId())
+                    .refreshGeneration(authorization.getRefreshGeneration())
+                    .retainUntil(authorization.getRetainUntil())
                     .revokedAt(now)
                     .build();
             authorizationRepository.save(realm, changed, authorization.getVersion());
@@ -402,7 +419,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
             TrustedRealmBO realm,
             OAuthSecurityTargetEnum targetType,
             String targetKey) {
-        return stateRepository.findByTargetForUpdate(realm, targetType, targetKey)
+        return stateRepository.findByTarget(realm, targetType, targetKey)
                 .orElseThrow(() -> unavailable("OAUTH_SECURITY_STATE_MISSING"));
     }
 
@@ -447,6 +464,8 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                 .consumedAt(current.getConsumedAt())
                 .revokedAt(now)
                 .metadata(current.getMetadata())
+                .refreshGeneration(current.getRefreshGeneration())
+                .retainUntil(current.getRetainUntil())
                 .build();
     }
 

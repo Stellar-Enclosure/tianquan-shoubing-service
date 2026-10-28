@@ -91,6 +91,19 @@ public class OAuthClientRepositoryImpl extends EgonColaRepository<OAuthClientMap
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceObservedVersion(TrustedRealmBO trustedRealm, OAuthClientBO client) {
+        Objects.requireNonNull(client, "client");
+        String clientId = required(client.getClientId(), "clientId");
+        if (client.getId() == null || client.getId() <= 0L || client.getVersion() < 0L) {
+            throw new IllegalArgumentException("OAUTH_CLIENT_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(trustedRealm, tenantId -> baseMapper.fenceObservedVersion(
+                tenantId, client.getId(), clientId, client.getVersion(),
+                clock.instant().truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<OAuthClientBO> findAllByRealm(@NotNull @Valid TrustedRealmBO trustedRealm) {
         return withTrustedStoragePartition(trustedRealm, tenantId -> baseMapper

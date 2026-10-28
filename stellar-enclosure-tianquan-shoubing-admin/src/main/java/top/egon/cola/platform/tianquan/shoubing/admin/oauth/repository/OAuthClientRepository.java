@@ -28,6 +28,8 @@ public interface OAuthClientRepository {
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotBlank @Size(max = 128) String clientId);
 
+    boolean fenceObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm, @NotNull OAuthClientBO client);
+
     List<OAuthClientBO> findAllByRealm(@NotNull @Valid TrustedRealmBO trustedRealm);
 
     OAuthClientBO save(

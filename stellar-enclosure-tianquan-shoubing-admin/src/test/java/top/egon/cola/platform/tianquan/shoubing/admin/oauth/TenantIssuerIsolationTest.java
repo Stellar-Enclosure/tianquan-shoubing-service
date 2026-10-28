@@ -642,12 +642,19 @@ class TenantIssuerIsolationTest {
         OAuth2Authorization sas = authorizationConverter.toTarget(source, registeredClient, objectMapper);
         OAuthAuthorizationBO restored = authorizationConverter.toSource(sas, null, objectMapper);
         assertEquals("601", sas.getId());
+        Long observedVersion = sas.getAttribute(SasAuthorizationConverter.AUTHORIZATION_VERSION_ATTRIBUTE);
+        assertEquals(0L, observedVersion.longValue());
         assertEquals("one-time-code", sas.getToken(OAuth2AuthorizationCode.class).getToken().getTokenValue());
         assertEquals("signed-access-token", sas.getAccessToken().getToken().getTokenValue());
         assertEquals(claims.getSubject(), restored.getTokens().stream()
                 .filter(value -> value.getTokenType() == OAuthTokenTypeEnum.ACCESS)
                 .findFirst().orElseThrow().getMetadata().getClaims().getSubject());
         assertEquals(attributes, restored.getAttributes());
+        code.setConsumedAt(NOW);
+        access.setRevokedAt(NOW);
+        OAuth2Authorization revoked = authorizationConverter.toTarget(source, registeredClient, objectMapper);
+        assertTrue(revoked.getToken(OAuth2AuthorizationCode.class).isInvalidated());
+        assertTrue(revoked.getAccessToken().isInvalidated());
 
         OAuthConsentBO consent = OAuthConsentBO.builder()
                 .id(901L)

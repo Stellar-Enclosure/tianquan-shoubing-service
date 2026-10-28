@@ -98,6 +98,10 @@ class TokenRevocationServiceTest {
             return new OutboxReceipt(message.messageId(), message.idempotencyKey(), true);
         });
         when(audits.findByEventId(eq(REALM), any())).thenReturn(Optional.empty());
+        when(realms.fenceObservedVersion(REALM)).thenReturn(true);
+        when(clients.fenceObservedVersion(eq(REALM), any())).thenReturn(true);
+        when(states.advanceRealmIfRevocationAbsent(eq(REALM), anyLong(), anyLong(), any(), anyString(), anyLong(), any())).thenReturn(true);
+        when(revocations.fenceObservedVersion(eq(REALM), any())).thenReturn(true);
         service = new TokenRevocationServiceImpl(
                 realms, clients, authorizations, tokens, states, revocations, audits,
                 outbox, projection, managementRealms, clock, Duration.ofSeconds(30), transactionManager);
@@ -120,17 +124,17 @@ class TokenRevocationServiceTest {
         OAuthAuthorizationBO authorization = authorization();
         OAuthTokenBO token = token();
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(realmState));
         when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(token));
         when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization));
         when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
         when(clients.findByClientIdForUpdate(REALM, "web-client")).thenReturn(Optional.of(client));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
                 .thenReturn(Optional.of(clientState));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.of(subjectState));
-        when(revocations.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.JTI, "123456"))
+        when(revocations.findByTarget(REALM, OAuthSecurityTargetEnum.JTI, "123456"))
                 .thenReturn(Optional.empty(), Optional.of(pendingJti()));
         when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), eq(0L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
@@ -149,6 +153,12 @@ class TokenRevocationServiceTest {
         callbacks.forEach(TransactionSynchronization::afterCommit);
 
         ArgumentCaptor<OAuthTokenBO> tokenChange = ArgumentCaptor.forClass(OAuthTokenBO.class);
+        verify(realms).fenceObservedVersion(REALM);
+        verify(realms, never()).findByRealmKeyForUpdate(REALM);
+        verify(clients).fenceObservedVersion(REALM, client);
+        verify(clients, never()).findByClientIdForUpdate(any(), anyString());
+        verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
+        verify(revocations, never()).findByTargetForUpdate(any(), any(), anyString());
         verify(tokens).save(eq(REALM), tokenChange.capture(), eq(0L));
         verify(authorizations, never()).findByIdForUpdate(any(), anyLong());
         verify(tokens, never()).findByTokenDigestForUpdate(any(), anyString());
@@ -168,10 +178,69 @@ class TokenRevocationServiceTest {
     }
 
     @Test
+    void staleRealmCandidateRollsBackBeforeTokenRevocation() {
+        when(realms.fenceObservedVersion(REALM)).thenReturn(false);
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        var command = RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("ADMIN_REVOKE").build();
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> service.revoke(REALM, command)))
+                .isInstanceOf(OAuth2AuthenticationException.class)
+                .satisfies(error -> assertThat(((OAuth2AuthenticationException) error).getError().getErrorCode())
+                        .isEqualTo("temporarily_unavailable"));
+        verify(transactionManager).rollback(any());
+        verifyNoInteractions(tokens, states, authorizations, revocations);
+    }
+
+    @Test
+    void staleClientCandidateRollsBackBeforeTokenOrOutboxWrites() {
+        OAuthTokenBO token = token();
+        OAuthClientBO client = client();
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(token));
+        when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization()));
+        when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
+        when(clients.fenceObservedVersion(REALM, client)).thenReturn(false);
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        var command = RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("ADMIN_REVOKE").build();
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> service.revoke(REALM, command)))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(transactionManager).rollback(any());
+        verify(tokens, never()).save(any(), any(), anyLong());
+        verifyNoInteractions(revocations);
+        verify(outbox, never()).enqueue(any(OutboxMessage.class));
+    }
+
+    @Test
+    void revocationMissingOnReplicaButPresentOnPrimaryRollsBackBeforeOutbox() {
+        OAuthTokenBO token = token(); OAuthClientBO client = client();
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 8L)));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L)));
+        when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(token));
+        when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization()));
+        when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
+        when(revocations.findByTarget(REALM, OAuthSecurityTargetEnum.JTI, "123456")).thenReturn(Optional.empty());
+        when(states.advanceRealmIfRevocationAbsent(eq(REALM), anyLong(), anyLong(), any(), anyString(), anyLong(), any())).thenReturn(false);
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> service.revoke(REALM,
+                RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("ADMIN_REVOKE").build())))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(transactionManager).rollback(any());
+        verify(revocations, never()).save(any(), any(), anyLong());
+        verify(outbox, never()).enqueue(any(OutboxMessage.class));
+    }
+
+    @Test
     void invalidClientBindingDoesNotWriteOrEnqueue() {
         OAuthTokenBO token = token();
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
         when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(token));
         when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization()));
@@ -193,21 +262,30 @@ class TokenRevocationServiceTest {
         OAuthSecurityStateBO clientState = securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 8L);
         OAuthSecurityStateBO subjectState = securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L);
         OAuthClientBO client = client();
-        OAuthAuthorizationBO authorization = authorization();
+        OAuthAuthorizationBO authorization = authorization()
+                .setRequestedScopes(List.of("openid", "orders.read"))
+                .setResourceUri("https://api.example/resource")
+                .setAuthenticationJtiDigest("d".repeat(64))
+                .setClientBrowserBindingDigest("e".repeat(64))
+                .setInteractionId("interaction-1")
+                .setDeviceSessionId(73L)
+                .setRefreshGeneration(7L)
+                .setRetainUntil(NOW.plusSeconds(90_000));
         OAuthTokenBO access = token().setId(701L).setTokenType(OAuthTokenTypeEnum.ACCESS)
                 .setTokenDigest("b".repeat(64)).setJti("123457");
         OAuthTokenBO refresh = token().setId(702L).setTokenType(OAuthTokenTypeEnum.REFRESH)
-                .setTokenDigest("c".repeat(64)).setJti("123458");
+                .setTokenDigest("c".repeat(64)).setJti("123458").setRefreshGeneration(7L)
+                .setRetainUntil(NOW.plusSeconds(90_000));
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(realmState));
         when(tokens.findByTokenDigest(REALM, refresh.getTokenDigest())).thenReturn(Optional.of(refresh));
         when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization));
         when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
         when(clients.findByClientIdForUpdate(REALM, "web-client")).thenReturn(Optional.of(client));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
                 .thenReturn(Optional.of(clientState));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.of(subjectState));
         when(tokens.findByTokenDigest(eq(REALM), anyString())).thenAnswer(invocation -> {
             String digest = invocation.getArgument(1);
@@ -230,7 +308,7 @@ class TokenRevocationServiceTest {
                     }
                     return List.of();
                 });
-        when(revocations.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.AUTHORIZATION, "700"))
+        when(revocations.findByTarget(REALM, OAuthSecurityTargetEnum.AUTHORIZATION, "700"))
                 .thenReturn(Optional.empty(), Optional.of(OAuthRevocationBO.builder()
                         .id(801L).version(0L).targetType(OAuthSecurityTargetEnum.AUTHORIZATION)
                         .targetKey("700").reasonCode("ADMIN_REVOKE").revokedAt(NOW)
@@ -259,9 +337,23 @@ class TokenRevocationServiceTest {
         ArgumentCaptor<OAuthAuthorizationBO> authorizationChange = ArgumentCaptor.forClass(OAuthAuthorizationBO.class);
         verify(authorizations).save(eq(REALM), authorizationChange.capture(), eq(0L));
         assertThat(authorizationChange.getValue().getStatus()).isEqualTo("REVOKED");
+        assertThat(authorizationChange.getValue().getRequestedScopes()).isEqualTo(authorization.getRequestedScopes());
+        assertThat(authorizationChange.getValue().getResourceUri()).isEqualTo(authorization.getResourceUri());
+        assertThat(authorizationChange.getValue().getAuthenticationJtiDigest()).isEqualTo(authorization.getAuthenticationJtiDigest());
+        assertThat(authorizationChange.getValue().getClientBrowserBindingDigest()).isEqualTo(authorization.getClientBrowserBindingDigest());
+        assertThat(authorizationChange.getValue().getInteractionId()).isEqualTo(authorization.getInteractionId());
+        assertThat(authorizationChange.getValue().getDeviceSessionId()).isEqualTo(authorization.getDeviceSessionId());
+        assertThat(authorizationChange.getValue().getRefreshGeneration()).isEqualTo(authorization.getRefreshGeneration());
+        assertThat(authorizationChange.getValue().getRetainUntil()).isEqualTo(authorization.getRetainUntil());
+        assertAuthorizationRevocationPassesPersistenceGuards(authorization, authorizationChange.getValue());
         ArgumentCaptor<OAuthTokenBO> tokenChanges = ArgumentCaptor.forClass(OAuthTokenBO.class);
         verify(tokens, org.mockito.Mockito.times(2)).save(eq(REALM), tokenChanges.capture(), eq(0L));
         assertThat(tokenChanges.getAllValues()).allSatisfy(value -> assertThat(value.getRevokedAt()).isEqualTo(NOW));
+        assertThat(tokenChanges.getAllValues()).filteredOn(value -> value.getTokenType() == OAuthTokenTypeEnum.REFRESH)
+                .singleElement().satisfies(value -> {
+                    assertThat(value.getRefreshGeneration()).isEqualTo(7L);
+                    assertThat(value.getRetainUntil()).isEqualTo(NOW.plusSeconds(90_000));
+                });
         ArgumentCaptor<OutboxMessage> outboxMessage = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outbox).enqueue(outboxMessage.capture());
         OAuthSecurityChangedEvent event = (OAuthSecurityChangedEvent) outboxMessage.getValue().payload();
@@ -276,15 +368,15 @@ class TokenRevocationServiceTest {
         OAuthAuthorizationBO authorization = authorization();
         OAuthClientBO client = client();
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
         when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(refresh));
         when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization));
         when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
         when(clients.findByClientIdForUpdate(REALM, "web-client")).thenReturn(Optional.of(client));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 8L)));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L)));
         org.mockito.Mockito.doThrow(new org.springframework.dao.OptimisticLockingFailureException("stale authorization"))
                 .when(authorizations).save(eq(REALM), any(), eq(0L));
@@ -301,7 +393,7 @@ class TokenRevocationServiceTest {
     @Test
     void observedTokenMissingOnReplicaIsRetryableWhileUnknownRevocationRemainsIdempotent() {
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
         when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.empty());
         when(states.fenceRealmWhenTokenAbsent(REALM, 1L, 0L, TOKEN_DIGEST, NOW)).thenReturn(true);
@@ -317,7 +409,7 @@ class TokenRevocationServiceTest {
     @Test
     void replicaMissCannotReportAnUnknownTokenWhenThePrimaryConditionDoesNotConfirmAbsence() {
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
         when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.empty());
         when(states.fenceRealmWhenTokenAbsent(REALM, 1L, 0L, TOKEN_DIGEST, NOW)).thenReturn(false);
@@ -337,15 +429,15 @@ class TokenRevocationServiceTest {
         OAuthTokenBO refresh = token().setTokenType(OAuthTokenTypeEnum.REFRESH);
         OAuthAuthorizationBO authorization = authorization(); OAuthClientBO client = client();
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
         when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(refresh), Optional.empty());
         when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization));
         when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
         when(clients.findByClientIdForUpdate(REALM, "web-client")).thenReturn(Optional.of(client));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 8L)));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L)));
         var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
         var command = RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("REFRESH_TOKEN_REPLAY").build();
@@ -368,7 +460,7 @@ class TokenRevocationServiceTest {
         OAuthSecurityStateBO realmState = securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L);
         OAuthClientBO client = client();
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(realmState));
         when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
         when(clients.findByClientIdForUpdate(REALM, "web-client")).thenReturn(Optional.of(client));
@@ -405,7 +497,7 @@ class TokenRevocationServiceTest {
         when(managementRealms.platformRealm()).thenReturn(platform);
         when(realms.findAllByStoragePartition(platform)).thenReturn(List.of(registered));
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(registered));
-        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
                 .thenReturn(Optional.of(realmState));
         when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.empty());
@@ -432,6 +524,31 @@ class TokenRevocationServiceTest {
             OAuthSecurityTargetEnum targetType, String targetKey, long generation, long revision) {
         return OAuthSecurityStateBO.builder().id(1L).version(0L).targetType(targetType).targetKey(targetKey)
                 .generation(generation).enabled(true).revision(revision).reasonCode("INITIALIZED").build();
+    }
+
+    private static void assertAuthorizationRevocationPassesPersistenceGuards(OAuthAuthorizationBO current, OAuthAuthorizationBO changed) {
+        var mapper = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthAuthorizationMapper.class);
+        var converter = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthAuthorizationConverter.class);
+        var cipher = mock(top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthPayloadCipherComponent.class);
+        var row = new top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthAuthorizationPO();
+        row.setId(current.getId()); row.setVersion(current.getVersion()); row.setClientPk(current.getClientPk());
+        row.setPrincipalName(current.getPrincipalName()); row.setPrincipalType(current.getPrincipalType()); row.setGrantType(current.getGrantType());
+        row.setAudiences(current.getAudiences()); row.setAuthTime(current.getAuthTime()); row.setAcr(current.getAcr());
+        row.setAbsoluteExpiresAt(current.getAbsoluteExpiresAt()); row.setRequestedScopes(current.getRequestedScopes());
+        row.setResourceUri(current.getResourceUri()); row.setAuthenticationJtiDigest(current.getAuthenticationJtiDigest());
+        row.setClientBrowserBindingDigest(current.getClientBrowserBindingDigest()); row.setInteractionId(current.getInteractionId());
+        row.setDeviceSessionId(current.getDeviceSessionId());
+        when(mapper.selectActiveById(1001L, current.getId())).thenReturn(row);
+        when(converter.toTarget(eq(REALM), eq(cipher), any(), anyString(), eq(row))).thenReturn(current);
+        when(converter.toSource(eq(REALM), eq(cipher), any(), anyString(), eq(changed)))
+                .thenReturn(new top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthAuthorizationPO());
+        when(mapper.updateExpectedVersion(eq(1001L), any(), eq(current.getVersion()))).thenReturn(1);
+        var repository = new top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.impl.OAuthAuthorizationRepositoryImpl(
+                mapper, new top.egon.cola.component.common.mybatis.autoconfigure.EgonColaMybatisPlusProperties(), converter,
+                cipher, new com.fasterxml.jackson.databind.ObjectMapper(), () -> "service:tianquan-shoubing", Clock.fixed(NOW, ZoneOffset.UTC));
+
+        repository.save(REALM, changed, current.getVersion());
+        verify(mapper).updateExpectedVersion(eq(1001L), any(), eq(current.getVersion()));
     }
 
     private static OAuthClientBO client() {

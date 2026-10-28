@@ -85,6 +85,19 @@ public class OAuthRevocationRepositoryImpl extends EgonColaRepository<OAuthRevoc
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceObservedVersion(TrustedRealmBO realm, OAuthRevocationBO revocation) {
+        Objects.requireNonNull(revocation, "revocation");
+        String key = requireRevocationTarget(revocation.getTargetType(), revocation.getTargetKey());
+        if (revocation.getId() == null || revocation.getId() <= 0 || revocation.getVersion() < 0) {
+            throw new IllegalArgumentException("OAUTH_REVOCATION_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceObservedVersion(
+                tenant, revocation.getId(), revocation.getTargetType(), key, revocation.getVersion(),
+                clock.instant().truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<OAuthRevocationBO> findByRevisionAfter(
             @NotNull @Valid TrustedRealmBO trustedRealm,

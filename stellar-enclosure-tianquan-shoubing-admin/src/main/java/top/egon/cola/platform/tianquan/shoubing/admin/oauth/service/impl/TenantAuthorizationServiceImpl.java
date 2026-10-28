@@ -111,9 +111,15 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
         Long authorizationId = parseSasStorageId(authorization.getId());
         OAuthAuthorizationBO current = authorizationId == null
                 ? null
-                : authorizationRepository.findByIdForUpdate(trustedRealm, authorizationId).orElse(null);
+                : authorizationRepository.findById(trustedRealm, authorizationId).orElse(null);
         if (authorizationId != null && current == null) {
-            throw new IllegalStateException("OAUTH_AUTHORIZATION_NOT_FOUND");
+            throw new org.springframework.dao.TransientDataAccessResourceException("OAuth authorization is not yet visible");
+        }
+        if (current != null) {
+            Object observedVersion = authorization.getAttribute(SasAuthorizationConverter.AUTHORIZATION_VERSION_ATTRIBUTE);
+            if (!(observedVersion instanceof Long version) || version.longValue() != current.getVersion()) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth authorization snapshot changed before save");
+            }
         }
 
         RegisteredClient registeredClient = clientConverter.toTarget(client);

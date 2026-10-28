@@ -30,6 +30,11 @@ public interface OAuthSecurityStateMapper extends EgonColaMapper<OAuthSecuritySt
             @Param("expectedVersion") long expectedVersion, @Param("tokenDigest") String tokenDigest,
             @Param("now") Instant now, @Param("actor") String actor);
 
+    int advanceRealmIfRevocationAbsent(@Param("tenantId") Long tenantId, @Param("id") long id,
+            @Param("expectedVersion") long expectedVersion, @Param("targetType") OAuthSecurityTargetEnum targetType,
+            @Param("targetKey") String targetKey, @Param("revision") long revision,
+            @Param("now") Instant now, @Param("actor") String actor);
+
     @Validated(EgonColaModelValidationGroups.Query.class)
     OAuthSecurityStatePO selectByTarget(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)

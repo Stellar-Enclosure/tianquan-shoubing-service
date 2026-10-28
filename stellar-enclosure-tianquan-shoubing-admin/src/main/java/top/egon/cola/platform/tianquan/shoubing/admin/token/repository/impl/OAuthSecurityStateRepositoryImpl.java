@@ -73,6 +73,19 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean advanceRealmIfRevocationAbsent(TrustedRealmBO realm, long id, long expectedVersion,
+            OAuthSecurityTargetEnum targetType, String targetKey, long revision, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || targetType == null || !targetType.isRevocationTarget()
+                || targetKey == null || targetKey.isBlank() || targetKey.length() > 128 || revision <= 0 || now == null) {
+            throw new IllegalArgumentException("OAUTH_SECURITY_STATE_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.advanceRealmIfRevocationAbsent(
+                tenant, id, expectedVersion, targetType, targetKey, revision,
+                now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Optional<OAuthSecurityStateBO> findByTarget(
             TrustedRealmBO trustedRealm,

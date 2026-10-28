@@ -228,7 +228,7 @@ class OAuthOidcProtocolContractTest {
         var result = providers.get(0).authenticate(request);
 
         assertTrue(result.isAuthenticated());
-        verify(authorizations).save(any(OAuth2Authorization.class));
+        verify(authorizations, org.mockito.Mockito.never()).save(any(OAuth2Authorization.class));
         var command = ArgumentCaptor.forClass(RevokeOAuthTokenCommand.class);
         verify(revocations).revoke(eq(realm), command.capture());
         assertEquals(Digests.sha256Hex(rawToken), command.getValue().getTokenDigest());
