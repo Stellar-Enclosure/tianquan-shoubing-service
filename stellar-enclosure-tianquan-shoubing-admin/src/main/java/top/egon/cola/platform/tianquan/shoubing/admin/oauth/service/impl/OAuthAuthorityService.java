@@ -34,6 +34,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthG
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSecurityTargetEnum;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthTokenTypeEnum;
+import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthTokenBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthRevocationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthTokenRepository;
@@ -74,6 +75,12 @@ public class OAuthAuthorityService {
     @Qualifier("oauthAuditDeliveryService") private final OAuthAuditDeliveryService auditDelivery;
     @Qualifier("idpStarterProperties") private final IdpStarterProperties properties;
     @Qualifier("idpClock") private final Clock clock;
+    private volatile OAuthExecutionPrimaryGuard executionPrimary;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setExecutionPrimary(@Qualifier("oauthExecutionPrimaryGuard") OAuthExecutionPrimaryGuard guard) {
+        this.executionPrimary = Objects.requireNonNull(guard, "guard");
+    }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Caller authenticateService(String compact, String requiredScope) {
@@ -172,69 +179,191 @@ public class OAuthAuthorityService {
                 receipt.getSourceIssuer(), client.getClientId(), receipt.getSourceResourceUri(), receipt.getOutcome(), receipt.getConfirmedAt());
     }
 
+    /** Captures only the facts needed to recheck a verified USER; no bearer is retained. */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    StoredUserExecutionProof captureExecutionUser(Caller caller, URI resource, String userToken) {
+        requireExecutionPrimary();
+        Objects.requireNonNull(caller, "caller");
+        caller.realm().validateTrustedPartition();
+        if (caller.clientPk() <= 0 || caller.principal().scopeContext() != ServiceTokenContext.TENANT
+                || !Objects.equals(caller.principal().tenantId(), tenant(caller.realm()))
+                || !caller.principal().scopes().contains(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE)
+                || !caller.principal().expiresAt().isAfter(clock.instant()) || resource == null
+                || !caller.sourceResource().toASCIIString().equals(resource.toASCIIString())) {
+            throw denied("EXECUTION_USER_SOURCE_NOT_BOUND");
+        }
+        VerifiedAccess proof = verifier.verify(userToken, resource, null, false);
+        if (!"USER".equals(proof.text("principal_type"))
+                || !caller.realm().getIssuer().toASCIIString().equals(proof.realm().getIssuer().toASCIIString())
+                || !Objects.equals(caller.realm().getBusinessTenantId(), proof.realm().getBusinessTenantId())
+                || !Objects.equals(caller.realm().getTrustVersion(), proof.realm().getTrustVersion())) {
+            throw denied("EXECUTION_USER_REALM_NOT_BOUND");
+        }
+        CurrentFacts facts = current(proof, userToken);
+        requireExecutionLifetime(facts);
+        var stored = new StoredUserExecutionProof(proof.realm().getIssuer().toASCIIString(),
+                proof.realm().getBusinessTenantId(), proof.realm().getTrustVersion(), proof.claims().getSubject(),
+                resource.toASCIIString(), proof.clientPk(), facts.client().getClientId(), proof.authorizationId(),
+                Digests.sha256Hex(userToken), proof.claims().getJWTID(), proof.keyId(), scopes(proof),
+                facts.version().getRealm(), facts.version().getClient(), facts.version().getSubject(),
+                Digests.sha256Hex(proof.text("authn_jti")), proof.text("acr"), number(proof, "auth_time"),
+                number(proof, "authn_expires_at"), number(proof, "authorization_expires_at"),
+                refreshGeneration(proof), facts.token().getRetainUntil());
+        requireExecutionTokenEvidence(facts.token(), stored);
+        return stored;
+    }
+
+    /** Call only with evidence loaded from an owner-controlled, run-bound execution grant. */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    ExecutionUserCurrent recheckExecutionUser(TrustedRealmBO realm, StoredUserExecutionProof stored) {
+        requireExecutionPrimary();
+        Objects.requireNonNull(stored, "stored");
+        stored.requireRealm(realm);
+        verifier.requireRecordedKey(realm, stored.signingKeyId());
+        var version = OAuthSecurityVersionBO.builder().realm(stored.realmGeneration()).client(stored.clientGeneration())
+                .subject(stored.subjectGeneration()).build();
+        var recorded = new CurrentAccessFacts(realm, true, stored.subject(), stored.clientPk(), stored.clientId(),
+                stored.authorizationId(), List.of(stored.resourceUri()), stored.tokenJti(), stored.signingKeyId(),
+                stored.scopes(), version, stored.acr(), stored.authenticationTime(), stored.authenticationExpiresAt(),
+                stored.authorizationExpiresAt(), stored.refreshGeneration(), 0);
+        CurrentFacts facts = currentByDigest(recorded, stored.tokenDigest(), stored.authenticationJtiDigest());
+        requireExecutionLifetime(facts);
+        requireExecutionTokenEvidence(facts.token(), stored);
+        Instant validUntil = facts.authorization().getAbsoluteExpiresAt();
+        if (facts.authentication().getExpiresAt().isBefore(validUntil)) validUntil = facts.authentication().getExpiresAt();
+        if (facts.token().getRetainUntil().isBefore(validUntil)) validUntil = facts.token().getRetainUntil();
+        if (stored.tokenRetainUntil().isBefore(validUntil)) validUntil = stored.tokenRetainUntil();
+        if (Instant.ofEpochSecond(stored.authenticationExpiresAt()).isBefore(validUntil)) {
+            validUntil = Instant.ofEpochSecond(stored.authenticationExpiresAt());
+        }
+        if (Instant.ofEpochSecond(stored.authorizationExpiresAt()).isBefore(validUntil)) {
+            validUntil = Instant.ofEpochSecond(stored.authorizationExpiresAt());
+        }
+        if (!validUntil.isAfter(clock.instant())) throw invalid("EXECUTION_USER_PROOF_EXPIRED");
+        return new ExecutionUserCurrent(stored.issuer(), stored.tenantId(), stored.subject(), stored.resourceUri(),
+                stored.scopes(), validUntil);
+    }
+
+    private void requireExecutionLifetime(CurrentFacts facts) {
+        if (facts.authentication() == null || !"ACTIVE".equals(facts.authentication().getStatus())
+                || facts.authentication().getExpiresAt() == null
+                || !facts.authentication().getExpiresAt().isAfter(clock.instant())
+                || facts.token().getRetainUntil() == null || !facts.token().getRetainUntil().isAfter(clock.instant())) {
+            throw invalid("EXECUTION_USER_PROOF_EXPIRED");
+        }
+    }
+
+    private void requireExecutionPrimary() {
+        OAuthExecutionPrimaryGuard guard = executionPrimary;
+        if (guard == null) throw new OAuth2AuthenticationException(
+                new OAuth2Error("temporarily_unavailable", "EXECUTION_AUTHORITY_PRIMARY_REQUIRED", null));
+        guard.requirePrimaryTransaction();
+    }
+
+    private static void requireExecutionTokenEvidence(OAuthTokenBO token, StoredUserExecutionProof stored) {
+        var metadata = token.getMetadata();
+        var claims = metadata == null ? null : metadata.getClaims();
+        var security = claims == null ? null : claims.getSecurityVersion();
+        if (metadata == null || metadata.getSchemaVersion() != 1 || metadata.isInvalidated() || claims == null
+                || claims.getTokenUse() != OAuthTokenTypeEnum.ACCESS || claims.getIssuer() == null
+                || !stored.issuer().equals(claims.getIssuer().toASCIIString())
+                || !Set.of(URI.create(stored.resourceUri())).equals(claims.getAudience())
+                || !stored.subject().equals(claims.getSubject()) || !Long.valueOf(stored.tenantId()).equals(claims.getTenantId())
+                || !"USER".equals(claims.getPrincipalType()) || !"TENANT".equals(claims.getScopeContext())
+                || !stored.clientId().equals(claims.getClientId())
+                || !Long.toString(stored.clientPk()).equals(claims.getClientRegistrationId())
+                || !Long.toString(stored.authorizationId()).equals(claims.getAuthorizationId())
+                || !stored.tokenJti().equals(claims.getJti()) || !stored.scopes().equals(claims.getScope())
+                || claims.getAuthenticationJti() == null
+                || !stored.authenticationJtiDigest().equals(Digests.sha256Hex(claims.getAuthenticationJti()))
+                || !stored.acr().equals(claims.getAcr()) || claims.getAuthTime() == null
+                || stored.authenticationTime() != claims.getAuthTime().getEpochSecond()
+                || !Long.valueOf(stored.authorizationExpiresAt()).equals(claims.getAuthorizationExpiresAt())
+                || !Long.toString(stored.refreshGeneration()).equals(claims.getRefreshGeneration())
+                || security == null || security.getRealm() != stored.realmGeneration()
+                || security.getClient() != stored.clientGeneration()
+                || !Long.valueOf(stored.subjectGeneration()).equals(security.getSubject())) {
+            throw invalid("EXECUTION_USER_PROOF_MISMATCH");
+        }
+    }
+
     private CurrentFacts current(VerifiedAccess proof, String compact) {
-        TrustedRealmBO realm = proof.realm();
         boolean user = "USER".equals(proof.text("principal_type"));
-        OAuthClientBO client = clients.findById(realm, proof.clientPk())
-                .filter(value -> value.getStatus() == OAuthClient.Status.ACTIVE && value.getClientId().equals(proof.text("client_id"))
+        String authenticationDigest = user
+                ? Digests.sha256Hex(proof.text("authn_jti")) : null;
+        var observed = new CurrentAccessFacts(proof.realm(), user, proof.claims().getSubject(), proof.clientPk(),
+                proof.text("client_id"), proof.authorizationId(), List.copyOf(proof.claims().getAudience()),
+                proof.claims().getJWTID(), proof.keyId(), scopes(proof), version(proof, user),
+                user ? proof.text("acr") : null, user ? number(proof, "auth_time") : 0,
+                user ? number(proof, "authn_expires_at") : 0, user ? number(proof, "authorization_expires_at") : 0,
+                user ? refreshGeneration(proof) : 0, user ? 0 : number(proof, "resource_version"));
+        return currentByDigest(observed, Digests.sha256Hex(compact), authenticationDigest);
+    }
+
+    private CurrentFacts currentByDigest(CurrentAccessFacts access, String tokenDigest, String authenticationDigest) {
+        TrustedRealmBO realm = access.realm();
+        boolean user = access.user();
+        OAuthClientBO client = clients.findById(realm, access.clientPk())
+                .filter(value -> value.getStatus() == OAuthClient.Status.ACTIVE && value.getClientId().equals(access.clientId())
                         && (value.getPurpose() == OAuthClientPurposeEnum.USER) == user)
                 .orElseThrow(() -> invalid("JWT_CLIENT_NOT_ACTIVE"));
-        OAuthAuthorizationBO family = authorizations.findById(realm, proof.authorizationId())
+        OAuthAuthorizationBO family = authorizations.findById(realm, access.authorizationId())
                 .filter(value -> "ACTIVE".equals(value.getStatus()) && value.getAbsoluteExpiresAt().isAfter(clock.instant())
                         && Objects.equals(value.getClientPk(), client.getId())
-                        && Objects.equals(value.getPrincipalName(), proof.claims().getSubject())
-                        && Objects.equals(value.getPrincipalType(), proof.text("principal_type"))
-                        && value.getAudiences().equals(proof.claims().getAudience()))
+                        && Objects.equals(value.getPrincipalName(), access.subject())
+                        && Objects.equals(value.getPrincipalType(), user ? "USER" : "SERVICE")
+                        && value.getAudiences().equals(access.audiences()))
                 .orElseThrow(() -> invalid("JWT_AUTHORIZATION_NOT_ACTIVE"));
-        var token = tokens.findByTokenDigest(realm, Digests.sha256Hex(compact))
+        var token = tokens.findByTokenDigest(realm, tokenDigest)
                 .filter(value -> value.getTokenType() == OAuthTokenTypeEnum.ACCESS && value.getRevokedAt() == null
-                        && Objects.equals(value.getAuthorizationPk(), family.getId()) && Objects.equals(value.getJti(), proof.claims().getJWTID()))
+                        && Objects.equals(value.getAuthorizationPk(), family.getId()) && Objects.equals(value.getJti(), access.tokenJti()))
                 .orElseThrow(() -> invalid("JWT_TOKEN_FACT_MISSING"));
-        URI target = URI.create(proof.claims().getAudience().getFirst());
+        URI target = URI.create(access.audiences().getFirst());
         OAuthResourceBO resource = resources.findByResourceUri(managementRealms.platformRealm(), target)
                 .filter(value -> value.getStatus() == ResourceServerStatus.ACTIVE)
                 .orElseThrow(() -> invalid("JWT_RESOURCE_NOT_ACTIVE"));
-        if (!user && number(proof, "resource_version") != resource.getVersion()) { throw invalid("JWT_RESOURCE_VERSION_STALE"); }
+        if (!user && access.resourceVersion() != resource.getVersion()) { throw invalid("JWT_RESOURCE_VERSION_STALE"); }
         var grant = grants.findGrant(realm, client.getId(), resource.getResourceServerId(),
                         user ? ResourceGrantType.USER_DELEGATION : ResourceGrantType.CLIENT_CREDENTIALS)
                 .filter(value -> value.getStatus() == ClientResourceGrant.Status.ACTIVE
                         && value.getResourceVersion() == resource.getVersion())
                 .orElseThrow(() -> invalid("JWT_RESOURCE_GRANT_NOT_ACTIVE"));
-        Set<String> requestedScopes = scopes(proof);
+        Set<String> requestedScopes = access.scopes();
         Set<String> resourceScopes = new TreeSet<>(requestedScopes);
         if (user) { resourceScopes.removeAll(Set.of("openid", "profile", "email")); }
         if (!family.getAuthorizedScopes().containsAll(requestedScopes) || !client.getAllowedScopes().containsAll(requestedScopes)
                 || !grant.getAllowedScopes().containsAll(resourceScopes)) {
             throw invalid("JWT_SCOPE_NO_LONGER_ALLOWED");
         }
-        OAuthSecurityVersionBO version = version(proof, user);
+        OAuthSecurityVersionBO version = access.version();
         generation(realm, OAuthSecurityTargetEnum.REALM, "self", version.getRealm());
         generation(realm, OAuthSecurityTargetEnum.CLIENT, Long.toString(client.getId()), version.getClient());
-        if (user) { generation(realm, OAuthSecurityTargetEnum.SUBJECT, proof.claims().getSubject(), version.getSubject()); }
-        for (var revoked : List.of(Map.entry(OAuthSecurityTargetEnum.JTI, proof.claims().getJWTID()),
-                Map.entry(OAuthSecurityTargetEnum.AUTHORIZATION, Long.toString(family.getId())), Map.entry(OAuthSecurityTargetEnum.KID, proof.keyId()))) {
+        if (user) { generation(realm, OAuthSecurityTargetEnum.SUBJECT, access.subject(), version.getSubject()); }
+        for (var revoked : List.of(Map.entry(OAuthSecurityTargetEnum.JTI, access.tokenJti()),
+                Map.entry(OAuthSecurityTargetEnum.AUTHORIZATION, Long.toString(family.getId())), Map.entry(OAuthSecurityTargetEnum.KID, access.keyId()))) {
             if (revocations.findByTarget(realm, revoked.getKey(), revoked.getValue()).isPresent()) { throw invalid("JWT_REVOKED"); }
         }
         OAuthAuthenticationBO authentication = null;
         if (user) {
-            users.findByIdentitySub(proof.claims().getSubject()).filter(value -> value.status() == IdentityUserStatus.ACTIVE)
+            users.findByIdentitySub(access.subject()).filter(value -> value.status() == IdentityUserStatus.ACTIVE)
                     .orElseThrow(() -> invalid("JWT_ACCOUNT_NOT_ACTIVE"));
-            var membership = memberships.resolve(proof.claims().getSubject(), tenant(realm));
+            var membership = memberships.resolve(access.subject(), tenant(realm));
             if (membership == null || membership.status() != TenantMembershipPort.MembershipStatus.ACTIVE) { throw invalid("JWT_MEMBERSHIP_NOT_ACTIVE"); }
-            String jtiDigest = Digests.sha256Hex(proof.text("authn_jti"));
+            String jtiDigest = authenticationDigest;
+            if (jtiDigest == null || !jtiDigest.matches("[0-9a-f]{64}")) { throw invalid("JWT_AUTHENTICATION_BINDING_INVALID"); }
             if (!Objects.equals(jtiDigest, family.getAuthenticationJtiDigest())) { throw invalid("JWT_AUTHENTICATION_BINDING_INVALID"); }
             authentication = authentications.findByJtiDigest(realm, jtiDigest)
                     .filter(value -> !"REVOKED".equals(value.getStatus()) && value.getRevokedAt() == null
-                            && value.getSubject().equals(proof.claims().getSubject())
-                            && value.getAcr().equals(proof.text("acr"))
-                            && value.getAuthenticatedAt().getEpochSecond() == number(proof, "auth_time")
+                            && value.getSubject().equals(access.subject())
+                            && value.getAcr().equals(access.acr())
+                            && value.getAuthenticatedAt().getEpochSecond() == access.authenticationTime()
                             && value.getSubjectGeneration().equals(version.getSubject()) && value.getRealmGeneration() == version.getRealm())
                     .orElseThrow(() -> invalid("JWT_AUTHENTICATION_REVOKED"));
-            if (number(proof, "authorization_expires_at") != family.getAbsoluteExpiresAt().getEpochSecond()
-                    || number(proof, "authn_expires_at") != authentication.getExpiresAt().getEpochSecond()
-                    || refreshGeneration(proof) > family.getRefreshGeneration()) { throw invalid("JWT_FAMILY_FACT_MISMATCH"); }
+            if (access.authorizationExpiresAt() != family.getAbsoluteExpiresAt().getEpochSecond()
+                    || access.authenticationExpiresAt() != authentication.getExpiresAt().getEpochSecond()
+                    || access.refreshGeneration() > family.getRefreshGeneration()) { throw invalid("JWT_FAMILY_FACT_MISMATCH"); }
         }
-        return new CurrentFacts(client, family, authentication, resource, version);
+        return new CurrentFacts(client, family, authentication, resource, version, token);
     }
 
     private void requireRefreshContext(IdentitySecurityStateRequest request, VerifiedAccess proof, CurrentFacts facts) {
@@ -296,6 +425,15 @@ public class OAuthAuthorityService {
     private static AccessDeniedException denied(String reason) { return new AccessDeniedException(reason); }
 
     public record Caller(ServiceIdentityPrincipal principal, TrustedRealmBO realm, long clientPk, URI sourceResource) { }
+    private record CurrentAccessFacts(TrustedRealmBO realm, boolean user, String subject, long clientPk, String clientId,
+            long authorizationId, List<String> audiences, String tokenJti, String keyId, Set<String> scopes,
+            OAuthSecurityVersionBO version, String acr, long authenticationTime, long authenticationExpiresAt,
+            long authorizationExpiresAt, long refreshGeneration, long resourceVersion) {
+        @Override public String toString() { return "CurrentAccessFacts[redacted]"; }
+    }
     private record CurrentFacts(OAuthClientBO client, OAuthAuthorizationBO authorization, OAuthAuthenticationBO authentication,
-            OAuthResourceBO resource, OAuthSecurityVersionBO version) { }
+            OAuthResourceBO resource, OAuthSecurityVersionBO version, OAuthTokenBO token) { }
+    record ExecutionUserCurrent(String issuer, long tenantId, String subject, String resource, Set<String> scopes, Instant validUntil) {
+        @Override public String toString() { return "ExecutionUserCurrent[redacted]"; }
+    }
 }

@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
@@ -85,6 +86,15 @@ public class OAuthAuthorityTokenVerifier {
         catch (java.text.ParseException | com.nimbusds.jose.JOSEException | IllegalArgumentException failure) {
             throw invalid("JWT_PROOF_INVALID");
         }
+    }
+
+    /** A previously verified, owner-stored execution proof survives normal rotation, but not compromise. */
+    void requireRecordedKey(TrustedRealmBO realm, String keyId) {
+        Objects.requireNonNull(realm, "realm").validateTrustedPartition();
+        if (keyId == null || !keyId.matches("[A-Za-z0-9_-]{1,128}")) throw invalid("JWT_KEY_UNKNOWN");
+        var key = keys.findByKid(realm, keyId).orElseThrow(() -> invalid("JWT_KEY_UNKNOWN"));
+        if (!List.of(OAuthKeyStatusEnum.ACTIVE, OAuthKeyStatusEnum.VERIFY_ONLY, OAuthKeyStatusEnum.RETIRED)
+                .contains(key.getStatus())) throw invalid("JWT_KEY_INVALID");
     }
 
     public record VerifiedAccess(TrustedRealmBO realm, JWTClaimsSet claims, String keyId) {
