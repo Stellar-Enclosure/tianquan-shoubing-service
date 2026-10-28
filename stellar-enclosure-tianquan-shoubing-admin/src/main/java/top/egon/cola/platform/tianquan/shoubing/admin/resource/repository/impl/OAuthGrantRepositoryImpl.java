@@ -113,14 +113,14 @@ public class OAuthGrantRepositoryImpl extends EgonColaRepository<OAuthGrantMappe
         List<String> canonicalScopes = validateGrant(grant);
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthGrantPO current = baseMapper.selectGrantForUpdate(
+                OAuthGrantPO current = baseMapper.selectGrant(
                         tenantId, grant.getClientPk(), grant.getResourceServerId(), grant.getGrantType());
                 OAuthGrantPO value = converter.toSource(grant);
                 value.setTenantId(tenantId);
                 value.setAllowedScopes(canonicalScopes);
                 if (current == null) {
                     if (expectedVersion != 0L || grant.getVersion() != 0L || grant.getId() != null) {
-                        throw stale(grant, expectedVersion, -1L);
+                        throw new org.springframework.dao.TransientDataAccessResourceException("OAuth grant is not yet visible");
                     }
                     if (!super.save(value)) {
                         throw new IllegalStateException("OAUTH_GRANT_INSERT_NOT_APPLIED");

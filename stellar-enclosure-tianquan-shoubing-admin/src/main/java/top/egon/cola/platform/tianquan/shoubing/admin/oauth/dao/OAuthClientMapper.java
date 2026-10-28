@@ -13,6 +13,8 @@ import top.egon.cola.component.common.mybatis.business.EgonColaTenantIdProvider;
 import top.egon.cola.component.common.mybatis.extension.EgonColaMapper;
 import top.egon.cola.component.common.mybatis.model.EgonColaModelValidationGroups;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthClientPO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthGrantBO;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -71,6 +73,10 @@ public interface OAuthClientMapper extends EgonColaMapper<OAuthClientPO> {
 
     int fenceObservedVersion(@Param("tenantId") Long tenantId, @Param("id") long id,
             @Param("clientId") String clientId, @Param("expectedVersion") long expectedVersion,
+            @Param("now") java.time.Instant now, @Param("actor") String actor);
+
+    int fenceGrantObservedVersion(@Param("tenantId") Long tenantId, @Param("client") OAuthClientBO client,
+            @Param("expectedVersion") long expectedVersion, @Param("grant") OAuthGrantBO grant,
             @Param("now") java.time.Instant now, @Param("actor") String actor);
 
     @Validated(EgonColaModelValidationGroups.Query.class)

@@ -22,6 +22,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthClientViewConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.dto.CreateOAuthClientDTO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.dto.RotateClientSecretDTO;
@@ -171,7 +172,7 @@ public class OAuthClientServiceImpl implements OAuthClientService {
         String exactClientId = exact(clientId, "clientId");
         RotateClientSecretDTO input = Objects.requireNonNull(command, "command");
         String operator = operator(operatorSub);
-        OAuthClientBO client = clients.findByClientIdForUpdate(realm, exactClientId)
+        OAuthClientBO client = clients.findByClientId(realm, exactClientId)
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_CLIENT_NOT_FOUND"));
         if (client.getClientType() != OAuthClient.ClientType.CONFIDENTIAL
                 || client.getStatus() != OAuthClient.Status.ACTIVE) {
@@ -372,7 +373,7 @@ public class OAuthClientServiceImpl implements OAuthClientService {
         if (client.getId() == null || client.getId() <= 0L) {
             throw new IllegalStateException("OAUTH_CLIENT_SECURITY_ID_INVALID");
         }
-        return OAuthClientRevokeCommand.builder().clientPk(client.getId()).reasonCode(reasonCode).build();
+        return OAuthClientRevokeCommand.builder().clientPk(client.getId()).reasonCode(reasonCode).writtenClient(client).build();
     }
 
     private OAuthClientBO lockUserClient(TrustedRealmBO realm, String clientId) {
@@ -384,14 +385,16 @@ public class OAuthClientServiceImpl implements OAuthClientService {
     }
 
     private OAuthClientBO lockClient(TrustedRealmBO realm, String clientId) {
-        return clients.findByClientIdForUpdate(realm, exact(clientId, "clientId"))
+        return clients.findByClientId(realm, exact(clientId, "clientId"))
                 .orElseThrow(() -> new IllegalArgumentException("OAUTH_CLIENT_NOT_FOUND"));
     }
 
     private void lockRealm(TrustedRealmBO realm) {
-        realms.findByRealmKeyForUpdate(realm)
-                .filter(value -> "ACTIVE".equals(value.getStatus()))
+        realms.findByRealmKey(realm).filter(value -> "ACTIVE".equals(value.getStatus()))
                 .orElseThrow(() -> new IllegalStateException("OAUTH_CLIENT_REALM_NOT_ACTIVE"));
+        if (!OAuthTransactionFences.activeRealm(realms, realm)) {
+            throw new OptimisticLockingFailureException("OAuth realm changed before client update");
+        }
     }
 
     private OAuthClientVO view(OAuthClientBO client, TrustedRealmBO realm) {
@@ -399,7 +402,7 @@ public class OAuthClientServiceImpl implements OAuthClientService {
     }
 
     private void saveUserDelegationGrant(TrustedRealmBO realm, OAuthClientBO client, OAuthResourceBO resource) {
-        OAuthGrantBO current = grants.findGrantForUpdate(
+        OAuthGrantBO current = grants.findGrant(
                 realm, client.getId(), resource.getResourceServerId(), ResourceGrantType.USER_DELEGATION).orElse(null);
         if (current == null) {
             grants.save(realm, OAuthGrantBO.builder()

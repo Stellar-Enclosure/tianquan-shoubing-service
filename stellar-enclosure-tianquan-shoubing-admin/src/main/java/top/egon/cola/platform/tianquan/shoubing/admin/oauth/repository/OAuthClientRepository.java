@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Size;
 import org.springframework.validation.annotation.Validated;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthGrantBO;
 
 import java.util.List;
 import java.util.Optional;
@@ -29,6 +30,8 @@ public interface OAuthClientRepository {
             @NotBlank @Size(max = 128) String clientId);
 
     boolean fenceObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm, @NotNull OAuthClientBO client);
+
+    boolean fenceGrantObservedVersion(TrustedRealmBO trustedRealm, OAuthClientBO client, long expectedVersion, OAuthGrantBO grant);
 
     List<OAuthClientBO> findAllByRealm(@NotNull @Valid TrustedRealmBO trustedRealm);
 

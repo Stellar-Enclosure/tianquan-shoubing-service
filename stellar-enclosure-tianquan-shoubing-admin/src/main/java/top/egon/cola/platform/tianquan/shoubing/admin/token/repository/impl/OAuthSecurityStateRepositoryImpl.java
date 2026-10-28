@@ -23,6 +23,7 @@ import top.egon.cola.component.common.mybatis.business.EgonColaTenantIdProvider;
 import top.egon.cola.component.common.mybatis.business.EgonColaUserIdProvider;
 import top.egon.cola.component.common.mybatis.extension.EgonColaRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.dao.OAuthSecurityStateMapper;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.bo.OAuthSecurityStateBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.converter.OAuthSecurityStateConverter;
@@ -99,12 +100,25 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceRealmIfSubjectAbsent(TrustedRealmBO realm, long id, long expectedVersion, String subject, Instant now) {
+        if (id <= 0 || expectedVersion < 0 || subject == null || subject.isBlank() || subject.length() > 128 || now == null) {
+            throw new IllegalArgumentException("OAUTH_SECURITY_STATE_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceRealmIfSubjectAbsent(
+                tenant, id, expectedVersion, subject, now.truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Optional<OAuthSecurityStateBO> findByTarget(
             TrustedRealmBO trustedRealm,
             OAuthSecurityTargetEnum targetType,
             String targetKey) {
         String key = requireStateTarget(targetType, targetKey);
+        OAuthSecurityStateBO written = top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences
+                .securityState(trustedRealm, targetType, key);
+        if (written != null) return Optional.of(written);
         return withTrustedStoragePartition(trustedRealm, tenantId -> Optional.ofNullable(
                         baseMapper.selectByTarget(tenantId, targetType, key))
                 .map(converter::toTarget));
@@ -148,8 +162,10 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
         String targetKey = requireStateTarget(state.getTargetType(), state.getTargetKey());
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthSecurityStatePO current = baseMapper.selectByTarget(
-                        tenantId, state.getTargetType(), targetKey);
+                OAuthSecurityStateBO written = top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences
+                        .securityState(trustedRealm, state.getTargetType(), targetKey);
+                OAuthSecurityStatePO current = written == null ? baseMapper.selectByTarget(
+                        tenantId, state.getTargetType(), targetKey) : converter.toSource(written);
                 if (current == null) {
                     if (state.getId() != null || expectedVersion != 0L || state.getVersion() != 0L) {
                         throw stale(expectedVersion, -1L);
@@ -160,7 +176,9 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
                     if (!super.save(value)) {
                         throw new IllegalStateException("OAUTH_SECURITY_STATE_INSERT_NOT_APPLIED");
                     }
-                    return converter.toTarget(value);
+                    OAuthSecurityStateBO saved = converter.toTarget(value);
+                    OAuthTransactionFences.securityStateWritten(trustedRealm, saved);
+                    return saved;
                 }
                 long nextVersion = Math.addExact(expectedVersion, 1L);
                 if (current.getVersion() != expectedVersion || state.getVersion() != nextVersion
@@ -182,7 +200,9 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
                 if (baseMapper.updateExpectedVersion(tenantId, value, expectedVersion) != 1) {
                     throw stale(expectedVersion, current.getVersion());
                 }
-                return converter.toTarget(value);
+                OAuthSecurityStateBO saved = converter.toTarget(value);
+                OAuthTransactionFences.securityStateWritten(trustedRealm, saved);
+                return saved;
             } catch (DataIntegrityViolationException failure) {
                 throw new IllegalStateException("OAUTH_SECURITY_STATE_CONFLICT", failure);
             }

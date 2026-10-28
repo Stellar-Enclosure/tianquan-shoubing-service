@@ -100,7 +100,7 @@ class OAuthManagedSchemaContractTest {
         JsonNode manifest = objectMapper.readTree(requiredResource(MANIFEST_RESOURCE));
 
         assertEquals("tianquan-oauth", manifest.path("family").asText());
-        assertEquals(4, manifest.path("scripts").size());
+        assertEquals(5, manifest.path("scripts").size());
         JsonNode script = manifest.path("scripts").get(0);
         assertEquals("20261008_001", script.path("version").asText());
         assertEquals(SQL_RESOURCE, script.path("path").asText());
@@ -119,6 +119,16 @@ class OAuthManagedSchemaContractTest {
         assertEquals("20261027_001", devices.path("version").asText());
         byte[] deviceBytes = requiredResource(devices.path("path").asText());
         assertEquals(sha256(deviceBytes), devices.path("sha256").asText());
+        JsonNode grantFence = manifest.path("scripts").get(4);
+        assertEquals("20261028_001", grantFence.path("version").asText());
+        byte[] grantFenceBytes = requiredResource(grantFence.path("path").asText());
+        assertEquals(sha256(grantFenceBytes), grantFence.path("sha256").asText());
+        String grantFenceSql = new String(grantFenceBytes, StandardCharsets.UTF_8);
+        assertTrue(grantFenceSql.contains("BEFORE INSERT OR UPDATE OR DELETE ON oauth_grant"));
+        var splitter = top.egon.cola.component.common.mybatis.ddl.EgonColaPostgreDdlRunner.class
+                .getDeclaredMethod("splitPostgreSqlStatements", String.class);
+        splitter.setAccessible(true);
+        assertEquals(2, ((java.util.List<?>) splitter.invoke(null, grantFenceSql)).size());
         String sql = new String(sqlBytes, StandardCharsets.UTF_8) + new String(statelessBytes, StandardCharsets.UTF_8)
                 + new String(deviceBytes, StandardCharsets.UTF_8);
         Matcher tableMatcher = Pattern.compile(

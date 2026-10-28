@@ -79,8 +79,11 @@ public class IdentityUserRepository extends EgonColaRepository<IdentityUserDAO, 
         Objects.requireNonNull(user, "user");
         return directoryContext.withPlatformDirectoryPartition(() -> {
             Long partitionId = directoryContext.directoryPartitionId();
-            IdentityUserPO current = baseMapper.selectForUpdate(partitionId, user.id());
+            IdentityUserPO current = baseMapper.selectByExternalKey(partitionId, user.id());
             if (current == null) {
+                if (expectedVersion != 0L || user.version() != 0L) {
+                    throw new org.springframework.dao.TransientDataAccessResourceException("identity user is not yet visible");
+                }
                 requireNewVersion(user.id(), user.version(), expectedVersion);
                 IdentityUserPO inserted = converter.toSource(user);
                 if (!super.save(inserted)) {

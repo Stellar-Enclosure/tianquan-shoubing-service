@@ -88,6 +88,21 @@ public class OAuthRealmRepositoryImpl extends EgonColaRepository<OAuthRealmMappe
             OAuthRealmPO candidate = baseMapper.selectByRealmKey(tenantId, trustedRealm.getRealmKey());
             if (candidate == null) { return false; }
             requireCurrentMatchesTrustedRealm(trustedRealm, candidate);
+            if (!Objects.equals(candidate.getTrustVersion(), trustedRealm.getTrustVersion())) return false;
+            return baseMapper.fenceObservedVersion(tenantId, candidate.getId(), trustedRealm.getRealmKey(),
+                    candidate.getVersion(), clock.instant().truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1;
+        });
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceActiveObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm) {
+        return withTrustedStoragePartition(trustedRealm, tenantId -> {
+            OAuthRealmPO candidate = baseMapper.selectByRealmKey(tenantId, trustedRealm.getRealmKey());
+            if (candidate == null) return false;
+            requireCurrentMatchesTrustedRealm(trustedRealm, candidate);
+            if (!"ACTIVE".equals(candidate.getStatus())
+                    || !Objects.equals(candidate.getTrustVersion(), trustedRealm.getTrustVersion())) return false;
             return baseMapper.fenceObservedVersion(tenantId, candidate.getId(), trustedRealm.getRealmKey(),
                     candidate.getVersion(), clock.instant().truncatedTo(ChronoUnit.MICROS), userIdProvider.currentUserId()) == 1;
         });

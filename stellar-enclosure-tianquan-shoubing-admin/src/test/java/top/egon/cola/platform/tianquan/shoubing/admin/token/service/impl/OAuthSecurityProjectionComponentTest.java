@@ -47,6 +47,7 @@ class OAuthSecurityProjectionComponentTest {
         component = new OAuthSecurityProjectionComponent(states, revocations, authorizations, clients, realms, management, Clock.fixed(NOW, ZoneOffset.UTC));
         var row = OAuthRealmBO.builder().issuer(REALM.getIssuer()).realmKey(REALM.getRealmKey()).status("ACTIVE").activeKid("key").build();
         when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(row));
+        when(realms.fenceActiveObservedVersion(REALM)).thenReturn(true);
         when(realms.findByIssuer(REALM)).thenReturn(Optional.of(row));
         when(clients.findAllByRealm(REALM)).thenReturn(List.of(OAuthClientBO.builder().id(501L).clientId("client").status(OAuthClient.Status.ACTIVE).build()));
         when(states.findByTarget(eq(REALM), any(), anyString())).thenAnswer(call -> Optional.ofNullable(rows.get(call.getArgument(1) + ":" + call.getArgument(2))));
@@ -63,7 +64,8 @@ class OAuthSecurityProjectionComponentTest {
         assertEquals(1L, snapshot.getRealmGeneration()); assertEquals(2L, snapshot.getClientGeneration());
         assertEquals(3L, snapshot.getSubjectGeneration()); assertEquals(6L, snapshot.getRevision());
         assertEquals("postgresql:2", snapshot.getReadyEpoch());
-        verify(realms).findByRealmKeyForUpdate(REALM);
+        verify(realms).fenceActiveObservedVersion(REALM);
+        verify(realms, never()).findByRealmKeyForUpdate(any());
     }
 
     @Test void alreadyFencedRealmDoesNotRepeatTheLockingRead() {
@@ -93,6 +95,16 @@ class OAuthSecurityProjectionComponentTest {
         when(authorizations.findExpiredBefore(eq(REALM), any(), eq(0L), eq(1))).thenReturn(List.of(OAuthAuthorizationBO.builder().id(1L).build()));
         assertThrows(OAuth2AuthenticationException.class, () -> component.recover(REALM));
         verify(states, never()).save(any(), any(), anyLong());
+    }
+
+    @Test void replicaMissCannotInitializeSubjectWithoutPrimaryAbsenceConfirmation() {
+        rows.remove("SUBJECT:alice");
+        rows.get("REALM:self").setId(11L).setVersion(2L);
+        when(states.fenceRealmIfSubjectAbsent(REALM, 11L, 2L, "alice", NOW)).thenReturn(false);
+        assertThrows(org.springframework.dao.OptimisticLockingFailureException.class,
+                () -> component.snapshotForAuthorization(REALM, 501L, "USER", "alice"));
+        verify(states, never()).save(any(), any(), anyLong());
+        verify(realms, never()).findByRealmKeyForUpdate(any());
     }
 
     @Test void emptyAuthorityBootstrapIsIdempotent() {

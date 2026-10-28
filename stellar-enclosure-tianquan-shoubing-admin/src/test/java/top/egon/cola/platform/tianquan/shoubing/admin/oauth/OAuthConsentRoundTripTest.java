@@ -1333,9 +1333,18 @@ class OAuthConsentRoundTripTest {
                 TrustedRealmBO realm = i.getArgument(0);
                 return fencedRealms.add(realm.getRealmKey());
             });
+            when(realmRepository.fenceActiveObservedVersion(any())).thenAnswer(i -> {
+                TrustedRealmBO realm = i.getArgument(0);
+                return fencedRealms.add(realm.getRealmKey());
+            });
             when(clientRepository.fenceObservedVersion(any(), any())).thenAnswer(i -> {
                 TrustedRealmBO realm = i.getArgument(0); OAuthClientBO client = i.getArgument(1);
                 return fencedClients.add(realm.getRealmKey() + ":" + client.getId());
+            });
+            when(clientRepository.fenceGrantObservedVersion(any(), any(), anyLong(), any())).thenAnswer(i -> {
+                OAuthGrantBO candidate = i.getArgument(3);
+                return candidate.getVersion() == userGrantVersion && candidate.getStatus() == userGrantStatus
+                        && Objects.equals(candidate.getResourceVersion(), grantResourceVersion);
             });
             when(realmRepository.findByIssuer(any())).thenAnswer(i -> Optional.of(realmFact(i.getArgument(0))));
             when(signingKeyRepository.findByStatuses(any(), anySet(), anyLong(), anyInt())).thenAnswer(i -> {
@@ -1368,11 +1377,13 @@ class OAuthConsentRoundTripTest {
             ResourceServer resource = new ResourceServer("orders", RESOURCE, "orders", "orders", "test", "manager-client",
                     "orders", "orders:enter", Duration.ofSeconds(300), ResourceServerStatus.ACTIVE, 0L);
             when(resources.findByUri(RESOURCE)).thenReturn(Optional.of(resource));
-            when(grantRepository.findGrantForUpdate(any(), anyLong(), eq("orders"), eq(ResourceGrantType.USER_DELEGATION)))
+            when(grantRepository.findGrant(any(), anyLong(), eq("orders"), eq(ResourceGrantType.USER_DELEGATION)))
                     .thenAnswer(i -> Optional.of(OAuthGrantBO.builder().id(701L).version(userGrantVersion).clientPk(501L)
                             .resourceServerId("orders").grantType(ResourceGrantType.USER_DELEGATION)
                             .allowedScopes(userGrantScopes).status(userGrantStatus)
                             .resourceVersion(grantResourceVersion).build()));
+            when(grantRepository.findGrantForUpdate(any(), anyLong(), eq("orders"), eq(ResourceGrantType.USER_DELEGATION)))
+                    .thenAnswer(i -> grantRepository.findGrant(i.getArgument(0), i.getArgument(1), i.getArgument(2), i.getArgument(3)));
             when(authorizationRepository.findById(any(), anyLong())).thenAnswer(i -> readAuthorization(i.getArgument(0), i.getArgument(1)));
             when(authorizationRepository.findByIdForUpdate(any(), anyLong())).thenAnswer(i -> readAuthorization(i.getArgument(0), i.getArgument(1)));
             when(authorizationRepository.save(any(), any(OAuthAuthorizationBO.class), anyLong())).thenAnswer(i -> {

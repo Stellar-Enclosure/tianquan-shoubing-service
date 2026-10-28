@@ -346,7 +346,7 @@ class OAuthResourcePersistenceContractTest {
         OAuthGrantPO storedGrant = grantRow(91L, 3L);
         AtomicBoolean grantUpdated = new AtomicBoolean();
         OAuthGrantMapper grantMapper = Mockito.mock(OAuthGrantMapper.class, invocation -> {
-            if (invocation.getMethod().getName().equals("selectGrantForUpdate")) {
+            if (invocation.getMethod().getName().equals("selectGrant")) {
                 return storedGrant;
             }
             if (invocation.getMethod().getName().equals("updateExpectedVersion")) {
@@ -399,7 +399,7 @@ class OAuthResourcePersistenceContractTest {
                 .build();
         AtomicReference<OAuthGrantPO> insertedGrant = new AtomicReference<>();
         OAuthGrantMapper grantMapper = Mockito.mock(OAuthGrantMapper.class, invocation -> {
-            if (invocation.getMethod().getName().equals("selectGrantForUpdate")) {
+            if (invocation.getMethod().getName().equals("selectGrant")) {
                 return null;
             }
             if (invocation.getMethod().getName().equals("insert")) {

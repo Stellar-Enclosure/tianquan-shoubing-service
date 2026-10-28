@@ -329,12 +329,45 @@ class OAuthRealmPersistenceContractTest {
         storedClient.setAllowedScopes(List.of("orders:read"));
         storedClient.setAccessTtlSeconds(300);
         storedClient.setRefreshTtlSeconds(86_400);
-        when(clientMapper.selectByClientIdForUpdate(TENANT_PARTITION_ID, "client-1"))
+        when(clientMapper.selectByClientId(TENANT_PARTITION_ID, "client-1"))
                 .thenReturn(storedClient);
         OAuthClientBO staleClient = clientConverter.toTarget(storedClient).setVersion(2L);
         assertThrows(OptimisticLockingFailureException.class,
                 () -> clients.save(trustedRealm, staleClient, 1L));
         verify(clientMapper, never()).updateExpectedVersion(anyLong(), any(), anyLong());
+    }
+
+    @Test
+    void clientWriteUsesReplicaCandidateAndRegistersOnlyTheActualTransactionalWrite() {
+        var realm = trustedTenant();
+        var mapper = mock(OAuthClientMapper.class);
+        var converter = Mappers.getMapper(OAuthClientConverter.class);
+        var actor = mock(EgonColaUserIdProvider.class);
+        when(actor.currentUserId()).thenReturn("test:client");
+        var repository = new OAuthClientRepositoryImpl(mapper, new EgonColaMybatisPlusProperties(), converter, actor, Clock.systemUTC());
+        var row = new OAuthClientPO();
+        row.setId(41L); row.setTenantId(TENANT_PARTITION_ID); row.setVersion(3L); row.setClientId("client-1");
+        row.setAppId("app-1"); row.setClientName("Client"); row.setClientType("CONFIDENTIAL");
+        row.setPurpose(OAuthClientPurposeEnum.USER); row.setStatus("ACTIVE"); row.setCredentialVersion(2L);
+        row.setRedirectUris(List.of("https://client.example/callback")); row.setResourceUris(List.of("https://api.example"));
+        row.setAllowedScopes(List.of("orders:read")); row.setAccessTtlSeconds(300); row.setRefreshTtlSeconds(600);
+        when(mapper.selectByClientId(TENANT_PARTITION_ID, "client-1")).thenReturn(row);
+        when(mapper.updateExpectedVersion(anyLong(), any(), anyLong())).thenReturn(1);
+        org.springframework.transaction.support.TransactionSynchronizationManager.initSynchronization();
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            OAuthClientBO saved = repository.save(realm, converter.toTarget(row).setVersion(4L), 3L);
+            assertTrue(top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences.isClientWritten(realm, saved));
+            verify(mapper, never()).selectByClientIdForUpdate(anyLong(), any());
+            org.springframework.transaction.support.TransactionSynchronizationManager.getSynchronizations().forEach(sync ->
+                    sync.afterCompletion(org.springframework.transaction.support.TransactionSynchronization.STATUS_ROLLED_BACK));
+            assertFalse(top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences.isClientWritten(realm, saved));
+        } finally {
+            org.springframework.transaction.support.TransactionSynchronizationManager.unbindResourceIfPossible(
+                    top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences.class);
+            org.springframework.transaction.support.TransactionSynchronizationManager.clearSynchronization();
+            org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
     }
 
     @Test

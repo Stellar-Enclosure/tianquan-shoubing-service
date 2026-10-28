@@ -48,7 +48,7 @@ class TenantAuthorizationReplicaVersionTest {
         var clients = mock(OAuthClientRepository.class); var transactions = mock(PlatformTransactionManager.class);
         var client = OAuthClientBO.builder().id(501L).clientId("client-501").status(OAuthClient.Status.ACTIVE).build();
         when(issuers.resolveCurrentIssuer()).thenReturn(realm);
-        when(realms.fenceObservedVersion(realm)).thenReturn(true);
+        when(realms.fenceActiveObservedVersion(realm)).thenReturn(true);
         when(clients.findById(realm, 501L)).thenReturn(Optional.of(client));
         when(clients.fenceObservedVersion(realm, client)).thenReturn(true);
         when(authorizations.findById(realm, 700L)).thenReturn(Optional.of(OAuthAuthorizationBO.builder().id(700L).version(2L).build()));

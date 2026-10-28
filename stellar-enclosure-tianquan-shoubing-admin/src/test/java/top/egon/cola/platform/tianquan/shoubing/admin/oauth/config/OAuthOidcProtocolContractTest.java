@@ -111,6 +111,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mapstruct.factory.Mappers.getMapper;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doReturn;
@@ -118,6 +119,20 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OAuthOidcProtocolContractTest {
+    @org.junit.jupiter.api.BeforeEach
+    void beginFenceTransaction() {
+        org.springframework.transaction.support.TransactionSynchronizationManager.initSynchronization();
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void endFenceTransaction() {
+        org.springframework.transaction.support.TransactionSynchronizationManager.getSynchronizations().forEach(
+                sync -> sync.afterCompletion(org.springframework.transaction.support.TransactionSynchronization.STATUS_ROLLED_BACK));
+        org.springframework.transaction.support.TransactionSynchronizationManager.clearSynchronization();
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
+    }
+
 
     @Test
     void nativeRequestCacheUsesTheSqlInteractionAdapter() {
@@ -529,17 +544,18 @@ class OAuthOidcProtocolContractTest {
         OAuthSecuritySnapshotBO snapshot = OAuthSecuritySnapshotBO.builder()
                 .realmGeneration(1L).clientGeneration(2L).readyEpoch("epoch-1").revision(4L).build();
         when(clients.findById(realm, 501L)).thenReturn(Optional.of(client));
-        when(realms.findByRealmKeyForUpdate(realm)).thenReturn(Optional.of(
-                OAuthRealmBO.builder().id(1001L).build()));
+        when(realms.fenceActiveObservedVersion(realm)).thenReturn(true);
+        when(clients.fenceObservedVersion(eq(realm), any())).thenReturn(true);
+        when(clients.fenceGrantObservedVersion(eq(realm), any(), anyLong(), any())).thenReturn(true);
         when(clients.findByClientIdForUpdate(realm, "orders-service"))
                 .thenReturn(Optional.of(client));
-        when(projection.snapshotForAuthorization(realm, 501L, "SERVICE", null))
+        when(projection.snapshotForFencedRealm(realm, 501L, "SERVICE", null))
                 .thenReturn(snapshot);
         when(resources.findByUri(targetUri)).thenReturn(Optional.of(target));
         when(resources.findByManagementClientId("orders-service")).thenReturn(Optional.of(source));
         when(resources.findGrant("orders-service", "orders-resource", ResourceGrantType.CLIENT_CREDENTIALS, "1001"))
                 .thenReturn(Optional.of(grant));
-        when(grants.findGrantForUpdate(realm, 501L, "orders-resource",
+        when(grants.findGrant(realm, 501L, "orders-resource",
                 ResourceGrantType.CLIENT_CREDENTIALS)).thenReturn(Optional.of(OAuthGrantBO.builder()
                 .id(700L).version(4L).clientPk(501L).resourceServerId("orders-resource")
                 .grantType(ResourceGrantType.CLIENT_CREDENTIALS)
@@ -655,14 +671,12 @@ class OAuthOidcProtocolContractTest {
         ResourceServerStore resources = mock(ResourceServerStore.class);
         TenantMembershipPort memberships = mock(TenantMembershipPort.class);
         when(clients.findById(eq(platformRealm), eq(501L))).thenReturn(Optional.of(client));
-        when(realms.findByRealmKeyForUpdate(eq(platformRealm))).thenReturn(Optional.of(
-                OAuthRealmBO.builder().id(9_000L).version(0L).issuer(platformRealm.getIssuer())
-                        .realmKey("platform").realmType(RealmTypeEnum.PLATFORM)
-                        .storagePartitionId(9_000L).status("ACTIVE").activeKid("platform-kid")
-                        .trustVersion(1L).build()));
+        when(realms.fenceActiveObservedVersion(eq(platformRealm))).thenReturn(true);
+        when(clients.fenceObservedVersion(eq(platformRealm), any())).thenReturn(true);
+        when(clients.fenceGrantObservedVersion(eq(platformRealm), any(), anyLong(), any())).thenReturn(true);
         when(clients.findByClientIdForUpdate(eq(platformRealm), eq("admin-client")))
                 .thenReturn(Optional.of(client));
-        when(projection.snapshotForAuthorization(eq(platformRealm), eq(501L), eq("USER"),
+        when(projection.snapshotForFencedRealm(eq(platformRealm), eq(501L), eq("USER"),
                 eq("platform-admin-sub"))).thenReturn(snapshot);
         when(memberships.resolve("platform-admin-sub", "9001")).thenReturn(
                 new TenantMembershipPort.TenantMembership("platform-admin-sub", "9001", "Admin",
@@ -675,7 +689,7 @@ class OAuthOidcProtocolContractTest {
                 "orders-service", "orders", "orders:entry", Duration.ofMinutes(5),
                 ResourceServerStatus.ACTIVE, 1L);
         when(resources.findByUri(resourceUri)).thenReturn(Optional.of(resource));
-        when(grants.findGrantForUpdate(eq(platformRealm), eq(501L), eq("orders-resource"),
+        when(grants.findGrant(eq(platformRealm), eq(501L), eq("orders-resource"),
                 eq(ResourceGrantType.USER_DELEGATION))).thenReturn(Optional.of(OAuthGrantBO.builder()
                         .id(801L).version(1L).clientPk(501L).resourceServerId("orders-resource")
                         .grantType(ResourceGrantType.USER_DELEGATION).allowedScopes(List.of())

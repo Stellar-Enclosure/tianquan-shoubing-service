@@ -75,6 +75,8 @@ class OAuthTokenIssueCoherentSnapshotTest {
 
     @BeforeEach
     void setUp() {
+        org.springframework.transaction.support.TransactionSynchronizationManager.initSynchronization();
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
         var snapshot = OAuthSecuritySnapshotBO.builder().realmGeneration(1L).clientGeneration(2L).subjectGeneration(3L).build();
         var authorization = OAuthAuthorizationBO.builder().id(700L).version(2L).clientPk(501L).principalName("alice")
                 .principalType("USER").status("ACTIVE").authorizedScopes(List.of("openid"))
@@ -92,18 +94,27 @@ class OAuthTokenIssueCoherentSnapshotTest {
                 .resourceVersion(1L).allowedScopes(List.of()).build();
         when(tokens.findByTokenDigest(realm, token.getTokenDigest())).thenReturn(Optional.of(token));
         when(authorizations.findById(realm, 700L)).thenReturn(Optional.of(authorization));
-        when(realms.findByRealmKeyForUpdate(realm)).thenReturn(Optional.of(OAuthRealmBO.builder().build()));
+        when(realms.fenceActiveObservedVersion(realm)).thenReturn(true);
         when(clients.findById(realm, 501L)).thenReturn(Optional.of(client));
-        when(clients.findByClientIdForUpdate(realm, "client")).thenReturn(Optional.of(client));
+        when(clients.fenceObservedVersion(realm, client)).thenReturn(true);
+        when(clients.fenceGrantObservedVersion(eq(realm), eq(client), anyLong(), any())).thenReturn(true);
         when(consents.findConsent(realm, 501L, "alice")).thenReturn(Optional.of(consent));
         when(resources.findByUri(RESOURCE)).thenReturn(Optional.of(target));
-        when(grants.findGrantForUpdate(realm, 501L, "orders", ResourceGrantType.USER_DELEGATION)).thenReturn(Optional.of(grant));
+        when(grants.findGrant(realm, 501L, "orders", ResourceGrantType.USER_DELEGATION)).thenReturn(Optional.of(grant));
         when(manager.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
         service = new OAuthTokenIssueServiceImpl(tokens, authorizations, clients, grants, consents, realms, audits,
                 outbox, projection, mock(ClientCredentialsAccessPolicy.class), resources, Clock.fixed(NOW, ZoneOffset.UTC),
                 mock(TenantMembershipPort.class), mock(OAuthAuthenticationRepository.class), revocations, 1001L);
         command = ConsumeOAuthTokenCommand.builder().tokenDigest(token.getTokenDigest()).clientPk(501L)
                 .tokenType(OAuthTokenTypeEnum.REFRESH).build();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void clearFenceState() {
+        org.springframework.transaction.support.TransactionSynchronizationManager.getSynchronizations().forEach(
+                sync -> sync.afterCompletion(org.springframework.transaction.support.TransactionSynchronization.STATUS_ROLLED_BACK));
+        org.springframework.transaction.support.TransactionSynchronizationManager.clearSynchronization();
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
     }
 
     @Test
@@ -118,6 +129,21 @@ class OAuthTokenIssueCoherentSnapshotTest {
         verify(manager).rollback(any());
         verify(authorizations, never()).findByIdForUpdate(any(), anyLong());
         verifyNoInteractions(revocations, audits, outbox);
+    }
+
+    @Test
+    void primaryGrantMismatchRollsBackBeforeIssuingAToken() {
+        when(clients.fenceGrantObservedVersion(eq(realm), any(), anyLong(), any())).thenReturn(false);
+        var transaction = new TransactionTemplate(manager);
+        assertThatThrownBy(() -> transaction.execute(status -> service.consumeAndIssue(realm, command,
+                () -> { throw new AssertionError("delegate must not run"); })))
+                .isInstanceOf(OptimisticLockingFailureException.class);
+        verify(manager).rollback(any());
+        verify(tokens, never()).findAtAuthorizationVersion(any(), anyString(), anyLong(), anyLong());
+        verify(realms, never()).findByRealmKeyForUpdate(any());
+        verify(clients, never()).findByClientIdForUpdate(any(), anyString());
+        verify(grants, never()).findGrantForUpdate(any(), anyLong(), anyString(), any());
+        verifyNoInteractions(audits, outbox);
     }
 
     @Test

@@ -70,9 +70,10 @@ class OAuthClientServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        when(realms.findByRealmKeyForUpdate(tenantA)).thenReturn(Optional.of(realmRow(tenantA)));
-        when(realms.findByRealmKeyForUpdate(tenantB)).thenReturn(Optional.of(realmRow(tenantB)));
-        when(realms.findByRealmKeyForUpdate(platform)).thenReturn(Optional.of(realmRow(platform)));
+        when(realms.findByRealmKey(tenantA)).thenReturn(Optional.of(realmRow(tenantA)));
+        when(realms.findByRealmKey(tenantB)).thenReturn(Optional.of(realmRow(tenantB)));
+        when(realms.findByRealmKey(platform)).thenReturn(Optional.of(realmRow(platform)));
+        when(realms.fenceActiveObservedVersion(any())).thenReturn(true);
         service = new OAuthClientServiceImpl(clients, realms, resources, grants, views, events, revocations,
                 new SecureRandom(), Clock.fixed(NOW, ZoneOffset.UTC), "test");
         when(views.toCreatedTarget(any(OAuthClientBO.class), any(URI.class), nullable(String.class)))
@@ -110,7 +111,7 @@ class OAuthClientServiceImplTest {
             value.setId(501L).setCreatedAt(NOW).setUpdatedAt(NOW);
             return value;
         });
-        when(grants.findGrantForUpdate(eq(tenantA), eq(501L), eq("orders-resource"),
+        when(grants.findGrant(eq(tenantA), eq(501L), eq("orders-resource"),
                 eq(ResourceGrantType.USER_DELEGATION))).thenReturn(Optional.empty());
 
         var created = service.create(tenantA, platform, userClient(resourceUri), "admin-1");
@@ -154,7 +155,7 @@ class OAuthClientServiceImplTest {
     @Test
     void rotatesSecretOnlyWithinSelectedRealmAndIncrementsCredentialVersion() {
         OAuthClientBO current = confidential("orders-service", 40L, 2L, 3L);
-        when(clients.findByClientIdForUpdate(tenantA, "orders-service")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-service")).thenReturn(Optional.of(current));
         when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
 
         var rotated = service.rotateSecret(tenantA, "orders-service", new RotateClientSecretDTO(2L), "admin-1");
@@ -169,15 +170,15 @@ class OAuthClientServiceImplTest {
         verify(revocations).revokeClient(eq(tenantA), argThat(command -> command.getClientPk() == 40L
                 && command.getReasonCode().equals("CLIENT_SECRET_ROTATED")));
         InOrder lockOrder = inOrder(realms, clients);
-        lockOrder.verify(realms).findByRealmKeyForUpdate(tenantA);
-        lockOrder.verify(clients).findByClientIdForUpdate(tenantA, "orders-service");
-        verify(clients, never()).findByClientIdForUpdate(eq(tenantB), eq("orders-service"));
+        lockOrder.verify(realms).findByRealmKey(tenantA);
+        lockOrder.verify(clients).findByClientId(tenantA, "orders-service");
+        verify(clients, never()).findByClientId(eq(tenantB), eq("orders-service"));
     }
 
     @Test
     void rejectsStaleRotationBeforeWritingASecret() {
         OAuthClientBO current = confidential("orders-service", 40L, 3L, 3L);
-        when(clients.findByClientIdForUpdate(tenantA, "orders-service")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-service")).thenReturn(Optional.of(current));
 
         assertThatThrownBy(() -> service.rotateSecret(tenantA, "orders-service",
                 new RotateClientSecretDTO(2L), "admin-1"))
@@ -188,7 +189,7 @@ class OAuthClientServiceImplTest {
     @Test
     void rejectsRefreshTokensForServiceClientsAtTheDirectServiceBoundary() {
         OAuthClientBO current = confidential("orders-service", 40L, 2L, 3L);
-        when(clients.findByClientIdForUpdate(tenantA, "orders-service")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-service")).thenReturn(Optional.of(current));
 
         assertThatThrownBy(() -> service.update(tenantA, "orders-service",
                 new UpdateOAuthClientDTO("Orders Service", OAuthClient.Status.ACTIVE, 600, 3600, 2L, null)))
@@ -201,7 +202,7 @@ class OAuthClientServiceImplTest {
     void updatePreservesRegisteredScopesWhenOptionalScopesAreOmitted() {
         OAuthClientBO current = userBO("orders-web", 2L, List.of("openid", "profile"))
                 .setBrowserBound(true).setPostLogoutRedirectUris(List.of("https://client.example/signed-out"));
-        when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
         when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
         OAuthClientVO expected = OAuthClientVO.builder().clientId("orders-web").issuer(tenantA.getIssuer().toASCIIString())
                 .allowedScopes(List.of("openid", "profile")).build();
@@ -222,7 +223,7 @@ class OAuthClientServiceImplTest {
     @Test
     void browserBindingChangeAdvancesTheClientSecurityGeneration() {
         OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
-        when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
         when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L))).thenAnswer(invocation -> invocation.getArgument(1));
         service.update(tenantA, "orders-web", UpdateOAuthClientDTO.builder().clientName("Orders Web")
                 .status(OAuthClient.Status.ACTIVE).accessTokenTtlSeconds(600).refreshTokenTtlSeconds(0).expectedVersion(2L)
@@ -243,7 +244,7 @@ class OAuthClientServiceImplTest {
     @Test
     void updateRejectsClearingScopesWithoutWritingTheClient() {
         OAuthClientBO current = userBO("orders-web", 2L, List.of("openid", "profile"));
-        when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
 
         assertThatThrownBy(() -> service.update(tenantA, "orders-web",
                 new UpdateOAuthClientDTO("Orders Web", OAuthClient.Status.ACTIVE, 600, 0, 2L, List.of())))
@@ -255,7 +256,7 @@ class OAuthClientServiceImplTest {
     @Test
     void permitsExactLoopbackRedirectOnlyUnderTheLocalProfile() {
         OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
-        when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
         when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
         when(views.toTarget(any(OAuthClientBO.class), eq(tenantA.getIssuer())))
@@ -277,7 +278,7 @@ class OAuthClientServiceImplTest {
     @Test
     void acceptsCanonicalHttpsRedirectOutsideTheLocalProfile() {
         OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
-        when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
         when(clients.save(eq(tenantA), any(OAuthClientBO.class), eq(2L)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
         when(views.toTarget(any(OAuthClientBO.class), eq(tenantA.getIssuer())))
@@ -294,7 +295,7 @@ class OAuthClientServiceImplTest {
     @Test
     void rejectsLoopbackHttpRedirectOutsideLocalAndRejectsMalformedServiceScopes() {
         OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
-        when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
         assertThatThrownBy(() -> service.putRedirectUri(
                 tenantA, "orders-web", "http://127.0.0.1:18121/oauth/callback"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -311,7 +312,7 @@ class OAuthClientServiceImplTest {
     @Test
     void rejectsMalformedRedirectTargetsAndInvalidTtlOnDirectServiceCalls() {
         OAuthClientBO current = userBO("orders-web", 2L, List.of("openid"));
-        when(clients.findByClientIdForUpdate(tenantA, "orders-web")).thenReturn(Optional.of(current));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.of(current));
         for (String redirect : List.of(
                 "http://localhost:18121/oauth/callback",
                 "http://127.0.0.1/oauth/callback",
@@ -332,6 +333,7 @@ class OAuthClientServiceImplTest {
                 .hasMessage("OAUTH_CLIENT_TTL_INVALID");
         CreateOAuthClientDTO duplicateRedirects = userClient("https://api.example/orders")
                 .setRedirectUris(List.of("https://client.example/callback", "https://client.example/callback"));
+        when(clients.findByClientId(tenantA, "orders-web")).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.create(tenantA, platform, duplicateRedirects, "admin-1"))
                 .isInstanceOf(IllegalArgumentException.class);
         verify(clients, never()).save(eq(tenantA), any(OAuthClientBO.class), anyLong());

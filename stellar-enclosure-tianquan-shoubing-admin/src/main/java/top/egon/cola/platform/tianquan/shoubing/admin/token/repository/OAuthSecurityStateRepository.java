@@ -28,6 +28,8 @@ public interface OAuthSecurityStateRepository {
     boolean advanceRealmIfSubjectAbsent(TrustedRealmBO realm, long id, long expectedVersion,
             String subject, long revision, Instant now);
 
+    boolean fenceRealmIfSubjectAbsent(TrustedRealmBO realm, long id, long expectedVersion, String subject, Instant now);
+
     Optional<OAuthSecurityStateBO> findByTarget(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotNull OAuthSecurityTargetEnum targetType,

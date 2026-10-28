@@ -21,6 +21,8 @@ public interface OAuthRealmRepository {
 
     boolean fenceObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm);
 
+    boolean fenceActiveObservedVersion(@NotNull @Valid TrustedRealmBO trustedRealm);
+
     List<OAuthRealmBO> findAllByStoragePartition(@NotNull @Valid TrustedRealmBO trustedRealm);
 
     OAuthRealmBO save(

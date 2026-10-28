@@ -12,6 +12,7 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 import lombok.ToString;
 import lombok.experimental.Accessors;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 
 @Data
 @NoArgsConstructor
@@ -30,4 +31,13 @@ public class OAuthClientRevokeCommand {
     @NotBlank
     @Pattern(regexp = "[A-Z0-9_]{1,128}")
     private String reasonCode;
+
+    @JsonIgnore
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
+    private OAuthClientBO writtenClient;
+
+    public OAuthClientRevokeCommand(Long clientPk, String reasonCode) {
+        this(clientPk, reasonCode, null);
+    }
 }

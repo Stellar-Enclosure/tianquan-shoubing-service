@@ -38,6 +38,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthPendi
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthSecuritySnapshotBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.SasAuthorizationConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.SasRegisteredClientConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
@@ -97,11 +98,11 @@ public class TenantAuthorizationServiceImpl implements OAuth2AuthorizationServic
     public void save(OAuth2Authorization source) {
         OAuth2Authorization authorization = Objects.requireNonNull(source, "authorization");
         TrustedRealmBO trustedRealm = tenantIssuerService.resolveCurrentIssuer();
-        if (!realmRepository.fenceObservedVersion(trustedRealm)) {
+        if (!OAuthTransactionFences.activeRealm(realmRepository, trustedRealm)) {
             throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before authorization save");
         }
         OAuthClientBO client = loadClient(trustedRealm, authorization.getRegisteredClientId());
-        if (!clientRepository.fenceObservedVersion(trustedRealm, client)) {
+        if (!OAuthTransactionFences.client(clientRepository, trustedRealm, client)) {
             throw new org.springframework.dao.OptimisticLockingFailureException("OAuth client changed before authorization save");
         }
         String principalType = AuthorizationGrantType.CLIENT_CREDENTIALS.equals(

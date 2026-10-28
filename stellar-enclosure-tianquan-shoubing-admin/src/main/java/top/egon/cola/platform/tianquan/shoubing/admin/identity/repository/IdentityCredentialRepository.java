@@ -74,8 +74,11 @@ public class IdentityCredentialRepository extends EgonColaRepository<IdentityCre
         String identitySub = required(credential.identitySub());
         return directoryContext.withPlatformDirectoryPartition(() -> {
             Long partitionId = directoryContext.directoryPartitionId();
-            IdentityCredentialPO current = baseMapper.selectForUpdate(partitionId, identitySub);
+            IdentityCredentialPO current = baseMapper.selectByExternalKey(partitionId, identitySub);
             if (current == null) {
+                if (expectedVersion != 0L || credential.version() != 0L) {
+                    throw new org.springframework.dao.TransientDataAccessResourceException("identity credential is not yet visible");
+                }
                 requireNewVersion(identitySub, credential.version(), expectedVersion);
                 IdentityCredentialPO inserted = converter.toSource(credential);
                 if (!super.save(inserted)) {

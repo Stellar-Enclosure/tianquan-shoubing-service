@@ -16,6 +16,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClien
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthSecuritySnapshotBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
@@ -122,7 +123,9 @@ public class OAuthSecurityProjectionComponent {
                 || user != (subject != null && !subject.isBlank())) { throw unavailable("OAUTH_SECURITY_SNAPSHOT_INPUT_INVALID"); }
         // Every generation mutation uses this same realm-first lock order.
         if (!realmFenced) {
-            realmRepository.findByRealmKeyForUpdate(realm).orElseThrow(() -> unavailable("OAUTH_SECURITY_REALM_STATE_MISSING"));
+            if (!OAuthTransactionFences.activeRealm(realmRepository, realm)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before security snapshot");
+            }
         }
         var realmState = enabled(realm, OAuthSecurityTargetEnum.REALM, "self");
         var clientState = enabled(realm, OAuthSecurityTargetEnum.CLIENT, Long.toString(clientPk));
@@ -136,6 +139,11 @@ public class OAuthSecurityProjectionComponent {
                         throw unavailable("OAUTH_SECURITY_SUBJECT_STATE_MISSING_WITH_AUTHORIZATION");
                     }
                 }
+                if (!stateRepository.fenceRealmIfSubjectAbsent(realm, realmState.getId(), realmState.getVersion(), subject, clock.instant())) {
+                    throw new org.springframework.dao.OptimisticLockingFailureException("OAuth subject state or authorization history changed");
+                }
+                realmState.setVersion(Math.addExact(realmState.getVersion(), 1L));
+                OAuthTransactionFences.securityStateWritten(realm, realmState);
                 subjectState = stateRepository.save(realm, initial(OAuthSecurityTargetEnum.SUBJECT, subject, true, revision), 0L);
             }
             if (!subjectState.isEnabled()) { throw invalidGrant("OAUTH_SECURITY_STATE_DISABLED"); }

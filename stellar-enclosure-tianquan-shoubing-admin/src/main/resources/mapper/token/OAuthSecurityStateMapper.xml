@@ -121,6 +121,19 @@
                 AND a.principal_type = 'USER' AND a.deleted_at IS NULL)
     </update>
 
+    <update id="fenceRealmIfSubjectAbsent">
+        UPDATE tianquan_oauth.oauth_security_state s
+        SET version = s.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE s.tenant_id = #{tenantId} AND s.id = #{id} AND s.version = #{expectedVersion}
+          AND s.target_type = 'REALM' AND s.target_key = 'self' AND s.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_security_state subject_state
+              WHERE subject_state.tenant_id = #{tenantId} AND subject_state.target_type = 'SUBJECT'
+                AND subject_state.target_key = #{subject} AND subject_state.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization a
+              WHERE a.tenant_id = #{tenantId} AND a.principal_name = #{subject}
+                AND a.principal_type = 'USER' AND a.deleted_at IS NULL)
+    </update>
+
     <update id="deleteVersionedById">
         UPDATE tianquan_oauth.oauth_security_state
         SET deleted_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC', version = version + 1,

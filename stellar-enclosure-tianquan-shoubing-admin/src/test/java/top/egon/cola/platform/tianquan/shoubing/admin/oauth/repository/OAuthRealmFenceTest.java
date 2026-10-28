@@ -38,6 +38,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.token.domain.enums.OAuthSe
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -57,6 +58,7 @@ class OAuthRealmFenceTest {
         row.setId(42L); row.setVersion(3L); row.setIssuer(realm.getIssuer().toASCIIString());
         row.setRealmKey(realm.getRealmKey()); row.setRealmType(realm.getRealmType());
         row.setStoragePartitionId(101L); row.setBusinessTenantId(101L);
+        row.setStatus("ACTIVE"); row.setTrustVersion(0L);
         when(mapper.selectByRealmKey(101L, "tenant:101")).thenReturn(row);
         when(mapper.fenceObservedVersion(101L, 42L, "tenant:101", 3L, NOW, "service:tianquan-shoubing"))
                 .thenReturn(1, 0);
@@ -71,6 +73,22 @@ class OAuthRealmFenceTest {
         } finally {
             MDC.remove("tenantId");
         }
+    }
+
+    @Test
+    void activeRealmFenceRejectsDisabledOrDifferentTrustBeforeWriting() {
+        var mapper = mock(OAuthRealmMapper.class);
+        var row = new OAuthRealmPO();
+        row.setId(42L); row.setVersion(3L); row.setIssuer(realm.getIssuer().toASCIIString());
+        row.setRealmKey(realm.getRealmKey()); row.setRealmType(realm.getRealmType());
+        row.setStoragePartitionId(101L); row.setBusinessTenantId(101L); row.setTrustVersion(0L); row.setStatus("DISABLED");
+        when(mapper.selectByRealmKey(101L, "tenant:101")).thenReturn(row);
+        var repository = new OAuthRealmRepositoryImpl(mapper, new EgonColaMybatisPlusProperties(),
+                mock(OAuthRealmConverter.class), () -> "service:tianquan-shoubing", Clock.fixed(NOW, ZoneOffset.UTC));
+        assertThat(repository.fenceActiveObservedVersion(realm)).isFalse();
+        row.setStatus("ACTIVE"); row.setTrustVersion(1L);
+        assertThat(repository.fenceActiveObservedVersion(realm)).isFalse();
+        verify(mapper, never()).fenceObservedVersion(anyLong(), anyLong(), anyString(), anyLong(), any(), anyString());
     }
 
     @Test
@@ -170,5 +188,51 @@ class OAuthRealmFenceTest {
         } finally {
             MDC.remove("tenantId");
         }
+    }
+
+    @Test
+    void grantFenceChecksThePrimaryWithoutChangingTheGrantVersion() throws Exception {
+        var configuration = new Configuration();
+        String resource = "mapper/oauth/OAuthClientMapper.xml";
+        try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            new XMLMapperBuilder(input, configuration, resource, configuration.getSqlFragments()).parse();
+        }
+        configuration.setEnvironment(new Environment("test", new SpringManagedTransactionFactory(), mock(DataSource.class)));
+        var properties = new EgonColaMybatisPlusProperties();
+        var tenantGuard = new EgonColaTenantIdGuardInnerInterceptor(() -> "service:tianquan-shoubing", properties);
+        new CommonAnnotationBeanPostProcessor().postProcessBeforeInitialization(tenantGuard, "sqlGuard");
+        var tables = new java.util.ArrayList<String>();
+        var routeGuard = new EgonColaLocalWriteGuardInnerInterceptor(query -> {
+            tables.add(query.logicalTable());
+            return new EgonColaRouteResult(List.of(new EgonColaPhysicalTargetBO("primary", "tianquan_oauth", query.logicalTable())), "a".repeat(64));
+        }, tenantGuard, mock(EgonColaTwoLevelRouteStrategy.class), Map.of());
+        var client = top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO.builder()
+                .id(42L).clientId("orders").version(3L).build();
+        var grant = top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthGrantBO.builder()
+                .id(90L).clientPk(42L).resourceServerId("resource").version(7L)
+                .grantType(top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceGrantType.USER_DELEGATION)
+                .status(top.egon.cola.platform.tianquan.shoubing.core.resource.ClientResourceGrant.Status.ACTIVE).build();
+        var parameters = Map.<String, Object>of("tenantId", 101L, "client", client, "grant", grant,
+                "expectedVersion", 4L, "now", NOW, "actor", "service:tianquan-shoubing");
+        var statement = configuration.getMappedStatement(OAuthClientMapper.class.getName() + ".fenceGrantObservedVersion");
+        String sql = statement.getBoundSql(parameters).getSql();
+        assertThat(sql.toLowerCase(java.util.Locale.ROOT)).contains("c.tenant_id = ?", "c.version = ?", "g.tenant_id = ?",
+                "g.version = ?", "g.client_pk = ?", "g.status = ?").doesNotContain("for update");
+        var parser = new org.apache.shardingsphere.infra.parser.ShardingSphereSQLParserEngine(
+                org.apache.shardingsphere.infra.spi.type.typed.TypedSPILoader.getService(
+                        org.apache.shardingsphere.database.connector.core.type.DatabaseType.class, "PostgreSQL"),
+                new org.apache.shardingsphere.sql.parser.engine.api.CacheOption(16, 64),
+                new org.apache.shardingsphere.sql.parser.engine.api.CacheOption(16, 64));
+        assertThat(parser.parse(sql, false)).isNotNull();
+        MDC.put("tenantId", "101");
+        try {
+            Executor executor = mock(Executor.class);
+            var invocation = new Invocation(executor, Executor.class.getMethod("update", MappedStatement.class, Object.class),
+                    new Object[]{statement, parameters});
+            assertThatCode(() -> new EgonColaOriginalSqlGuardInterceptor(properties).intercept(invocation)).doesNotThrowAnyException();
+            var handler = configuration.newStatementHandler(executor, statement, parameters, RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
+            assertThatCode(() -> routeGuard.beforePrepare(handler, null, null)).doesNotThrowAnyException();
+            assertThat(tables).containsExactly("oauth_client", "oauth_grant");
+        } finally { MDC.remove("tenantId"); }
     }
 }

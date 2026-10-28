@@ -32,6 +32,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClien
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthConsentBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthSecuritySnapshotBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.command.ConsumeOAuthTokenCommand;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
@@ -127,15 +128,15 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 || authorizationCandidate.getAttributes().getPendingConsent() != null) {
             throw invalidGrant();
         }
-        realmRepository.findByRealmKeyForUpdate(realm)
-                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
+        if (!OAuthTransactionFences.activeRealm(realmRepository, realm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before token issuance");
+        }
         OAuthClientBO clientCandidate = clientRepository.findById(realm, input.getClientPk())
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        OAuthClientBO lockedClient = clientRepository.findByClientIdForUpdate(realm, clientCandidate.getClientId())
-                .filter(value -> value.getStatus() == OAuthClient.Status.ACTIVE)
-                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        if (!Objects.equals(clientCandidate.getId(), lockedClient.getId())) {
-            throw invalidGrant();
+        OAuthClientBO lockedClient = clientCandidate;
+        if (lockedClient.getStatus() != OAuthClient.Status.ACTIVE) throw invalidGrant();
+        if (!OAuthTransactionFences.client(clientRepository, realm, lockedClient)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth client changed before token issuance");
         }
         if (input.getResource() != null && !input.getResource().toASCIIString().equals(authorizationCandidate.getResourceUri())
                 || lockedClient.isBrowserBound() && (input.getResource() == null || input.getBrowserBindingDigest() == null
@@ -215,12 +216,11 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 .filter(value -> value.getStatus() == OAuthClient.Status.ACTIVE)
                 .filter(value -> "SERVICE".equals(value.getPurpose().name()))
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        realmRepository.findByRealmKeyForUpdate(realm)
-                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        client = clientRepository.findByClientIdForUpdate(realm, client.getClientId())
-                .filter(value -> value.getStatus() == OAuthClient.Status.ACTIVE)
-                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        OAuthSecuritySnapshotBO snapshot = securityProjection.snapshotForAuthorization(
+        if (!OAuthTransactionFences.activeRealm(realmRepository, realm)
+                || !OAuthTransactionFences.client(clientRepository, realm, client)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm or client changed before token issuance");
+        }
+        OAuthSecuritySnapshotBO snapshot = securityProjection.snapshotForFencedRealm(
                 realm, clientPk, "SERVICE", null);
         URI targetUri = Objects.requireNonNull(resource, "resource").normalize();
         ResourceServer target = resourceServerStore.findByUri(targetUri)
@@ -235,13 +235,16 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 ? null : Long.toString(realm.getBusinessTenantId());
         ClientCredentialsAccessPolicy.ServiceResourceAccess access =
                 clientCredentialsAccessPolicy.authorize(policyClient, target, businessTenant, scopes);
-        grantRepository.findGrantForUpdate(realm, clientPk, target.resourceServerId(),
+        OAuthGrantBO grant = grantRepository.findGrant(realm, clientPk, target.resourceServerId(),
                         ResourceGrantType.CLIENT_CREDENTIALS)
-                .filter(grant -> grant.getStatus()
+                .filter(candidate -> candidate.getStatus()
                         == top.egon.cola.platform.tianquan.shoubing.core.resource.ClientResourceGrant.Status.ACTIVE)
-                .filter(grant -> Objects.equals(grant.getVersion(), access.grantVersion()))
+                .filter(candidate -> Objects.equals(candidate.getVersion(), access.grantVersion()))
                 .orElseThrow(() -> new OAuth2AuthenticationException(
                         new OAuth2Error("invalid_target", "Request rejected", null)));
+        if (!OAuthTransactionFences.grant(clientRepository, realm, client, grant)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth grant changed before token issuance");
+        }
         if (realm.getRealmType() == top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum.TENANT
                 && access.scopeContext() != top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext.TENANT
                 || realm.getRealmType() == top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum.PLATFORM
@@ -281,12 +284,11 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 .filter(candidate -> candidate.getStatus() == OAuthClient.Status.ACTIVE)
                 .filter(candidate -> "USER".equals(candidate.getPurpose().name()))
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        realmRepository.findByRealmKeyForUpdate(realm)
-                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        client = clientRepository.findByClientIdForUpdate(realm, client.getClientId())
-                .filter(candidate -> candidate.getStatus() == OAuthClient.Status.ACTIVE)
-                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        OAuthSecuritySnapshotBO snapshot = securityProjection.snapshotForAuthorization(
+        if (!OAuthTransactionFences.activeRealm(realmRepository, realm)
+                || !OAuthTransactionFences.client(clientRepository, realm, client)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm or client changed before token issuance");
+        }
+        OAuthSecuritySnapshotBO snapshot = securityProjection.snapshotForFencedRealm(
                 realm, value.getClientPk(), "USER", value.getPrincipalName());
         String authenticationJti = value.getAttributes().getAuthenticationJti();
         if (authenticationJti == null) { throw invalidGrant(); }
@@ -337,13 +339,16 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                     .filter(ResourceServer::active)
                     .orElseThrow(() -> new OAuth2AuthenticationException(
                             new OAuth2Error("invalid_target", "Request rejected", null)));
-            OAuthGrantBO grant = grantRepository.findGrantForUpdate(realm, value.getClientPk(), target.resourceServerId(),
+            OAuthGrantBO grant = grantRepository.findGrant(realm, value.getClientPk(), target.resourceServerId(),
                             ResourceGrantType.USER_DELEGATION)
                     .filter(candidate -> candidate.getStatus()
                             == top.egon.cola.platform.tianquan.shoubing.core.resource.ClientResourceGrant.Status.ACTIVE)
                     .orElseThrow(() -> new OAuth2AuthenticationException(
                             new OAuth2Error("invalid_target", "Request rejected", null)));
             requireCurrentUserGrant(grant, target, value.getAuthorizedScopes());
+            if (!OAuthTransactionFences.grant(clientRepository, realm, client, grant)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth grant changed before token issuance");
+            }
         }
         return new UserAuthorizationIssueContext(value.getId(), snapshot, value.getPrincipalName(), audiences);
     }
@@ -400,13 +405,16 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                     .filter(ResourceServer::active)
                     .orElseThrow(() -> new OAuth2AuthenticationException(
                             new OAuth2Error("invalid_target", "Request rejected", null)));
-            OAuthGrantBO grant = grantRepository.findGrantForUpdate(realm, client.getId(), target.resourceServerId(),
+            OAuthGrantBO grant = grantRepository.findGrant(realm, client.getId(), target.resourceServerId(),
                             ResourceGrantType.USER_DELEGATION)
                     .filter(candidate -> candidate.getStatus()
                             == top.egon.cola.platform.tianquan.shoubing.core.resource.ClientResourceGrant.Status.ACTIVE)
                     .orElseThrow(() -> new OAuth2AuthenticationException(
                             new OAuth2Error("invalid_target", "Request rejected", null)));
             requireCurrentUserGrant(grant, target, scopes);
+            if (!OAuthTransactionFences.grant(clientRepository, realm, client, grant)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth grant changed before token issuance");
+            }
         }
     }
 

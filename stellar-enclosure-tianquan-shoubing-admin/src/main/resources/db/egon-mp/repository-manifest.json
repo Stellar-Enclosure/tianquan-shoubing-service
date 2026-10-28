@@ -20,6 +20,11 @@
       "version": "20261027_001",
       "path": "db/egon-mp/V20261027_001__add_device_sessions.sql",
       "sha256": "560c3293eb5ed128294b82289500d9395d3bfdb5c7a2ed137a3f4f5ddcbfb948"
+    },
+    {
+      "version": "20261028_001",
+      "path": "db/egon-mp/V20261028_001__coordinate_oauth_grant_writes.sql",
+      "sha256": "4aa6eeed522b092a484849238de3117baf8fee3de752e335edca85c7404fa34f"
     }
   ]
 }

@@ -24,6 +24,8 @@ import top.egon.cola.component.common.mybatis.extension.EgonColaRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthClientMapper;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthGrantBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthClientConverter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.po.OAuthClientPO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
@@ -104,6 +106,21 @@ public class OAuthClientRepositoryImpl extends EgonColaRepository<OAuthClientMap
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean fenceGrantObservedVersion(TrustedRealmBO realm, OAuthClientBO client, long expectedVersion,
+            OAuthGrantBO grant) {
+        Objects.requireNonNull(client, "client");
+        Objects.requireNonNull(grant, "grant");
+        if (client.getId() == null || client.getId() <= 0 || expectedVersion < 0 || grant.getId() == null
+                || grant.getId() <= 0 || !Objects.equals(client.getId(), grant.getClientPk())) {
+            throw new IllegalArgumentException("OAUTH_GRANT_FENCE_INVALID");
+        }
+        return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceGrantObservedVersion(
+                tenant, client, expectedVersion, grant, clock.instant().truncatedTo(ChronoUnit.MICROS),
+                userIdProvider.currentUserId()) == 1);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<OAuthClientBO> findAllByRealm(@NotNull @Valid TrustedRealmBO trustedRealm) {
         return withTrustedStoragePartition(trustedRealm, tenantId -> baseMapper
@@ -122,18 +139,20 @@ public class OAuthClientRepositoryImpl extends EgonColaRepository<OAuthClientMap
         trustedRealm.validateTrustedPartition();
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
-                OAuthClientPO current = baseMapper.selectByClientIdForUpdate(
+                OAuthClientPO current = baseMapper.selectByClientId(
                         tenantId, required(client.getClientId(), "clientId"));
                 OAuthClientPO value = converter.toSource(client);
                 value.setTenantId(tenantId);
                 if (current == null) {
                     if (expectedVersion != 0L || client.getVersion() != 0L || client.getId() != null) {
-                        throw stale(client.getClientId(), expectedVersion, -1L);
+                        throw new org.springframework.dao.TransientDataAccessResourceException("OAuth client is not yet visible");
                     }
                     if (!super.save(value)) {
                         throw new IllegalStateException("OAUTH_CLIENT_INSERT_NOT_APPLIED");
                     }
-                    return converter.toTarget(value);
+                    OAuthClientBO saved = converter.toTarget(value);
+                    OAuthTransactionFences.clientWritten(trustedRealm, saved);
+                    return saved;
                 }
 
                 long nextVersion = Math.addExact(expectedVersion, 1L);
@@ -155,7 +174,9 @@ public class OAuthClientRepositoryImpl extends EgonColaRepository<OAuthClientMap
                 if (baseMapper.updateExpectedVersion(tenantId, value, expectedVersion) != 1) {
                     throw stale(client.getClientId(), expectedVersion, current.getVersion());
                 }
-                return converter.toTarget(value);
+                OAuthClientBO saved = converter.toTarget(value);
+                OAuthTransactionFences.clientWritten(trustedRealm, saved);
+                return saved;
             } catch (DataIntegrityViolationException failure) {
                 throw new IllegalStateException("OAUTH_CLIENT_CONFLICT", failure);
             }

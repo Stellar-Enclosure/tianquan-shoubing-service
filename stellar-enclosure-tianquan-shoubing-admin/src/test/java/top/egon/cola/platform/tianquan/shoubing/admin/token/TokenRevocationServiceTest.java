@@ -110,6 +110,8 @@ class TokenRevocationServiceTest {
     @AfterEach
     void clearTransactionSynchronization() {
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.getSynchronizations().forEach(sync ->
+                    sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
             TransactionSynchronizationManager.clearSynchronization();
         }
         TransactionSynchronizationManager.setActualTransactionActive(false);
@@ -485,6 +487,37 @@ class TokenRevocationServiceTest {
         assertThat(((OAuthSecurityChangedEvent) outboxMessage.getValue().payload()).targetType())
                 .isEqualTo("CLIENT");
         verify(states, never()).findByTargetForUpdate(any(), any(), anyString());
+    }
+
+    @Test
+    void clientRevocationUsesTheClientWrittenInTheSameTransaction() {
+        OAuthSecurityStateBO realmState = securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L);
+        OAuthClientBO saved = client();
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self")).thenReturn(Optional.of(realmState));
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.CLIENT, "501")).thenReturn(Optional.empty());
+        when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), eq(0L))).thenAnswer(call -> call.getArgument(1));
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences.clientWritten(REALM, saved);
+
+        service.revokeClient(REALM, OAuthClientRevokeCommand.builder().clientPk(501L)
+                .reasonCode("CLIENT_CREATED").writtenClient(saved).build());
+
+        verify(clients, never()).findById(any(), anyLong());
+        verify(clients, never()).findByClientIdForUpdate(any(), anyString());
+        verify(outbox).enqueue(any());
+    }
+
+    @Test
+    void unprovenWrittenClientCannotBypassThePrimaryFence() {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        when(states.findByTarget(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        assertThatThrownBy(() -> service.revokeClient(REALM, OAuthClientRevokeCommand.builder()
+                .clientPk(501L).reasonCode("CLIENT_CREATED").writtenClient(client()).build()))
+                .hasMessage("OAUTH_CLIENT_WRITE_PROOF_REQUIRED");
+        verify(outbox, never()).enqueue(any());
     }
 
     @Test

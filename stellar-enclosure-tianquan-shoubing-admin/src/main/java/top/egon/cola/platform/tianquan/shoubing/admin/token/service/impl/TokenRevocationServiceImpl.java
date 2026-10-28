@@ -36,6 +36,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAutho
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthTransactionFences;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository;
@@ -116,7 +117,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
     private void revokeInternal(TrustedRealmBO trustedRealm, RevokeOAuthTokenCommand command, boolean tokenWasObserved) {
         TrustedRealmBO realm = requireRealm(trustedRealm);
         RevokeOAuthTokenCommand input = Objects.requireNonNull(command, "command");
-        if (!realmRepository.fenceObservedVersion(realm)) {
+        if (!OAuthTransactionFences.realm(realmRepository, realm)) {
             throw unavailable("OAUTH_REVOCATION_REALM_NOT_READY");
         }
         OAuthSecurityStateBO realmState = requiredState(realm, OAuthSecurityTargetEnum.REALM, "self");
@@ -140,7 +141,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         OAuthClientBO clientCandidate = clientRepository.findById(realm, authorizationCandidate.getClientPk())
                 .orElseThrow(() -> unavailable("OAUTH_REVOCATION_CLIENT_MISSING"));
         if (!Objects.equals(clientCandidate.getId(), input.getClientPk())) { throw invalidClient(); }
-        if (!clientRepository.fenceObservedVersion(realm, clientCandidate)) {
+        if (!OAuthTransactionFences.client(clientRepository, realm, clientCandidate)) {
             throw new org.springframework.dao.OptimisticLockingFailureException("OAuth client changed before token revocation");
         }
         OAuthClientBO client = clientCandidate;
@@ -187,6 +188,8 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                     targetType, targetKey, revision, now)) {
                 throw new org.springframework.dao.OptimisticLockingFailureException("OAuth revocation or realm state changed");
             }
+            realmState.setVersion(Math.addExact(realmState.getVersion(), 1L)).setRevision(revision);
+            OAuthTransactionFences.securityStateWritten(realm, realmState);
             OAuthRevocationBO created = OAuthRevocationBO.builder()
                     .version(0L)
                     .targetType(targetType)
@@ -229,8 +232,9 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         List<ProjectionChange> projections = new ArrayList<>(registered.size());
         for (OAuthRealmBO realmRow : registered) {
             TrustedRealmBO realm = trustedRealm(realmRow);
-            realmRepository.findByRealmKeyForUpdate(realm)
-                    .orElseThrow(() -> unavailable("OAUTH_REVOCATION_REALM_MISSING"));
+            if (!OAuthTransactionFences.realm(realmRepository, realm)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before subject revocation");
+            }
             OAuthSecurityStateBO realmState = requiredState(realm, OAuthSecurityTargetEnum.REALM, "self");
             OAuthSecurityStateBO subjectState = stateRepository.findByTarget(
                     realm, OAuthSecurityTargetEnum.SUBJECT, input.getSubject()).orElse(null);
@@ -250,6 +254,8 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
                         input.getSubject(), revision, now)) {
                     throw new org.springframework.dao.OptimisticLockingFailureException("OAuth subject state or authorization history changed");
                 }
+                realmState.setVersion(Math.addExact(realmState.getVersion(), 1L)).setRevision(revision);
+                OAuthTransactionFences.securityStateWritten(realm, realmState);
             } else {
                 saveRealmRevision(realm, realmState, revision);
             }
@@ -274,14 +280,22 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
             @NotNull @Valid OAuthClientRevokeCommand command) {
         TrustedRealmBO realm = requireRealm(trustedRealm);
         OAuthClientRevokeCommand input = Objects.requireNonNull(command, "command");
-        realmRepository.findByRealmKeyForUpdate(realm)
-                .orElseThrow(() -> unavailable("OAUTH_REVOCATION_REALM_MISSING"));
+        if (!OAuthTransactionFences.realm(realmRepository, realm)) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("OAuth realm changed before client revocation");
+        }
         OAuthSecurityStateBO realmState = requiredState(realm, OAuthSecurityTargetEnum.REALM, "self");
-        OAuthClientBO clientCandidate = clientRepository.findById(realm, input.getClientPk())
-                .orElseThrow(() -> unavailable("OAUTH_REVOCATION_CLIENT_MISSING"));
-        OAuthClientBO client = clientRepository.findByClientIdForUpdate(realm, clientCandidate.getClientId())
-                .filter(value -> Objects.equals(value.getId(), input.getClientPk()))
-                .orElseThrow(TokenRevocationServiceImpl::invalidClient);
+        OAuthClientBO client = input.getWrittenClient();
+        if (client != null) {
+            if (!Objects.equals(client.getId(), input.getClientPk()) || !OAuthTransactionFences.isClientWritten(realm, client)) {
+                throw new IllegalStateException("OAUTH_CLIENT_WRITE_PROOF_REQUIRED");
+            }
+        } else {
+            client = clientRepository.findById(realm, input.getClientPk())
+                    .orElseThrow(() -> unavailable("OAUTH_REVOCATION_CLIENT_MISSING"));
+            if (!OAuthTransactionFences.client(clientRepository, realm, client)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("OAuth client changed before client revocation");
+            }
+        }
         OAuthSecurityStateBO clientState = stateRepository.findByTarget(
                 realm, OAuthSecurityTargetEnum.CLIENT, Long.toString(client.getId())).orElse(null);
         boolean created = clientState == null;

@@ -77,6 +77,17 @@
           AND version = #{expectedVersion} AND deleted_at IS NULL
     </update>
 
+    <update id="fenceGrantObservedVersion">
+        UPDATE tianquan_oauth.oauth_client c
+        SET version = c.version + 1, update_user_id = #{actor}, update_time = #{now}
+        WHERE c.tenant_id = #{tenantId} AND c.id = #{client.id} AND c.client_id = #{client.clientId}
+          AND c.version = #{expectedVersion} AND c.deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM tianquan_oauth.oauth_grant g
+              WHERE g.tenant_id = #{tenantId} AND g.id = #{grant.id} AND g.client_pk = #{client.id}
+                AND g.resource_server_id = #{grant.resourceServerId} AND g.grant_type = #{grant.grantType}
+                AND g.version = #{grant.version} AND g.status = #{grant.status} AND g.deleted_at IS NULL)
+    </update>
+
     <select id="selectDirectory" resultMap="OAuthClientPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_client
