@@ -45,6 +45,14 @@
         FOR UPDATE
     </select>
 
+    <select id="selectAtAuthorizationVersion" resultMap="OAuthTokenPOResultMap">
+        SELECT t.* FROM tianquan_oauth.oauth_token t
+        JOIN tianquan_oauth.oauth_authorization a ON a.tenant_id = t.tenant_id AND a.id = t.authorization_pk
+        WHERE t.tenant_id = #{tenantId} AND t.token_digest = #{tokenDigest}
+          AND t.authorization_pk = #{authorizationPk} AND t.deleted_at IS NULL
+          AND a.version = #{authorizationVersion} AND a.status = 'ACTIVE' AND a.deleted_at IS NULL
+    </select>
+
     <select id="selectByAuthorization" resultMap="OAuthTokenPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_token

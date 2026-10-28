@@ -129,7 +129,6 @@ class TokenRevocationServiceTest {
                 .thenReturn(Optional.of(clientState));
         when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.of(subjectState));
-        when(authorizations.findByIdForUpdate(REALM, 700L)).thenReturn(Optional.of(authorization));
         when(revocations.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.JTI, "123456"))
                 .thenReturn(Optional.empty(), Optional.of(pendingJti()));
         when(states.save(eq(REALM), any(OAuthSecurityStateBO.class), eq(0L)))
@@ -150,6 +149,7 @@ class TokenRevocationServiceTest {
 
         ArgumentCaptor<OAuthTokenBO> tokenChange = ArgumentCaptor.forClass(OAuthTokenBO.class);
         verify(tokens).save(eq(REALM), tokenChange.capture(), eq(0L));
+        verify(authorizations, never()).findByIdForUpdate(any(), anyLong());
         verify(tokens, never()).findByTokenDigestForUpdate(any(), anyString());
         assertThat(tokenChange.getValue().getRevokedAt()).isEqualTo(NOW);
         ArgumentCaptor<OutboxMessage> outboxMessage = ArgumentCaptor.forClass(OutboxMessage.class);
@@ -208,7 +208,6 @@ class TokenRevocationServiceTest {
                 .thenReturn(Optional.of(clientState));
         when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
                 .thenReturn(Optional.of(subjectState));
-        when(authorizations.findByIdForUpdate(REALM, 700L)).thenReturn(Optional.of(authorization));
         when(tokens.findByTokenDigest(eq(REALM), anyString())).thenAnswer(invocation -> {
             String digest = invocation.getArgument(1);
             if (refresh.getTokenDigest().equals(digest)) {
@@ -268,6 +267,80 @@ class TokenRevocationServiceTest {
         assertThat(event.targetType()).isEqualTo("AUTHORIZATION");
         assertThat(event.targetKey()).isEqualTo("700");
         verify(projection, never()).applyProjection(any(), any());
+    }
+
+    @Test
+    void staleAuthorizationRollsBackFamilyRevocationBeforeOutboxEnqueue() {
+        OAuthTokenBO refresh = token().setTokenType(OAuthTokenTypeEnum.REFRESH);
+        OAuthAuthorizationBO authorization = authorization();
+        OAuthClientBO client = client();
+        when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
+        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(refresh));
+        when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization));
+        when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
+        when(clients.findByClientIdForUpdate(REALM, "web-client")).thenReturn(Optional.of(client));
+        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 8L)));
+        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L)));
+        org.mockito.Mockito.doThrow(new org.springframework.dao.OptimisticLockingFailureException("stale authorization"))
+                .when(authorizations).save(eq(REALM), any(), eq(0L));
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> service.revoke(REALM,
+                RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("ADMIN_REVOKE").build())))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        verify(transactionManager).rollback(any());
+        verify(authorizations, never()).findByIdForUpdate(any(), anyLong());
+        verify(outbox, never()).enqueue(any(OutboxMessage.class));
+    }
+
+    @Test
+    void observedTokenMissingOnReplicaIsRetryableWhileUnknownRevocationRemainsIdempotent() {
+        when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
+        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.empty());
+        var command = RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("REFRESH_TOKEN_REPLAY").build();
+
+        service.revoke(REALM, command);
+        assertThatThrownBy(() -> service.revokeKnown(REALM, command))
+                .isInstanceOf(org.springframework.dao.TransientDataAccessResourceException.class);
+        verify(outbox, never()).enqueue(any(OutboxMessage.class));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void observedTokenMissingDuringSecondLookupRollsBackRevocation(boolean alreadyObservedByCaller) {
+        OAuthTokenBO refresh = token().setTokenType(OAuthTokenTypeEnum.REFRESH);
+        OAuthAuthorizationBO authorization = authorization(); OAuthClientBO client = client();
+        when(realms.findByRealmKeyForUpdate(REALM)).thenReturn(Optional.of(realmRow()));
+        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.REALM, "self"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.REALM, "self", 1L, 7L)));
+        when(tokens.findByTokenDigest(REALM, TOKEN_DIGEST)).thenReturn(Optional.of(refresh), Optional.empty());
+        when(authorizations.findById(REALM, 700L)).thenReturn(Optional.of(authorization));
+        when(clients.findById(REALM, 501L)).thenReturn(Optional.of(client));
+        when(clients.findByClientIdForUpdate(REALM, "web-client")).thenReturn(Optional.of(client));
+        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.CLIENT, "501"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.CLIENT, "501", 2L, 8L)));
+        when(states.findByTargetForUpdate(REALM, OAuthSecurityTargetEnum.SUBJECT, "alice"))
+                .thenReturn(Optional.of(securityState(OAuthSecurityTargetEnum.SUBJECT, "alice", 3L, 9L)));
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        var command = RevokeOAuthTokenCommand.builder().tokenDigest(TOKEN_DIGEST).clientPk(501L).reasonCode("REFRESH_TOKEN_REPLAY").build();
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+            if (alreadyObservedByCaller) {
+                service.revokeKnown(REALM, command);
+            } else {
+                service.revoke(REALM, command);
+            }
+        }))
+                .isInstanceOf(org.springframework.dao.TransientDataAccessResourceException.class);
+        verify(transactionManager).rollback(any());
+        verify(authorizations, never()).save(any(), any(), anyLong());
+        verify(outbox, never()).enqueue(any(OutboxMessage.class));
     }
 
     @Test

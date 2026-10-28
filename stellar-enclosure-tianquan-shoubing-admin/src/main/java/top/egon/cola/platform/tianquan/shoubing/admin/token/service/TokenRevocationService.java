@@ -15,6 +15,11 @@ public interface TokenRevocationService {
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotNull @Valid RevokeOAuthTokenCommand command);
 
+    /** Revokes a token already observed by the caller; replica absence must remain retryable. */
+    void revokeKnown(
+            @NotNull @Valid TrustedRealmBO trustedRealm,
+            @NotNull @Valid RevokeOAuthTokenCommand command);
+
     void revokeSubject(@NotNull @Valid OAuthSubjectRevokeCommand command);
 
     void revokeClient(

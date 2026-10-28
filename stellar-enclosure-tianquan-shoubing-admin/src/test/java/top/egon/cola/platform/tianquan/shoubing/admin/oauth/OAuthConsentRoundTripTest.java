@@ -614,7 +614,7 @@ class OAuthConsentRoundTripTest {
             long version = grant.getVersion(); grant.setVersion(version + 1).setStatus("REVOKED").setRevokedAt(fixture.clock.instant());
             fixture.authorizationRepository.save(realm, grant, version);
             return null;
-        }).when(revocations).revoke(any(), any());
+        }).when(revocations).revokeKnown(any(), any());
         MvcResult rotation = mvc.perform(request(post("/tenants/1001/oauth2/token")).header("Authorization", basic())
                 .contentType("application/x-www-form-urlencoded").param("grant_type", "refresh_token").param("refresh_token", original))
                 .andExpect(status().isOk()).andReturn();
@@ -1302,6 +1302,13 @@ class OAuthConsentRoundTripTest {
             when(tokenRepository.findByTokenDigest(any(), anyString())).thenAnswer(i -> {
                 if (failTokenLookup) { throw new TransientDataAccessResourceException("fixture token lookup failure"); }
                 return readToken(i.getArgument(0), i.getArgument(1));
+            });
+            when(tokenRepository.findAtAuthorizationVersion(any(), anyString(), anyLong(), anyLong())).thenAnswer(i -> {
+                if (failTokenLookup) { throw new TransientDataAccessResourceException("fixture token lookup failure"); }
+                TrustedRealmBO realm = i.getArgument(0); long authorizationId = i.getArgument(2); long version = i.getArgument(3);
+                return readAuthorization(realm, authorizationId).filter(value -> "ACTIVE".equals(value.getStatus()) && value.getVersion() == version)
+                        .flatMap(ignored -> readToken(realm, i.getArgument(1)))
+                        .filter(value -> value.getAuthorizationPk() == authorizationId);
             });
             when(tokenRepository.findByAuthorization(any(), anyLong(), any(), anyLong(), anyInt())).thenAnswer(i -> {
                 TrustedRealmBO realm = i.getArgument(0); long authorizationId = i.getArgument(1); OAuthTokenTypeEnum type = i.getArgument(2);

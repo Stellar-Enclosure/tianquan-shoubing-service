@@ -24,6 +24,11 @@ public interface OAuthTokenRepository {
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotBlank @Pattern(regexp = "[0-9a-f]{64}") String tokenDigest);
 
+    Optional<OAuthTokenBO> findAtAuthorizationVersion(
+            @NotNull @Valid TrustedRealmBO trustedRealm,
+            @NotBlank @Pattern(regexp = "[0-9a-f]{64}") String tokenDigest,
+            @NotNull @Positive Long authorizationPk, @PositiveOrZero long authorizationVersion);
+
     Optional<OAuthTokenBO> findByTokenDigestForUpdate(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotBlank @Pattern(regexp = "[0-9a-f]{64}") String tokenDigest);

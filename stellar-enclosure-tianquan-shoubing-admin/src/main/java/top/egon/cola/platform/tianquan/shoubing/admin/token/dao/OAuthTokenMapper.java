@@ -33,6 +33,17 @@ public interface OAuthTokenMapper extends EgonColaMapper<OAuthTokenPO> {
             @Size(min = 64, max = 64, groups = EgonColaModelValidationGroups.Query.class) String tokenDigest);
 
     @Validated(EgonColaModelValidationGroups.Query.class)
+    OAuthTokenPO selectAtAuthorizationVersion(
+            @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
+            @Positive(groups = EgonColaModelValidationGroups.Query.class) Long tenantId,
+            @Param("tokenDigest") @NotBlank(groups = EgonColaModelValidationGroups.Query.class)
+            @Pattern(regexp = "[0-9a-f]{64}", groups = EgonColaModelValidationGroups.Query.class) String tokenDigest,
+            @Param("authorizationPk") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
+            @Positive(groups = EgonColaModelValidationGroups.Query.class) Long authorizationPk,
+            @Param("authorizationVersion") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
+            @PositiveOrZero(groups = EgonColaModelValidationGroups.Query.class) Long authorizationVersion);
+
+    @Validated(EgonColaModelValidationGroups.Query.class)
     OAuthTokenPO selectByTokenDigestForUpdate(
             @Param("tenantId") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
             @Positive(groups = EgonColaModelValidationGroups.Query.class) Long tenantId,

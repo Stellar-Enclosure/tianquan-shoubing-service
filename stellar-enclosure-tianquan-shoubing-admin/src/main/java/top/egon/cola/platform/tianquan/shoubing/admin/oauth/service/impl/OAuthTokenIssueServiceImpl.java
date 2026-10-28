@@ -158,20 +158,22 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
         }
         lockUserGrants(realm, lockedClient, authorizationCandidate.getAudiences(), authorizationCandidate.getAuthorizedScopes());
 
-        OAuthAuthorizationBO authorization = authorizationRepository
-                .findByIdForUpdate(realm, tokenCandidate.getAuthorizationPk())
-                .filter(value -> "ACTIVE".equals(value.getStatus()))
-                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
-        OAuthTokenBO token = tokenRepository.findByTokenDigest(realm, input.getTokenDigest())
-                .filter(value -> value.getTokenType() == input.getTokenType())
-                .filter(value -> value.getAuthorizationPk().equals(authorization.getId()))
-                .filter(value -> value.getExpiresAt() != null && value.getExpiresAt().isAfter(clock.instant()))
-                .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
+        OAuthAuthorizationBO authorization = authorizationCandidate;
+        // Different replicas can lag by different amounts; compare both rows in one snapshot.
+        OAuthTokenBO token = tokenRepository.findAtAuthorizationVersion(realm, input.getTokenDigest(),
+                        authorization.getId(), authorization.getVersion())
+                .orElseThrow(() -> new org.springframework.dao.TransientDataAccessResourceException(
+                        "OAuth token and authorization versions are not yet visible together"));
+        if (token.getTokenType() != input.getTokenType()
+                || !Objects.equals(token.getAuthorizationPk(), authorization.getId())
+                || token.getExpiresAt() == null || !token.getExpiresAt().isAfter(clock.instant())) {
+            throw invalidGrant();
+        }
         if (input.getTokenType() == OAuthTokenTypeEnum.REFRESH
                 && (token.getConsumedAt() != null || token.getRevokedAt() != null
                     || token.getMetadata() == null || token.getMetadata().isInvalidated()
                     || !Objects.equals(token.getRefreshGeneration(), authorization.getRefreshGeneration()))) {
-            revocations.revoke(realm, top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.RevokeOAuthTokenCommand.builder()
+            revocations.revokeKnown(realm, top.egon.cola.platform.tianquan.shoubing.admin.token.domain.command.RevokeOAuthTokenCommand.builder()
                     .clientPk(input.getClientPk()).tokenDigest(input.getTokenDigest()).reasonCode("REFRESH_TOKEN_REPLAY").build());
             throw new RefreshReplayException();
         }

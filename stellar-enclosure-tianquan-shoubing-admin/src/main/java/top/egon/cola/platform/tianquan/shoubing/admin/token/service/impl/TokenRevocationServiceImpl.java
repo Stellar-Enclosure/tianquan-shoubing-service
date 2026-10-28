@@ -102,6 +102,18 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
     public void revoke(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @NotNull @Valid RevokeOAuthTokenCommand command) {
+        revokeInternal(trustedRealm, command, false);
+    }
+
+    @Override
+    @Transactional(transactionManager = "transactionManager")
+    public void revokeKnown(
+            @NotNull @Valid TrustedRealmBO trustedRealm,
+            @NotNull @Valid RevokeOAuthTokenCommand command) {
+        revokeInternal(trustedRealm, command, true);
+    }
+
+    private void revokeInternal(TrustedRealmBO trustedRealm, RevokeOAuthTokenCommand command, boolean tokenWasObserved) {
         TrustedRealmBO realm = requireRealm(trustedRealm);
         RevokeOAuthTokenCommand input = Objects.requireNonNull(command, "command");
         realmRepository.findByRealmKeyForUpdate(realm)
@@ -110,6 +122,7 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         OAuthTokenBO tokenCandidate = tokenRepository.findByTokenDigest(realm, input.getTokenDigest())
                 .orElse(null);
         if (tokenCandidate == null) {
+            if (tokenWasObserved) { throw new org.springframework.dao.TransientDataAccessResourceException("observed token is not yet visible"); }
             return;
         }
         OAuthAuthorizationBO authorizationCandidate = authorizationRepository.findById(
@@ -128,13 +141,11 @@ public class TokenRevocationServiceImpl implements TokenRevocationService {
         OAuthSecurityStateBO subjectState = "USER".equals(authorizationCandidate.getPrincipalType())
                 ? requiredState(realm, OAuthSecurityTargetEnum.SUBJECT, authorizationCandidate.getPrincipalName())
                 : null;
-        OAuthAuthorizationBO authorization = authorizationRepository.findByIdForUpdate(
-                        realm, tokenCandidate.getAuthorizationPk())
-                .orElseThrow(() -> unavailable("OAUTH_REVOCATION_AUTHORIZATION_MISSING"));
+        OAuthAuthorizationBO authorization = authorizationCandidate;
         OAuthTokenBO token = tokenRepository.findByTokenDigest(realm, input.getTokenDigest())
                 .orElse(null);
         if (token == null) {
-            return;
+            throw new org.springframework.dao.TransientDataAccessResourceException("observed token is not yet visible");
         }
         if (!Objects.equals(authorization.getClientPk(), input.getClientPk())
                 || !Objects.equals(token.getAuthorizationPk(), authorization.getId())) {

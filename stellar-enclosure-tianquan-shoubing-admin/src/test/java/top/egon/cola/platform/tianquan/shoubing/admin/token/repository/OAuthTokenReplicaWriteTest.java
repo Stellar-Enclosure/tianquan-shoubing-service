@@ -54,6 +54,47 @@ class OAuthTokenReplicaWriteTest {
     }
 
     @Test
+    void tokenAndAuthorizationAreReadInOneReplicaSnapshotAtTheObservedVersion() throws Exception {
+        var configuration = new org.apache.ibatis.session.Configuration();
+        String resource = "mapper/token/OAuthTokenMapper.xml";
+        try (var input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            new org.apache.ibatis.builder.xml.XMLMapperBuilder(input, configuration, resource,
+                    configuration.getSqlFragments()).parse();
+        }
+        var statement = configuration.getMappedStatement(OAuthTokenMapper.class.getName() + ".selectAtAuthorizationVersion");
+        var parameters = java.util.Map.<String, Object>of("tenantId", 1001L, "tokenDigest", "a".repeat(64),
+                "authorizationPk", 9L, "authorizationVersion", 7L);
+        String sql = statement.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
+        assertThat(sql).contains("a.tenant_id = t.tenant_id", "a.id = t.authorization_pk",
+                "t.tenant_id = ?", "t.authorization_pk = ?", "a.version = ?", "a.status = 'active'",
+                "t.deleted_at is null", "a.deleted_at is null").doesNotContain("for update", "for share");
+        var guard = new top.egon.cola.component.common.mybatis.interceptor.EgonColaTenantIdGuardInnerInterceptor(
+                () -> "service:tianquan-shoubing", new EgonColaMybatisPlusProperties());
+        new org.springframework.context.annotation.CommonAnnotationBeanPostProcessor()
+                .postProcessBeforeInitialization(guard, "sqlGuard");
+        configuration.setEnvironment(new org.apache.ibatis.mapping.Environment("test",
+                new org.mybatis.spring.transaction.SpringManagedTransactionFactory(), mock(javax.sql.DataSource.class)));
+        var routeGuard = new top.egon.cola.component.common.mybatis.interceptor.EgonColaLocalWriteGuardInnerInterceptor(
+                query -> new top.egon.cola.component.common.mybatis.routing.EgonColaRouteResult(
+                        java.util.List.of(new top.egon.cola.component.common.mybatis.routing.EgonColaPhysicalTargetBO(
+                                "primary", "tianquan_oauth", query.logicalTable())), "a".repeat(64)),
+                guard, mock(top.egon.cola.component.common.mybatis.routing.EgonColaTwoLevelRouteStrategy.class), java.util.Map.of());
+        org.slf4j.MDC.put("tenantId", "1001");
+        try {
+            org.assertj.core.api.Assertions.assertThatCode(() -> guard.beforeQuery(
+                    mock(org.apache.ibatis.executor.Executor.class), statement, parameters,
+                    org.apache.ibatis.session.RowBounds.DEFAULT, null, statement.getBoundSql(parameters)))
+                    .doesNotThrowAnyException();
+            var handler = configuration.newStatementHandler(mock(org.apache.ibatis.executor.Executor.class), statement,
+                    parameters, org.apache.ibatis.session.RowBounds.DEFAULT, null, statement.getBoundSql(parameters));
+            org.assertj.core.api.Assertions.assertThatCode(() -> routeGuard.beforePrepare(handler, null, null))
+                    .doesNotThrowAnyException();
+        } finally {
+            org.slf4j.MDC.remove("tenantId");
+        }
+    }
+
+    @Test
     void staleReplicaCandidatesCannotBothUpdateTheSameToken() throws Exception {
         var mapper = mock(OAuthTokenMapper.class);
         var converter = mock(OAuthTokenConverter.class);

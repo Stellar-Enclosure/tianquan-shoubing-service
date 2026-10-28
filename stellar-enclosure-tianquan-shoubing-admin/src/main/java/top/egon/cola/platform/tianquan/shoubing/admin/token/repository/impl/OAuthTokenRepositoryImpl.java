@@ -79,6 +79,19 @@ public class OAuthTokenRepositoryImpl extends EgonColaRepository<OAuthTokenMappe
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public Optional<OAuthTokenBO> findAtAuthorizationVersion(TrustedRealmBO trustedRealm, String tokenDigest,
+            Long authorizationPk, long authorizationVersion) {
+        String digest = requiredDigest(tokenDigest);
+        if (authorizationPk == null || authorizationPk <= 0L || authorizationVersion < 0L) {
+            throw new IllegalArgumentException("OAUTH_TOKEN_AUTHORIZATION_VERSION_INVALID");
+        }
+        return withTrustedStoragePartition(trustedRealm, tenantId -> Optional.ofNullable(
+                        baseMapper.selectAtAuthorizationVersion(tenantId, digest, authorizationPk, authorizationVersion))
+                .map(value -> toTarget(trustedRealm, digest, value)));
+    }
+
+    @Override
     @Transactional
     public Optional<OAuthTokenBO> findByTokenDigestForUpdate(
             @NotNull @Valid TrustedRealmBO trustedRealm,
