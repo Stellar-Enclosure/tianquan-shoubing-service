@@ -68,12 +68,14 @@ import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarter
 import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties.RpcProviderMethodProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.AccessTokenVerification;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpAuthenticationToken;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.OAuthRevocationReader;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.TenantIssuerAuthenticationManagerComponent;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.TrustedIssuerRegistry;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.VerifiedPrincipalConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.domain.IdpAuthorizationObservationContextBO;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.domain.TokenAuditProofBO;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.domain.converter.TokenUsageAuditEventConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityOAuthClientStateReader;
 import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityResourceServerState;
@@ -132,6 +134,62 @@ class IdpRpcBearerServerInterceptorTest {
             assertThat(next.calls).isZero();
             assertThat(call.status.getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
         }
+    }
+
+    @Test
+    void strictServiceRejectsMissingIssuerOrConflictingProofAndScopesBeforeProviderEntry() {
+        try (var validator = new LocalValidatorFactoryBean()) {
+            validator.afterPropertiesSet();
+            URI issuer = URI.create("https://idp.example/tenants/1001");
+            URI other = URI.create("https://other.example/tenants/1001");
+            var now = Instant.now();
+            var principal = new ServiceIdentityPrincipal("orders-client", "1001", "orders-client", "token-id",
+                    IdpRpcBindingPropertiesTest.RESOURCE, 7L, Set.of("inventory:read"), "biz", "orders", "test",
+                    "credential-1", now.minusSeconds(10), now.plusSeconds(300), "orders-app", ServiceTokenContext.TENANT);
+            List<AccessTokenVerification.Valid<ServiceIdentityPrincipal>> incomplete = List.of(
+                    new AccessTokenVerification.Valid<>(principal, principal.scopes(), null, null),
+                    new AccessTokenVerification.Valid<>(principal, principal.scopes(),
+                            new TokenAuditProofBO(other, principal.resourceUri(), null, null, null), issuer),
+                    new AccessTokenVerification.Valid<>(principal, principal.scopes(),
+                            new TokenAuditProofBO(issuer, URI.create("https://api.example/other"), null, null, null), issuer),
+                    new AccessTokenVerification.Valid<>(principal, Set.of("inventory:read", "inventory:other"), null, issuer));
+            for (var result : incomplete) {
+                IdpJwtVerifier verifier = mock(IdpJwtVerifier.class);
+                doReturn(result).when(verifier).verifyAny("verified-service-token");
+                var interceptor = IdpRpcBearerServerInterceptor.createConfigured(mock(UserAccessTokenVerifier.class),
+                        verifier, providerProperties(), null, validator);
+                var call = new RecordingServerCall();
+                var next = new RecordingHandler();
+                interceptor.interceptCall(call, bearer("verified-service-token"), next);
+                assertThat(next.calls).isZero();
+                assertThat(call.status.getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+                assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNull();
+            }
+        }
+    }
+
+    @Test
+    void anonymousOptionalMethodDoesNotInheritAnOuterAuthorizedMethod() {
+        var parentMarker = new IdpAuthorizationObservationContextBO();
+        URI issuer = URI.create("https://idp.example/tenants/1001");
+        var parent = IdpRpcSecurityContext.with(principal(), "parent-user-token", null, parentMarker, Set.of(), issuer,
+                new IdpRpcSecurityContext.AuthorizedMethodVO("outer.Service/Read", issuer, IdpRpcBindingPropertiesTest.RESOURCE));
+        AtomicReference<ServerCall.Listener<String>> listener = new AtomicReference<>();
+        parent.run(() -> {
+            assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNotNull();
+            listener.set(new IdpRpcBearerServerInterceptor(mock(UserAccessTokenVerifier.class))
+                    .interceptCall(new RecordingServerCall(), new Metadata(), (call, headers) -> {
+                        assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNull();
+                        return new ServerCall.Listener<String>() {
+                            @Override public void onHalfClose() {
+                                assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNull();
+                            }
+                        };
+                    }));
+            assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNotNull();
+        });
+        listener.get().onHalfClose();
+        assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNull();
     }
 
     private static IdpStarterProperties providerProperties() {
@@ -228,7 +286,15 @@ class IdpRpcBearerServerInterceptorTest {
             RequestContextHolder.setRequestAttributes(previousAttributes);
             Runnable record = () -> {
                 entered.incrementAndGet();
-                observed.set(SecurityContextHolder.getContext().getAuthentication());
+                Authentication current = SecurityContextHolder.getContext().getAuthentication();
+                Authentication preceding = observed.getAndSet(current);
+                if (preceding != null) { assertThat(current).isSameAs(preceding); }
+                assertThat(observed.get()).isInstanceOf(IdpAuthenticationToken.class);
+                assertThat(((IdpAuthenticationToken) observed.get()).verifiedIssuer()).isEqualTo(ISSUER);
+                assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isEqualTo(
+                        new IdpRpcSecurityContext.AuthorizedMethodVO(IdpRpcBindingPropertiesTest.METHOD,
+                                ISSUER, IdpRpcBindingPropertiesTest.RESOURCE));
+                assertThat(IdpRpcSecurityContext.currentScopesOrNull()).containsExactly("inventory:read");
                 marker.set(IdpRpcSecurityContext.currentAuthorizationObservationContext());
                 assertThat(IdpRpcSecurityContext.currentTokenOrNull()).isNull();
                 assertThat(VerifiedUserTokenCarrier.currentOrNull()).isNull();
@@ -259,6 +325,7 @@ class IdpRpcBearerServerInterceptorTest {
             assertThat(MDC.get("userId")).isEqualTo("previous-user");
             assertThat(MDC.get("egon.auth.actor-kind")).isEqualTo("previous-kind");
             assertThat(IdpRpcSecurityContext.currentPrincipalOrNull()).isNull();
+            assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNull();
             assertThat(events).hasSize(1).allSatisfy(event -> assertThat(event).containsEntry("result", "SUCCESS"));
             verify(managers, times(1)).authenticate(token); verify(revocations, times(1)).check(any());
         }
@@ -272,14 +339,39 @@ class IdpRpcBearerServerInterceptorTest {
             MDC.put("egon.auth.actor-kind", "previous-kind");
             var listener = interceptor.interceptCall(new RecordingServerCall(), bearer(token), (call, headers) -> {
                 assertThat(MDC.get("egon.auth.actor-kind")).isEqualTo("USER");
+                assertThat(((IdpAuthenticationToken) SecurityContextHolder.getContext().getAuthentication()).verifiedIssuer())
+                        .isEqualTo(ISSUER);
+                assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNull();
                 return new ServerCall.Listener<String>() {
                     @Override public void onHalfClose() {
                         assertThat(MDC.get("egon.auth.actor-kind")).isEqualTo("USER");
+                        assertThat(((IdpAuthenticationToken) SecurityContextHolder.getContext().getAuthentication()).verifiedIssuer())
+                                .isEqualTo(ISSUER);
+                        assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNull();
                     }
                 };
             });
             listener.onHalfClose(); listener.onCancel();
             assertThat(MDC.get("egon.auth.actor-kind")).isEqualTo("previous-kind");
+        }
+
+        @Test
+        void malformedApprovedNativeMethodCannotEnterProviderOrEscapeAsAnUnclassifiedFailure() throws Exception {
+            String malformedMethod = "example..Inventory/Read";
+            properties.getRpc().getProvider().getMethods().clear();
+            properties.getRpc().getProvider().getMethods().put(malformedMethod, providerPolicy());
+            var call = new RecordingServerCall(malformedMethod);
+            var next = new RecordingHandler();
+
+            interceptor.interceptCall(call, bearer(token(false, ServiceTokenContext.TENANT, Set.of("inventory:read"),
+                    IdpRpcBindingPropertiesTest.RESOURCE, NOW.plusSeconds(300))), next);
+
+            assertThat(next.calls).isZero();
+            assertThat(call.status.getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+            assertThat(call.status.getDescription()).isEqualTo("oauth_security_state_unavailable");
+            assertThat(call.status.getCause()).isNull();
+            assertThat(IdpRpcSecurityContext.authorizedMethodOrNull()).isNull();
+            assertThat(events).hasSize(1).allSatisfy(event -> assertThat(event).containsEntry("result", "SUCCESS"));
         }
 
         @Test
@@ -579,6 +671,15 @@ class IdpRpcBearerServerInterceptorTest {
             extends ServerCall<String, String> {
 
         private Status status;
+        private final String fullMethodName;
+
+        private RecordingServerCall() {
+            this(IdpRpcBindingPropertiesTest.METHOD);
+        }
+
+        private RecordingServerCall(String fullMethodName) {
+            this.fullMethodName = fullMethodName;
+        }
 
         @Override
         public void request(int numMessages) {
@@ -605,7 +706,7 @@ class IdpRpcBearerServerInterceptorTest {
         @Override
         public MethodDescriptor<String, String> getMethodDescriptor() {
             return MethodDescriptor.<String, String>newBuilder().setType(MethodDescriptor.MethodType.UNARY)
-                    .setFullMethodName(IdpRpcBindingPropertiesTest.METHOD).setRequestMarshaller(mock(MethodDescriptor.Marshaller.class))
+                    .setFullMethodName(fullMethodName).setRequestMarshaller(mock(MethodDescriptor.Marshaller.class))
                     .setResponseMarshaller(mock(MethodDescriptor.Marshaller.class)).build();
         }
 

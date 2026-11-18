@@ -17,6 +17,7 @@ import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import top.egon.cola.component.rpc.consumer.interceptor.RpcClientInvocation;
+import top.egon.cola.component.rpc.consumer.reference.RpcServiceTargetVO;
 import top.egon.cola.component.rpc.context.identity.RpcProcessIdentity;
 import top.egon.cola.component.rpc.contract.descriptor.RpcContractDescriptor;
 import top.egon.cola.component.rpc.contract.descriptor.RpcMethodDescriptor;
@@ -37,6 +38,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 class IdpRpcBindingPropertiesTest {
     static final String SERVICE = "example.Inventory";
     static final String METHOD = "example.Inventory/Read";
+    static final String BINDING_ID = "inventory-rpc";
+    static final String AUTHORITY = "inventory-rpc.apps-test.svc.cluster.local:18122";
     static final URI RESOURCE = URI.create("https://api.example/inventory");
     private final LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
 
@@ -51,6 +54,8 @@ class IdpRpcBindingPropertiesTest {
         values.put(prefix + "consumer.enabled", true);
         String binding = prefix + "consumer.bindings.inventory.";
         values.put(binding + "service-name", SERVICE);
+        values.put(binding + "transport-binding-id", BINDING_ID);
+        values.put(binding + "transport-binding-version", 1);
         values.put(binding + "group", "internal");
         values.put(binding + "version", "v1");
         values.put(binding + "full-method-name", METHOD);
@@ -114,6 +119,22 @@ class IdpRpcBindingPropertiesTest {
         verifyNoInteractions(client);
     }
 
+    @Test
+    void missingOrMismatchedNativeBindingReferenceCannotFallBackToLogicalSelectors() throws Exception {
+        var client = mock(IdpServiceOAuth2Client.class);
+        for (String mismatch : List.of("missing", "id", "version")) {
+            var properties = properties(ServiceTokenContext.PLATFORM);
+            var binding = properties.getRpc().getConsumer().getBindings().get("inventory");
+            if (mismatch.equals("missing")) { binding.setTransportBindingId(null).setTransportBindingVersion(null); }
+            else if (mismatch.equals("id")) { binding.setTransportBindingId("other-rpc"); }
+            else { binding.setTransportBindingVersion(2L); }
+            var configured = IdpRpcClientCredentialInterceptorFactory.createConfigured(client, properties, validator);
+            var invocation = invocation(process());
+            assertThatThrownBy(() -> configured.create(invocation)).isInstanceOf(IllegalStateException.class);
+        }
+        verifyNoInteractions(client);
+    }
+
     static IdpStarterProperties properties(ServiceTokenContext context) {
         var properties = new IdpStarterProperties();
         properties.getRpc().setEnabled(true);
@@ -124,7 +145,7 @@ class IdpRpcBindingPropertiesTest {
 
     static RpcConsumerBindingProperties binding(ServiceTokenContext context) {
         return RpcConsumerBindingProperties.builder().serviceName(SERVICE).group("internal").version("v1")
-                .fullMethodName(METHOD).processIdentity(Map.of("applicationName", "orders", "env", "test"))
+                .fullMethodName(METHOD).transportBindingId(BINDING_ID).transportBindingVersion(1L).processIdentity(Map.of("applicationName", "orders", "env", "test"))
                 .mode(RpcConsumerModeEnum.SERVICE).registrationId(context == ServiceTokenContext.PLATFORM ? "inventory-client" : null)
                 .tenantRegistrationIds(context == ServiceTokenContext.TENANT ? Map.of("tenant-1", "tenant-inventory-client") : Map.of())
                 .appId("orders-app").resourceUri(RESOURCE).scopeContext(context).scopes(Set.of("inventory:read")).build();
@@ -139,7 +160,12 @@ class IdpRpcBindingPropertiesTest {
                 .setResponseMarshaller(ProtoUtils.<Message>marshaller(Empty.getDefaultInstance())).build();
         var method = new RpcMethodDescriptor(javaMethod, "Read", METHOD, true, grpcMethod, null);
         var contract = new RpcContractDescriptor(TestRpcContract.class, SERVICE, "internal", "v1", List.of(method));
-        return new RpcClientInvocation(contract, method, Empty.getDefaultInstance(), process);
+        return RpcClientInvocation.typed(contract, method, Empty.getDefaultInstance(), process,
+                "internal", "v1", "test-logical-call", target());
+    }
+
+    static RpcServiceTargetVO target() {
+        return new RpcServiceTargetVO(BINDING_ID, 1L, "apps-test", "inventory-rpc", 18122, Set.of(METHOD));
     }
 
     public interface TestRpcContract { Empty read(Empty request); }

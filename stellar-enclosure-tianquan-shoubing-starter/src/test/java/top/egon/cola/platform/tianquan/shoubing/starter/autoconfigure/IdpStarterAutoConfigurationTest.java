@@ -20,11 +20,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
 import jakarta.validation.Validator;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
-import top.egon.cola.component.rpc.annotation.FailStrategy;
-import top.egon.cola.component.rpc.annotation.LoadBalance;
 import top.egon.cola.component.rpc.consumer.generic.RpcGenericInvocation;
 import top.egon.cola.component.rpc.consumer.interceptor.RpcClientInvocation;
+import top.egon.cola.component.rpc.consumer.reference.RpcServiceTargetVO;
 import top.egon.cola.component.rpc.context.identity.RpcProcessIdentity;
+import top.egon.cola.component.rpc.provider.server.RpcAdmissionIdentityResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.redisson.api.RedissonClient;
@@ -243,6 +243,8 @@ class IdpStarterAutoConfigurationTest {
         contextRunner
                 .withPropertyValues(providerSettings()).run(context -> {
                     assertThat(context).hasNotFailed().doesNotHaveBean(IdpServiceOAuth2Client.class);
+                    assertThat(context).hasBean("idpRpcAdmissionIdentityResolver")
+                            .hasSingleBean(RpcAdmissionIdentityResolver.class);
                     var interceptor = context.getBean("idpRpcBearerServerInterceptor", IdpRpcBearerServerInterceptor.class);
                     @SuppressWarnings("unchecked") ServerCall<String, String> call = mock(ServerCall.class);
                     var method = MethodDescriptor.<String, String>newBuilder().setType(MethodDescriptor.MethodType.UNARY)
@@ -264,11 +266,13 @@ class IdpStarterAutoConfigurationTest {
                 .withPropertyValues(consumerSettings()).run(context -> {
                     assertThat(context).hasNotFailed();
                     var factory = context.getBean("idpRpcClientCredentialInterceptorFactory", IdpRpcClientCredentialInterceptorFactory.class);
-                    var generic = RpcGenericInvocation.gateway("example.Inventory", "internal", "v1", "example.Inventory/Read",
-                            new byte[]{1}, 1000, 0, LoadBalance.ROUND_ROBIN, FailStrategy.FAIL_CLOSED, null);
+                    String method = "example.Inventory/Read";
+                    var generic = new RpcGenericInvocation("inventory-native", "example.Inventory", "internal", "v1", method,
+                            new byte[]{1}, 1000);
+                    var target = new RpcServiceTargetVO("inventory-native", 2L, "workloads", "inventory-rpc", 9090, Set.of(method));
                     for (RpcProcessIdentity process : List.of(new RpcProcessIdentity("wrong-app", "test", "orders", 1, "test"),
                             new RpcProcessIdentity("orders", "wrong-env", "test", 1, "test"))) {
-                        assertThatThrownBy(() -> factory.create(RpcClientInvocation.generic(generic, process, "call-1")))
+                        assertThatThrownBy(() -> factory.create(RpcClientInvocation.generic(generic, process, "call-1", target)))
                                 .isInstanceOf(IllegalStateException.class);
                     }
                     verifyNoInteractions(client);
@@ -306,7 +310,8 @@ class IdpStarterAutoConfigurationTest {
                 prefix + "service-name=example.Inventory", prefix + "group=internal", prefix + "version=v1", prefix + "full-method-name=example.Inventory/Read",
                 prefix + "process-identity.applicationName=orders", prefix + "process-identity.env=test", prefix + "mode=SERVICE",
                 prefix + "registration-id=inventory-client", prefix + "app-id=orders-app", prefix + "resource-uri=https://api.example/inventory",
-                prefix + "scope-context=PLATFORM", prefix + "scopes[0]=inventory:read"};
+                prefix + "scope-context=PLATFORM", prefix + "scopes[0]=inventory:read",
+                prefix + "transport-binding-id=inventory-native", prefix + "transport-binding-version=2"};
     }
 
     private String[] providerSettings() {
@@ -359,6 +364,7 @@ class IdpStarterAutoConfigurationTest {
             assertThat(context).hasSingleBean(
                     IdpRpcBearerServerInterceptor.class
             );
+            assertThat(context).doesNotHaveBean("idpRpcAdmissionIdentityResolver");
             assertThat(context.getBeansOfType(
                     RpcClientInterceptorFactory.class
             ).values()).anyMatch(

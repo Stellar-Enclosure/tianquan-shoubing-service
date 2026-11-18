@@ -38,6 +38,7 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
 import org.springframework.security.oauth2.jwt.JwtTypeValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import top.egon.cola.component.rpc.provider.server.RpcAdmissionIdentityResolver;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpClientCredentialsRequestEntityConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingConverter;
@@ -58,6 +59,7 @@ import top.egon.cola.platform.tianquan.shoubing.starter.security.ServiceAccessTo
 import top.egon.cola.platform.tianquan.shoubing.starter.security.UserAccessTokenVerifier;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.RetryingJwtDecoder;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.ServiceScopeAuthorization;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcAdmissionIdentityResolver;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcBearerServerInterceptor;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcClientCredentialInterceptorFactory;
 import top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder;
@@ -667,6 +669,16 @@ public class IdpStarterAutoConfiguration {
     /** Preserves the former direct factory call for optional USER-only providers. */
     public IdpRpcBearerServerInterceptor idpRpcBearerServerInterceptor(UserAccessTokenVerifier verifier) {
         return new IdpRpcBearerServerInterceptor(verifier);
+    }
+
+    /** Exposes only the identity approved by the configured RPC provider's authorization callbacks. */
+    @Bean(name = "idpRpcAdmissionIdentityResolver")
+    @ConditionalOnBean(IdpRpcBearerServerInterceptor.class)
+    @ConditionalOnMissingBean(RpcAdmissionIdentityResolver.class)
+    @ConditionalOnProperty(prefix = "egon.cola.platform.tianquan.shoubing.rpc",
+            name = {"enabled", "provider.enabled"}, havingValue = "true")
+    public IdpRpcAdmissionIdentityResolver idpRpcAdmissionIdentityResolver() {
+        return new IdpRpcAdmissionIdentityResolver();
     }
 
     private void validateRpcBindings(IdpStarterProperties properties, jakarta.validation.Validator validator, Environment environment) {

@@ -22,6 +22,7 @@ import top.egon.cola.component.common.core.validation.ValidationUtils;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.AccessTokenVerification;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.UserAccessTokenVerifier;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpAuthenticationToken;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent;
 import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties.RpcPrincipalKindEnum;
@@ -94,6 +95,9 @@ public final class IdpRpcBearerServerInterceptor
         );
         if (authorization.isEmpty()) {
             if (policy != null && policy.isRequired()) { return beforeVerificationReject(call, Status.UNAUTHENTICATED, "authorization_required"); }
+            if (IdpRpcSecurityContext.authorizedMethodOrNull() != null) {
+                return Contexts.interceptCall(IdpRpcSecurityContext.withoutAuthorizedMethod(), call, headers, next);
+            }
             return next.startCall(call, headers);
         }
         if (authorization.size() != 1) {
@@ -134,12 +138,34 @@ public final class IdpRpcBearerServerInterceptor
                         confirmed ? "rpc_authorization_denied" : "oauth_security_state_unavailable");
             } finally { marker.close(); }
         }
-        Context context = IdpRpcSecurityContext.with(principal, token, valid.proof(), marker, valid.scopes());
+        if (policy != null && principal instanceof ServiceIdentityPrincipal service
+                && (valid.verifiedIssuer() == null || !service.scopes().equals(valid.scopes())
+                || valid.proof() != null && (!valid.verifiedIssuer().equals(valid.proof().issuer())
+                || !service.resourceUri().equals(valid.proof().resource())))) {
+            marker.close();
+            return reject(call, Status.UNAVAILABLE, "oauth_security_state_unavailable");
+        }
+        Context context;
+        IdpAuthenticationToken authentication;
+        try {
+            IdpRpcSecurityContext.AuthorizedMethodVO authorizedMethod = null;
+            if (policy != null && policy.isRequired() && policy.getPrincipalKind() == RpcPrincipalKindEnum.SERVICE
+                    && policy.getScopeContext() == ServiceTokenContext.TENANT && principal instanceof ServiceIdentityPrincipal) {
+                authorizedMethod = new IdpRpcSecurityContext.AuthorizedMethodVO(call.getMethodDescriptor().getFullMethodName(),
+                        valid.verifiedIssuer(), policy.getExpectedResourceUri());
+            }
+            context = IdpRpcSecurityContext.with(principal, token, valid.proof(), marker, valid.scopes(),
+                    valid.verifiedIssuer(), authorizedMethod);
+            authentication = IdpRpcSecurityContext.authentication(principal, valid.scopes(), valid.proof(), valid.verifiedIssuer());
+        } catch (IllegalArgumentException invalidContext) {
+            marker.close();
+            return reject(call, Status.UNAVAILABLE, "oauth_security_state_unavailable");
+        }
         ServerCall.Listener<RequestT> delegate;
         try {
             delegate = Contexts.interceptCall(context, call, headers, (scopedCall, scopedHeaders) -> {
                 var accepted = new AtomicReference<ServerCall.Listener<RequestT>>();
-                IdpRpcSecurityContext.runWithSpringSecurity(principal, valid.scopes(), valid.proof(),
+                IdpRpcSecurityContext.runWithSpringSecurity(authentication,
                         () -> accepted.set(next.startCall(scopedCall, scopedHeaders)));
                 return Objects.requireNonNull(accepted.get(), "provider listener");
             });
@@ -176,7 +202,7 @@ public final class IdpRpcBearerServerInterceptor
             private void run(Runnable callback) {
                 if (terminated.get() && policyEnabled) { return; }
                 try {
-                    context.run(() -> IdpRpcSecurityContext.runWithSpringSecurity(principal, valid.scopes(), valid.proof(), callback));
+                    context.run(() -> IdpRpcSecurityContext.runWithSpringSecurity(authentication, callback));
                 } catch (RuntimeException | Error providerFailure) {
                     terminated.set(true);
                     marker.close();
@@ -187,7 +213,7 @@ public final class IdpRpcBearerServerInterceptor
             private void finish(Runnable callback) {
                 // Keep the former optional USER adapter's callback contract; its marker stays closed.
                 if (!terminated.compareAndSet(false, true) && policyEnabled) { return; }
-                try { context.run(() -> IdpRpcSecurityContext.runWithSpringSecurity(principal, valid.scopes(), valid.proof(), callback)); }
+                try { context.run(() -> IdpRpcSecurityContext.runWithSpringSecurity(authentication, callback)); }
                 finally { marker.close(); }
             }
         };
