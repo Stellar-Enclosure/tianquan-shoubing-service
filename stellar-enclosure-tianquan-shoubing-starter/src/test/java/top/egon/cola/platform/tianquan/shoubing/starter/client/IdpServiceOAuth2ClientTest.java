@@ -3,6 +3,10 @@ package top.egon.cola.platform.tianquan.shoubing.starter.client;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.security.oauth2.client.AuthorizedClientServiceOAuth2AuthorizedClientManager;
+import org.springframework.security.oauth2.client.ClientCredentialsOAuth2AuthorizedClientProvider;
+import org.springframework.security.oauth2.client.InMemoryOAuth2AuthorizedClientService;
 import org.springframework.security.oauth2.client.OAuth2AuthorizeRequest;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager;
@@ -31,6 +35,8 @@ import java.net.ProxySelector;
 import java.net.URLDecoder;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -83,6 +89,138 @@ class IdpServiceOAuth2ClientTest {
     @AfterEach
     void closeClients() {
         clients.forEach(IdpServiceOAuth2Client::close);
+    }
+
+    @Test
+    void projectedCredentialRotationUsesOneGenerationAcrossTheRealSpringManager(@TempDir Path directory)
+            throws Exception {
+        Path projection = directory.resolve("registrations.json");
+        Files.writeString(projection, projectedRegistration(1L, "first-secret"));
+        Class<?> repositoryType = Class.forName(
+                "top.egon.cola.platform.tianquan.shoubing.starter.client.ProjectedClientRegistrationRepository");
+        ClientRegistrationRepository registrations = (ClientRegistrationRepository) repositoryType
+                .getConstructor(Path.class, com.fasterxml.jackson.databind.ObjectMapper.class, Map.class)
+                .newInstance(projection, new com.fasterxml.jackson.databind.ObjectMapper(), Map.of(REGISTRATION_ID, 1L));
+        repositoryType.getMethod("verifyAvailable").invoke(registrations);
+        InMemoryOAuth2AuthorizedClientService store = new InMemoryOAuth2AuthorizedClientService(registrations);
+        AuthorizedClientServiceOAuth2AuthorizedClientManager manager =
+                new AuthorizedClientServiceOAuth2AuthorizedClientManager(registrations, store);
+        IdpClientCredentialsRequestEntityConverter converter =
+                new IdpClientCredentialsRequestEntityConverter(tokenBindings(1L));
+        ClientCredentialsOAuth2AuthorizedClientProvider provider = new ClientCredentialsOAuth2AuthorizedClientProvider();
+        List<String> secrets = new ArrayList<>();
+        provider.setAccessTokenResponseClient(grant -> {
+            assertThat(converter.convert(grant).getUrl()).isEqualTo(INTERNAL_TOKEN_ENDPOINT);
+            secrets.add(grant.getClientRegistration().getClientSecret());
+            return org.springframework.security.oauth2.core.endpoint.OAuth2AccessTokenResponse
+                    .withToken("projected-" + secrets.size()).tokenType(OAuth2AccessToken.TokenType.BEARER)
+                    .expiresIn(300).scopes(Set.of("orders:read")).build();
+        });
+        manager.setAuthorizedClientProvider(provider);
+        IdpStarterProperties properties = serviceProperties();
+        IdpServiceOAuth2Client client = IdpServiceOAuth2Client.createConfigured(manager, converter,
+                Clock.systemUTC(), Duration.ofSeconds(60), registrations, store,
+                new TrustedIssuerRegistry(properties), properties);
+        clients.add(client);
+        IdpServiceTokenRequest request = request(REGISTRATION_ID, APP_ID,
+                ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+
+        assertThat(client.authorize(request).getTokenValue()).isEqualTo("projected-1");
+        ServiceAuthorizationKey oldKey = client.authorizationKey(request);
+        OAuth2AuthorizedClient firstStored = store.loadAuthorizedClient(REGISTRATION_ID, oldKey.principalName());
+        assertThat(firstStored).isNotNull();
+        Files.writeString(projection, projectedRegistration(2L, "second-secret"));
+
+        assertThat(client.authorize(request).getTokenValue()).isEqualTo("projected-2");
+        assertThat(client.authorize(request).getTokenValue()).isEqualTo("projected-2");
+        assertThat(client.authorizationKey(request).credentialVersion()).isEqualTo(2L);
+        assertThat(secrets).containsExactly("first-secret", "second-secret");
+        OAuth2AuthorizedClient retiredStored = store.loadAuthorizedClient(REGISTRATION_ID, oldKey.principalName());
+        assertThat(retiredStored).isNull();
+        assertThat(client.cacheSize()).isEqualTo(1);
+
+        // Material is checked even for a hot token; rejected input cannot silently keep serving that cache.
+        Files.writeString(projection, projectedRegistration(2L, "tampered-private-secret"));
+        assertThatThrownBy(() -> client.authorize(request))
+                .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class)
+                .hasMessageContaining("registration_projection_unavailable").hasNoCause();
+        assertThat(secrets).hasSize(2);
+        Files.writeString(projection, projectedRegistration(2L, "second-secret"));
+        assertThat(client.authorizeBounded(request, ISSUER, Duration.ofSeconds(2)).getTokenValue())
+                .isEqualTo("projected-2");
+        client.invalidateBounded(request, ISSUER, Duration.ofSeconds(2));
+        assertThat(client.cacheSize()).isZero();
+    }
+
+    @Test
+    void managedProjectionNeverFallsBackToTheCanonicalPublicTokenEndpoint(@TempDir Path directory) throws Exception {
+        Path projection = directory.resolve("registrations.json");
+        Files.writeString(projection, projectedRegistration(1L, "private-secret"));
+        var registrations = new ProjectedClientRegistrationRepository(projection,
+                new com.fasterxml.jackson.databind.ObjectMapper(), Map.of());
+        var manager = mock(OAuth2AuthorizedClientManager.class);
+        var store = new InMemoryOAuth2AuthorizedClientService(registrations);
+        var properties = serviceProperties();
+        properties.getServiceClient().setCredentialVersions(Map.of());
+        var client = newClient(manager, store, Clock.systemUTC(), Duration.ofSeconds(60), properties, registrations);
+
+        assertThatThrownBy(() -> client.authorize(request(REGISTRATION_ID, APP_ID,
+                ServiceTokenContext.TENANT, "1001", Set.of("orders:read"))))
+                .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class)
+                .hasMessageContaining("transport_binding_required");
+        verify(manager, never()).authorize(any(OAuth2AuthorizeRequest.class));
+    }
+
+    @Test
+    void idleRefreshEvictsWithAcceptedGenerationWhenProjectedFileIsMissing(@TempDir Path directory) throws Exception {
+        Path projection = directory.resolve("registrations.json");
+        Files.writeString(projection, projectedRegistration(1L, "private-secret"));
+        var registrations = new ProjectedClientRegistrationRepository(projection,
+                new com.fasterxml.jackson.databind.ObjectMapper(), Map.of());
+        var store = new InMemoryOAuth2AuthorizedClientService(registrations);
+        var manager = mock(OAuth2AuthorizedClientManager.class);
+        var converter = new IdpClientCredentialsRequestEntityConverter(tokenBindings(1L));
+        Instant now = Instant.parse("2026-11-18T00:00:00Z");
+        MutableClock clock = new MutableClock(now);
+        when(manager.authorize(any(OAuth2AuthorizeRequest.class))).thenAnswer(invocation -> {
+            OAuth2AuthorizeRequest authorize = invocation.getArgument(0);
+            var authorized = authorizedClient(authorize, registrations.findByRegistrationId(REGISTRATION_ID),
+                    "cached-token", now, now.plusSeconds(300));
+            store.saveAuthorizedClient(authorized, authorize.getPrincipal());
+            return authorized;
+        });
+        var properties = serviceProperties();
+        var client = IdpServiceOAuth2Client.createConfigured(manager, converter, clock, Duration.ofSeconds(60),
+                registrations, store, new TrustedIssuerRegistry(properties), properties);
+        clients.add(client);
+        var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+        client.authorize(request);
+        ServiceAuthorizationKey key = client.authorizationKey(request);
+        var generationsField = IdpServiceOAuth2Client.class.getDeclaredField("refreshGenerations");
+        generationsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<ServiceAuthorizationKey, Long> generations = (Map<ServiceAuthorizationKey, Long>) generationsField.get(client);
+        long generation = generations.get(key);
+        clock.advance(Duration.ofMinutes(3));
+        Files.delete(projection);
+
+        var refresh = IdpServiceOAuth2Client.class.getDeclaredMethod("refreshIfActive", ServiceAuthorizationKey.class, long.class);
+        refresh.setAccessible(true);
+        refresh.invoke(client, key, generation);
+
+        assertThat(client.cacheSize()).isZero();
+        registrations.withCurrentSnapshot(() -> {
+            OAuth2AuthorizedClient stored = store.loadAuthorizedClient(REGISTRATION_ID, key.principalName());
+            assertThat(stored).isNull();
+        });
+        verify(manager, times(1)).authorize(any(OAuth2AuthorizeRequest.class));
+    }
+
+    private static String projectedRegistration(long version, String secret) {
+        return """
+                {"registrations":[{"registrationId":"%s","issuer":"%s", "tokenUri":"%s/oauth2/token",
+                "clientId":"%s","clientSecret":"%s","credentialVersion":%d}]}
+                """.formatted(REGISTRATION_ID, ISSUER, ISSUER, CLIENT_ID, secret, version);
     }
 
     @Test

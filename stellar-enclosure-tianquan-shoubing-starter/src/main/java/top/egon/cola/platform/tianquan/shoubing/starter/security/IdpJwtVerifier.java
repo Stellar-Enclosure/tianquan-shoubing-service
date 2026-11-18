@@ -195,6 +195,7 @@ public final class IdpJwtVerifier {
         } catch (InvalidTokenException invalid) {
             return invalidOutcome(invalid.getMessage());
         } catch (JwtException | IllegalArgumentException | NullPointerException invalid) {
+            if (verificationUnavailable(invalid)) { return jwksUnavailable(); }
             return new AccessTokenVerification.Invalid<>("JWT_INVALID");
         }
     }
@@ -236,6 +237,7 @@ public final class IdpJwtVerifier {
         } catch (InvalidTokenException invalid) {
             return invalidOutcome(invalid.getMessage());
         } catch (JwtException | IllegalArgumentException | NullPointerException invalid) {
+            if (verificationUnavailable(invalid)) { return jwksUnavailable(); }
             return new AccessTokenVerification.Invalid<>("JWT_INVALID");
         }
     }
@@ -291,6 +293,7 @@ public final class IdpJwtVerifier {
         } catch (InvalidTokenException invalid) {
             return invalidOutcome(invalid.getMessage());
         } catch (JwtException | IllegalArgumentException | NullPointerException invalid) {
+            if (verificationUnavailable(invalid)) { return jwksUnavailable(); }
             return new AccessTokenVerification.Invalid<>("JWT_INVALID");
         }
     }
@@ -348,6 +351,7 @@ public final class IdpJwtVerifier {
         } catch (InvalidTokenException invalid) {
             return invalidOutcome(invalid.getMessage());
         } catch (JwtException | IllegalArgumentException | NullPointerException invalid) {
+            if (verificationUnavailable(invalid)) { return jwksUnavailable(); }
             return new AccessTokenVerification.Invalid<>("JWT_INVALID");
         }
     }
@@ -422,6 +426,7 @@ public final class IdpJwtVerifier {
         } catch (InvalidTokenException invalid) {
             return invalidOutcome(invalid.getMessage());
         } catch (AuthenticationException | JwtException invalid) {
+            if (verificationUnavailable(invalid)) { return jwksUnavailable(); }
             if (expired(invalid)) {
                 return new AccessTokenVerification.Expired<>();
             }
@@ -530,6 +535,7 @@ public final class IdpJwtVerifier {
         try {
             return decoder.decode(required(token, "token"));
         } catch (JwtException exception) {
+            if (verificationUnavailable(exception)) { throw exception; }
             String message = exception.getMessage();
             if (message != null && message.toLowerCase().contains("expired")) {
                 throw new ExpiredTokenException();
@@ -764,6 +770,20 @@ public final class IdpJwtVerifier {
             current = current.getCause();
         }
         return false;
+    }
+
+    private static boolean verificationUnavailable(Throwable failure) {
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < 32; depth++, current = current.getCause()) {
+            if (current instanceof ProjectedJwksTrustStore.UnavailableException
+                    || current instanceof com.nimbusds.jose.RemoteKeySourceException
+                    || current instanceof org.springframework.web.client.ResourceAccessException) { return true; }
+        }
+        return false;
+    }
+
+    private static <T extends IdpPrincipal> AccessTokenVerification<T> jwksUnavailable() {
+        return new AccessTokenVerification.Unavailable<>("OAUTH_JWKS_UNAVAILABLE");
     }
 
     private static String required(String value, String name) {

@@ -334,6 +334,94 @@ class MultiIssuerResourceServerTest {
     }
 
     @Test
+    void jwksNetworkTimeoutReturnsUnavailableAndHttp503RatherThanInvalidCredential() throws Exception {
+        Instant now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        URI resource = URI.create("https://api.example/orders");
+        String issuer = "https://idp.example/tenants/1001";
+        URI jwks = URI.create(issuer + "/.well-known/jwks.json");
+        var key = new RSAKeyGenerator(2048).keyID("same-kid").algorithm(JWSAlgorithm.RS256).generate();
+        var properties = multiIssuerProperties(issuer, jwks, "https://idp.example/tenants/1002",
+                URI.create("https://idp.example/tenants/1002/.well-known/jwks.json"), resource);
+        var clock = java.time.Clock.fixed(now, java.time.ZoneOffset.UTC);
+        var manager = new TenantIssuerAuthenticationManagerComponent(new TrustedIssuerRegistry(properties), properties, clock);
+        manager.initialize();
+        var server = MockRestServiceServer.bindTo(restOperations(manager)).build();
+        server.expect(ExpectedCount.manyTimes(), MockRestRequestMatchers.requestTo(jwks.toASCIIString()))
+                .andRespond(MockRestResponseCreators.withException(
+                        new java.net.SocketTimeoutException("synthetic timeout at jwks.internal")));
+        var revocations = mock(OAuthRevocationReader.class);
+        var verifier = IdpJwtVerifier.createConfigured(null, mock(IdentityResourceServerStateReader.class),
+                mock(IdentityOAuthClientStateReader.class), "orders-resource", resource, "platform-audience",
+                clock, manager, revocations, generatedConverter(), null);
+        String token = userToken(key, issuer, "1001", resource, now);
+        var filter = new IdpBearerAuthenticationFilter(new UserAccessTokenVerifier(verifier),
+                new ServiceAccessTokenVerifier(verifier), new IdpEndpointAuthenticationPolicy(), new ObjectMapper());
+        var request = new MockHttpServletRequest("GET", "/business/orders");
+        request.addHeader("Authorization", "Bearer " + token);
+        var response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (incoming, outgoing) -> {
+            throw new AssertionError("unavailable JWKS must not reach business code");
+        });
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).doesNotContain("jwks.internal", "synthetic timeout", token);
+        assertThat(verifier.verifyUser(token)).isInstanceOf(AccessTokenVerification.Unavailable.class);
+        org.mockito.Mockito.verifyNoInteractions(revocations);
+        server.verify();
+    }
+
+    @Test
+    void projectedKeysVerifyUserAndServiceOfflineAndRefreshCachedManagersWithoutRevivingRemovedKids(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        Instant now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        var clock = java.time.Clock.fixed(now, java.time.ZoneOffset.UTC);
+        URI resource = URI.create("https://api.example/orders");
+        String issuerA = "https://idp.example/tenants/1001", issuerB = "https://idp.example/tenants/1002";
+        URI jwksA = URI.create(issuerA + "/.well-known/jwks.json"), jwksB = URI.create(issuerB + "/.well-known/jwks.json");
+        RSAKey old = new RSAKeyGenerator(2048).keyID("same-kid").algorithm(JWSAlgorithm.RS256).generate();
+        RSAKey other = new RSAKeyGenerator(2048).keyID("same-kid").algorithm(JWSAlgorithm.RS256).generate();
+        RSAKey next = new RSAKeyGenerator(2048).keyID("next-kid").algorithm(JWSAlgorithm.RS256).generate();
+        var file = directory.resolve("trust.json").toAbsolutePath();
+        var until = now.plusSeconds(600);
+        writeProjection(file, projectedEntry(issuerA, jwksA, 1, until, old), projectedEntry(issuerB, jwksB, 1, until, other));
+        var properties = multiIssuerProperties(issuerA, jwksA, issuerB, jwksB, resource);
+        var trust = new ProjectedJwksTrustStore(file, new ObjectMapper(), clock);
+        var manager = new TenantIssuerAuthenticationManagerComponent(new TrustedIssuerRegistry(properties), properties,
+                clock, top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder.NOOP, trust);
+        manager.initialize();
+        assertThat(manager.usesProjectedTrust()).isTrue();
+        var noNetwork = MockRestServiceServer.bindTo(restOperations(manager)).build();
+        var checks = new java.util.concurrent.atomic.AtomicInteger();
+        OAuthRevocationReader revocations = verified -> { checks.incrementAndGet(); return OAuthRevocationReader.Result.valid(); };
+        IdentityResourceServerStateReader resources = id -> Optional.of(
+                new top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityResourceServerState("orders-resource", resource,
+                        "apps", "orders", "prod", top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceServerStatus.ACTIVE, 12L));
+        var verifier = IdpJwtVerifier.createConfigured(null, resources, mock(IdentityOAuthClientStateReader.class),
+                "orders-resource", resource, "platform-audience", clock, manager, revocations, generatedConverter(), null);
+        String oldToken = userToken(old, issuerA, "1001", resource, now);
+        String nextToken = userToken(next, issuerA, "1001", resource, now);
+        assertThat(verifier.verifyUser(oldToken)).isInstanceOf(AccessTokenVerification.Valid.class);
+        assertThat(verifier.verifyUser(userToken(other, issuerB, "1002", resource, now)))
+                .isInstanceOf(AccessTokenVerification.Valid.class);
+        assertThat(verifier.verifyUser(userToken(old, issuerB, "1002", resource, now)))
+                .isInstanceOf(AccessTokenVerification.Invalid.class);
+        assertThat(verifier.verifyUser(nextToken)).isInstanceOf(AccessTokenVerification.Invalid.class);
+        assertThat(verifier.verifyService(serviceToken(old, issuerA, resource, now)))
+                .isInstanceOf(AccessTokenVerification.Valid.class);
+        writeProjection(file, projectedEntry(issuerA, jwksA, 2, until, old, next), projectedEntry(issuerB, jwksB, 1, until, other));
+        assertThat(verifier.verifyUser(nextToken)).isInstanceOf(AccessTokenVerification.Valid.class);
+        writeProjection(file, projectedEntry(issuerA, jwksA, 3, until, next), projectedEntry(issuerB, jwksB, 1, until, other));
+        assertThat(verifier.verifyUser(oldToken)).isInstanceOf(AccessTokenVerification.Invalid.class);
+        assertThat(verifier.verifyUser(nextToken)).isInstanceOf(AccessTokenVerification.Valid.class);
+        int beforeUnavailable = checks.get();
+        java.nio.file.Files.delete(file);
+        assertThat(verifier.verifyUser(nextToken)).isInstanceOf(AccessTokenVerification.Unavailable.class);
+        assertThat(checks).hasValue(beforeUnavailable);
+        noNetwork.verify();
+    }
+
+    @Test
     void verifiesTwoExactIssuerKeysAndRejectsTenantAudienceAndUnknownIssuer()
             throws Exception {
         Instant now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
@@ -582,7 +670,14 @@ class MultiIssuerResourceServerTest {
                 .map(org.springframework.beans.factory.annotation.Qualifier::value).findFirst().orElse("")).toList();
         assertThat(qualifiers).containsExactly("trustedIssuerRegistry", "idpStarterProperties", "idpClock", "idpSecurityMetricsRecorder");
         assertThat(Arrays.stream(TenantIssuerAuthenticationManagerComponent.class.getDeclaredConstructors())
-                .map(value -> value.getParameterCount()).toList()).contains(2, 3, 4);
+                .map(value -> value.getParameterCount()).toList()).contains(2, 3, 4, 5);
+        var projected = Arrays.stream(TenantIssuerAuthenticationManagerComponent.class.getDeclaredConstructors())
+                .filter(value -> value.getParameterCount() == 5).findFirst().orElseThrow();
+        assertThat(projected.isAnnotationPresent(org.springframework.beans.factory.annotation.Autowired.class)).isTrue();
+        assertThat(Arrays.stream(projected.getParameters()).map(parameter -> parameter.getAnnotation(
+                org.springframework.beans.factory.annotation.Qualifier.class).value()).toList())
+                .containsExactly("trustedIssuerRegistry", "idpStarterProperties", "idpClock", "idpSecurityMetricsRecorder",
+                        "projectedJwksTrustStore");
     }
 
     private IdpStarterProperties multiIssuerProperties(
@@ -655,11 +750,43 @@ class MultiIssuerResourceServerTest {
                 .claim("auth_time", Date.from(now.minusSeconds(1)))
                 .build();
         SignedJWT token = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256)
-                .keyID("same-kid")
+                .keyID(signingKey.getKeyID())
                 .type(new JOSEObjectType("at+jwt"))
                 .build(), claims);
         token.sign(new RSASSASigner(signingKey));
         return token.serialize();
+    }
+
+    private String serviceToken(RSAKey key, String issuer, URI resource, Instant now) throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder(SignedJWT.parse(userToken(key, issuer, "1001", resource, now))
+                .getJWTClaimsSet()).subject("service-client").claim("client_id", "service-client")
+                .claim("principal_type", "SERVICE").claim("resource_version", 12L)
+                .claim("security_version", Map.of("realm", 1L, "client", 2L))
+                .claim("app_id", "orders-app").claim("source_biz", "apps").claim("source_app", "orders")
+                .claim("source_env", "prod").claim("credential_id", "service-key").build();
+        var jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.getKeyID())
+                .type(new JOSEObjectType("at+jwt")).build(), claims);
+        jwt.sign(new RSASSASigner(key));
+        return jwt.serialize();
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode projectedEntry(
+            String issuer, URI jwks, long version, Instant until, RSAKey... keys) {
+        var mapper = new ObjectMapper();
+        var entry = mapper.createObjectNode().put("issuer", issuer).put("jwksUri", jwks.toASCIIString())
+                .put("trustVersion", version).put("validUntil", until.toString());
+        var values = entry.putArray("keys");
+        for (RSAKey key : keys) { values.add(mapper.valueToTree(key.toPublicJWK().toJSONObject())); }
+        return entry;
+    }
+
+    private void writeProjection(java.nio.file.Path file, com.fasterxml.jackson.databind.node.ObjectNode... entries)
+            throws Exception {
+        var mapper = new ObjectMapper();
+        var value = mapper.createObjectNode();
+        var issuers = value.putArray("issuers");
+        for (var entry : entries) { issuers.add(entry); }
+        mapper.writeValue(file.toFile(), value);
     }
 
     private VerifiedPrincipalConverter generatedConverter() throws ReflectiveOperationException {

@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.Cache;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -54,7 +55,7 @@ import top.egon.cola.platform.tianquan.shoubing.starter.security.domain.Verified
 
 /** Resolves each token only to a local manager created from the exact configured issuer entry. */
 @Slf4j
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public final class TenantIssuerAuthenticationManagerComponent {
 
     @Qualifier("trustedIssuerRegistry")
@@ -66,6 +67,8 @@ public final class TenantIssuerAuthenticationManagerComponent {
     private final java.util.concurrent.atomic.AtomicBoolean metricFailureLogged = new java.util.concurrent.atomic.AtomicBoolean();
     @Qualifier("idpSecurityMetricsRecorder")
     private final IdpSecurityMetricsRecorder metrics;
+    @Qualifier("projectedJwksTrustStore")
+    private final ProjectedJwksTrustStore projectedTrustStore;
     private final ConcurrentMap<String, CachedIssuerManager> managers = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CachedIssuerManager> refreshProofManagers = new ConcurrentHashMap<>();
     private volatile BoundedJwkSetCache jwksCache;
@@ -83,9 +86,22 @@ public final class TenantIssuerAuthenticationManagerComponent {
         this(registry, properties, clock, IdpSecurityMetricsRecorder.NOOP);
     }
 
+    public TenantIssuerAuthenticationManagerComponent(@Qualifier("trustedIssuerRegistry") TrustedIssuerRegistry registry,
+            @Qualifier("idpStarterProperties") IdpStarterProperties properties,
+            @Qualifier("idpClock") Clock clock, @Qualifier("idpSecurityMetricsRecorder") IdpSecurityMetricsRecorder metrics) {
+        this(registry, properties, clock, metrics, null);
+    }
+
+    public boolean usesProjectedTrust() { return projectedTrustStore != null; }
+
     public synchronized void initialize() {
         if (trustedManagerResolver != null) {
             return;
+        }
+        if (projectedTrustStore != null) {
+            projectedTrustStore.reload();
+            trustedIssuerRegistry.activeIssuers().forEach(issuer -> projectedTrustStore.resolve(
+                    issuer.issuer(), issuer.jwksUri(), issuer.trustVersion()));
         }
         if (trustedIssuerRegistry.isEmpty()) {
             this.jwksCache = new BoundedJwkSetCache(1, Duration.ofSeconds(300).toNanos(), metrics);
@@ -230,7 +246,7 @@ public final class TenantIssuerAuthenticationManagerComponent {
     }
 
     private AuthenticationManager manager(TrustedIssuerVO trusted, boolean refreshProofOnly) {
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(
+        NimbusJwtDecoder decoder = projectedTrustStore == null ? NimbusJwtDecoder.withJwkSetUri(
                         trusted.jwksUri().toASCIIString())
                 .jwsAlgorithm(SignatureAlgorithm.RS256)
                 .validateType(false)
@@ -256,7 +272,7 @@ public final class TenantIssuerAuthenticationManagerComponent {
                         }
                     });
                 })
-                .build();
+                .build() : projectedNimbusDecoder(trusted.issuer(), trusted.jwksUri(), trusted.trustVersion());
         JwtTimestampValidator timestamps = new JwtTimestampValidator(properties.getClockSkew());
         timestamps.setClock(clock);
         List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
@@ -266,6 +282,45 @@ public final class TenantIssuerAuthenticationManagerComponent {
         OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(validators);
         decoder.setJwtValidator(validator);
         return new JwtAuthenticationProvider(decoder)::authenticate;
+    }
+
+    /** The named legacy decoder may share the same offline trust without inheriting modern realm-claim policy. */
+    public org.springframework.security.oauth2.jwt.JwtDecoder projectedDecoder(
+            URI canonicalIssuer, URI canonicalJwksUri, long minimumTrustVersion) {
+        return projectedNimbusDecoder(canonicalIssuer, canonicalJwksUri, minimumTrustVersion);
+    }
+
+    private NimbusJwtDecoder projectedNimbusDecoder(URI canonicalIssuer, URI canonicalJwksUri, long minimumTrustVersion) {
+        if (projectedTrustStore == null) { throw new ProjectedJwksTrustStore.UnavailableException(); }
+        projectedTrustStore.resolve(canonicalIssuer, canonicalJwksUri, minimumTrustVersion);
+        com.nimbusds.jose.jwk.source.JWKSource<com.nimbusds.jose.proc.SecurityContext> source = (selector, context) -> {
+            var trusted = projectedTrustStore.resolve(canonicalIssuer, canonicalJwksUri, minimumTrustVersion);
+            List<com.nimbusds.jose.jwk.JWK> keys = trusted.keys().stream()
+                    .map(key -> (com.nimbusds.jose.jwk.JWK) key).toList();
+            return selector.select(new com.nimbusds.jose.jwk.JWKSet(keys));
+        };
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSource(source).jwsAlgorithm(SignatureAlgorithm.RS256)
+                .jwtProcessorCustomizer(processor -> {
+                    processor.setJWSTypeVerifier(new com.nimbusds.jose.proc.DefaultJOSEObjectTypeVerifier<>(
+                            new com.nimbusds.jose.JOSEObjectType("at+jwt")));
+                    var delegate = processor.getJWSVerifierFactory();
+                    processor.setJWSVerifierFactory(new com.nimbusds.jose.proc.JWSVerifierFactory() {
+                        @Override public com.nimbusds.jose.JWSVerifier createJWSVerifier(com.nimbusds.jose.JWSHeader header,
+                                java.security.Key key) throws com.nimbusds.jose.JOSEException {
+                            return new ObservedJwsVerifier(delegate.createJWSVerifier(header, key), metrics, metricFailureLogged);
+                        }
+                        @Override public java.util.Set<com.nimbusds.jose.JWSAlgorithm> supportedJWSAlgorithms() {
+                            return delegate.supportedJWSAlgorithms();
+                        }
+                        @Override public com.nimbusds.jose.jca.JCAContext getJCAContext() { return delegate.getJCAContext(); }
+                    });
+                }).build();
+        JwtTimestampValidator timestamps = new JwtTimestampValidator(properties.getClockSkew());
+        timestamps.setClock(clock);
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+                new JwtIssuerValidator(canonicalIssuer.toASCIIString()), timestamps,
+                new org.springframework.security.oauth2.jwt.JwtTypeValidator("at+jwt")));
+        return decoder;
     }
 
     private OAuth2TokenValidatorResult validateJwtHeadersAndTimes(

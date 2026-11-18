@@ -8,6 +8,8 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Supplier;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Callable;
@@ -99,6 +101,7 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
     private final AtomicLong refreshGeneration = new AtomicLong();
     private volatile boolean closed;
     private final java.util.concurrent.atomic.AtomicBoolean metricFailureLogged = new java.util.concurrent.atomic.AtomicBoolean();
+    private Runnable projectionUnsubscribe = () -> { };
 
     /** Keeps the former constructor source-compatible; authorization fails closed without identity config. */
     @Deprecated
@@ -151,14 +154,18 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         Objects.requireNonNull(authorizedClients, "authorizedClients");
         Objects.requireNonNull(trustedIssuerRegistry, "trustedIssuerRegistry");
         Objects.requireNonNull(properties, "properties");
-        properties.getServiceClient().validate();
-        return new IdpServiceOAuth2Client(manager, converter, clock, renewalSkew,
+        properties.getServiceClient().validate(registrations instanceof ProjectedClientRegistrationRepository);
+        IdpServiceOAuth2Client client = new IdpServiceOAuth2Client(manager, converter, clock, renewalSkew,
                 registrations, authorizedClients, trustedIssuerRegistry, properties, Objects.requireNonNull(metrics, "metrics"));
+        if (registrations instanceof ProjectedClientRegistrationRepository projected) {
+            client.projectionUnsubscribe = projected.onRetirement(client::retireProjectedRegistrations);
+        }
+        return client;
     }
 
     /** Obtains an access token for exactly one validated authorization key. */
     public OAuth2AccessToken authorize(IdpServiceTokenRequest request) {
-        return authorizeResolved(request, key(request));
+        return withRegistrationSnapshot(request, () -> authorizeResolved(request, key(request)));
     }
 
     private OAuth2AccessToken authorizeResolved(IdpServiceTokenRequest request, ServiceAuthorizationKey key) {
@@ -181,23 +188,23 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
     public OAuth2AccessToken authorizeBounded(IdpServiceTokenRequest request, String expectedIssuer, Duration timeout) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(expectedIssuer, "expectedIssuer");
-        return bounded(() -> {
+        return bounded(() -> withRegistrationSnapshot(request, () -> {
             ServiceAuthorizationKey key = key(request);
             if (!expectedIssuer.equals(key.issuer())) throw new IdpServiceAuthorizationException("issuer_mismatch", null);
             return authorizeResolved(request, key);
-        }, timeout);
+        }), timeout);
     }
 
     /** Bounds cache invalidation and does not automatically replay the failed request. */
     public void invalidateBounded(IdpServiceTokenRequest request, String expectedIssuer, Duration timeout) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(expectedIssuer, "expectedIssuer");
-        bounded(() -> {
+        bounded(() -> withRegistrationSnapshot(request, () -> {
             ServiceAuthorizationKey key = key(request);
             if (!expectedIssuer.equals(key.issuer())) throw new IdpServiceAuthorizationException("issuer_mismatch", null);
             evict(key);
             return Boolean.TRUE;
-        }, timeout);
+        }), timeout);
     }
 
     private <T> T bounded(Callable<T> work, Duration timeout) {
@@ -221,7 +228,10 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
 
     /** Removes both the local token and Spring's underlying authorized-client entry. */
     public void invalidate(IdpServiceTokenRequest request) {
-        evict(key(request));
+        withRegistrationSnapshot(request, () -> {
+            evict(key(request));
+            return Boolean.TRUE;
+        });
     }
 
     int cacheSize() {
@@ -301,7 +311,20 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
 
     /** Returns only the validated, non-secret registration identity used to bind authority receipts. */
     public ServiceAuthorizationKey authorizationKey(IdpServiceTokenRequest request) {
-        return key(request);
+        return withRegistrationSnapshot(request, () -> key(request));
+    }
+
+    private <T> T withRegistrationSnapshot(IdpServiceTokenRequest request, Supplier<T> action) {
+        if (registrations instanceof ProjectedClientRegistrationRepository projected && request != null) {
+            try {
+                return projected.withSnapshot(request.registrationId(), action);
+            } catch (IdpServiceAuthorizationException failure) {
+                throw failure;
+            } catch (IllegalStateException unavailable) {
+                throw new IdpServiceAuthorizationException("registration_projection_unavailable", null);
+            }
+        }
+        return action.get();
     }
 
     private ServiceAuthorizationKey key(IdpServiceTokenRequest request) {
@@ -334,8 +357,9 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         validateTrustedIssuer(issuer, request);
         long credentialVersion;
         try {
-            credentialVersion = serviceClient.credentialVersion(
-                    request.registrationId());
+            credentialVersion = registrations instanceof ProjectedClientRegistrationRepository projected
+                    ? projected.credentialVersion(request.registrationId())
+                    : serviceClient.credentialVersion(request.registrationId());
         } catch (IllegalStateException invalid) {
             throw new IdpServiceAuthorizationException(
                     "credential_version_unconfigured", invalid);
@@ -343,6 +367,9 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         Optional<IdpTransportBindingVO> transport;
         try {
             transport = converter.selectTransport(registration, request.audience());
+            if (registrations instanceof ProjectedClientRegistrationRepository && transport.isEmpty()) {
+                throw new IdpServiceAuthorizationException("transport_binding_required", null);
+            }
         } catch (IdpServiceTokenRequest.IdpServiceTokenRequestException invalid) {
             throw new IdpServiceAuthorizationException("transport_binding_invalid", null);
         }
@@ -546,7 +573,11 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         IdpServiceTokenRequest request = requests.get(key);
         if (last == null || request == null
                 || last.get().plus(ACTIVE_KEY_WINDOW).isBefore(clock.instant())) {
-            evict(key);
+            if (registrations instanceof ProjectedClientRegistrationRepository projected) {
+                projected.withCurrentSnapshot(() -> evict(key));
+            } else {
+                evict(key);
+            }
             return;
         }
         try {
@@ -584,6 +615,13 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
                         .toList().forEach(this::evictLocked);
             }
             // Transport bindings are immutable per facade: replacement assembles a new facade and revisioned principal.
+        }
+    }
+
+    private void retireProjectedRegistrations(Set<String> registrations) {
+        synchronized (cacheLock) {
+            cache.keySet().stream().filter(key -> registrations.contains(key.registrationId()))
+                    .toList().forEach(this::evictLocked);
         }
     }
 
@@ -645,6 +683,7 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        projectionUnsubscribe.run();
         boundedOperations.shutdownNow();
         synchronized (cacheLock) {
             refreshTasks.values().forEach(task -> task.cancel(false));

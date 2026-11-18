@@ -26,6 +26,7 @@ import top.egon.cola.component.rpc.consumer.generic.RpcGenericInvocation;
 import top.egon.cola.component.rpc.consumer.interceptor.RpcClientInvocation;
 import top.egon.cola.component.rpc.context.identity.RpcProcessIdentity;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.redisson.api.RedissonClient;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -48,6 +49,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import top.egon.cola.component.rpc.consumer.interceptor.RpcClientInterceptorFactory;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceTokenRequest;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpClientCredentialsRequestEntityConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO;
@@ -68,8 +70,12 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.settings;
@@ -114,6 +120,103 @@ class IdpStarterAutoConfigurationTest {
                             "egon.cola.platform.tianquan.shoubing.jwk-set-uri=https://tianquan-shoubing.local/oauth2/jwks",
                             "egon.cola.platform.tianquan.shoubing.resource-server-id=resource-tianquan-jianshen-prod",
                             "egon.cola.platform.tianquan.shoubing.resource-uri=https://api.example/prod/permission/tianquan-jianshen");
+
+    @Test
+    void configuredProjectionCannotFallBackToCanonicalHttpsWhenItsFileIsMissing(@TempDir Path directory) {
+        contextRunner.withPropertyValues(
+                        "egon.cola.platform.tianquan.shoubing.projection.jwks-file=" + directory.resolve("missing.json"))
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).hasStackTraceContaining("IDP_PROJECTED_JWKS_UNAVAILABLE");
+                });
+    }
+
+    @Test
+    void productionProjectionRejectsUnknownSettingsAndMissingTrustRoot() {
+        contextRunner.withPropertyValues("egon.cola.platform.tianquan.shoubing.projection.required=true")
+                .run(context -> assertThat(context.getStartupFailure())
+                        .hasStackTraceContaining("IDP_PROJECTED_JWKS_REQUIRED"));
+        contextRunner.withPropertyValues("egon.cola.platform.tianquan.shoubing.projection.unrecognized=true")
+                .run(context -> assertThat(context.getStartupFailure())
+                        .hasStackTraceContaining("projection.unrecognized"));
+    }
+
+    @Test
+    void sharedProjectionReaderFollowsKubernetesSymlinksOnlyInsideTheMount(@TempDir Path directory) throws Exception {
+        Path mount = Files.createDirectory(directory.resolve("mounted"));
+        Path version = Files.createDirectory(mount.resolve("..generation1"));
+        Files.writeString(version.resolve("credentials.json"), "{}");
+        Files.createSymbolicLink(mount.resolve("..data"), version.getFileName());
+        Path projectedFile = Files.createSymbolicLink(mount.resolve("credentials.json"),
+                Path.of("..data", "credentials.json"));
+        assertThat(IdpProjectedFileComponent.read(projectedFile, 32)).isEqualTo(new byte[]{'{', '}'});
+        assertThatThrownBy(() -> IdpProjectedFileComponent.read(projectedFile, 1))
+                .isInstanceOf(IOException.class).hasMessage("IDP_PROJECTION_FILE_UNAVAILABLE");
+        Path outside = Files.writeString(directory.resolve("outside.json"), "{}");
+        Files.delete(mount.resolve("..data"));
+        Files.createSymbolicLink(mount.resolve("..data"), outside.getParent());
+        Files.move(outside, directory.resolve("credentials.json"));
+        assertThatThrownBy(() -> IdpProjectedFileComponent.read(projectedFile, 32))
+                .isInstanceOf(IOException.class).hasMessage("IDP_PROJECTION_FILE_UNAVAILABLE");
+    }
+
+    @Test
+    void managedJwtDecoderUsesOnlyTheProjectedKeysAtThePublicIssuerIdentity(@TempDir Path directory) throws Exception {
+        String issuer = "https://idp.example/tenants/1001";
+        String jwks = issuer + "/.well-known/jwks.json";
+        Instant now = Instant.now();
+        RSAKey key = new RSAKeyGenerator(2048).algorithm(JWSAlgorithm.RS256).keyID("projection-key").generate();
+        Path file = Files.writeString(directory.resolve("jwks.json"), """
+                {"issuers":[{"issuer":"%s","jwksUri":"%s","trustVersion":1,
+                  "validUntil":"%s","keys":[%s]}]}
+                """.formatted(issuer, jwks, now.plusSeconds(300), key.toPublicJWK().toJSONString()));
+        SignedJWT token = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256)
+                .type(new JOSEObjectType("at+jwt")).keyID(key.getKeyID()).build(),
+                JWTClaimsSet.parse(Map.of("iss", issuer, "sub", "projected-client", "iat", now.getEpochSecond(),
+                        "exp", now.plusSeconds(60L).getEpochSecond(), "jti", "projection-fixture")));
+        token.sign(new RSASSASigner(key));
+
+        contextRunner.withPropertyValues(
+                        "egon.cola.platform.tianquan.shoubing.issuer=" + issuer,
+                        "egon.cola.platform.tianquan.shoubing.jwk-set-uri=" + jwks,
+                        "egon.cola.platform.tianquan.shoubing.projection.required=true",
+                        "egon.cola.platform.tianquan.shoubing.projection.jwks-file=" + file)
+                .run(context -> {
+                    assertThat(context).hasNotFailed().hasBean("idpProjectedJwksTrustStore");
+                    assertThat(context.getBean("idpJwtDecoder", JwtDecoder.class).decode(token.serialize()).getSubject())
+                            .isEqualTo("projected-client");
+                });
+    }
+
+    @Test
+    void projectionOwnsActualServiceRegistrationAndDoesNotSelectThePublicEndpoint(@TempDir Path directory) throws Exception {
+        String issuer = "https://idp.example/tenants/1001";
+        URI endpoint = URI.create(issuer + "/oauth2/token");
+        URI resource = URI.create("https://api.example/prod/permission/tianquan-jianshen");
+        Path credentials = Files.writeString(directory.resolve("credentials.json"), """
+                {"registrations":[{"registrationId":"orders","issuer":"%s","tokenUri":"%s",
+                   "clientId":"orders-managed","clientSecret":"fixture-credential","credentialVersion":6}]}
+                """.formatted(issuer, endpoint));
+        IdpTransportBindingVO managed = new IdpTransportBindingVO("orders-token", 2L, URI.create(issuer), endpoint,
+                resource, "orders", Operation.TOKEN, "POST", endpoint.getPath(), "identity", "issuer", 8080, Transport.HTTP);
+        contextRunner.withBean("idpTransportBindingRegistry", IdpTransportBindingRegistry.class,
+                        () -> new IdpTransportBindingRegistry(List.of(managed)))
+                .withPropertyValues(
+                        "egon.cola.platform.tianquan.shoubing.service-client.app-id=orders-app",
+                        "egon.cola.platform.tianquan.shoubing.service-client.registration-id=orders",
+                        "egon.cola.platform.tianquan.shoubing.projection.service-credentials-file=" + credentials)
+                .run(context -> {
+                    assertThat(context).hasNotFailed().hasBean("idpProjectedClientRuntime");
+                    assertThat(context).doesNotHaveBean("idpOAuth2AuthorizedClientManager");
+                    var client = context.getBean(IdpServiceOAuth2Client.class);
+                    var request = new IdpServiceTokenRequest(
+                            "orders", "orders-app", resource, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+                    var authorization = client.authorizationKey(request);
+                    assertThat(authorization.credentialVersion()).isEqualTo(6L);
+                    assertThat(authorization.bindingId()).isEqualTo("orders-token");
+                    assertThat(authorization.issuer()).isEqualTo(issuer);
+                });
+    }
 
     @Test
     void customNamedHostEndpointPolicyReplacesTheDefaultAndStillCreatesTheBearerFilter() {

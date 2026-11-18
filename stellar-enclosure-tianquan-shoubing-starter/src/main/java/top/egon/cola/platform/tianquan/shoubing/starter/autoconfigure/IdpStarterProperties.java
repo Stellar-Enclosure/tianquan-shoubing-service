@@ -18,6 +18,7 @@ import java.util.Set;
 import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
 
 import java.net.URI;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -780,6 +781,32 @@ public class IdpStarterProperties {
         return 6379;
     }
 
+    /** Kubernetes-projected identity inputs, bound independently of externally configured OAuth clients. */
+    @Data
+    public static class ProjectedIdentityProperties {
+
+        private boolean required;
+        private Path jwksFile;
+        private Path serviceCredentialsFile;
+
+        void validateFor(ServiceClient serviceClient) {
+            validateLocation(jwksFile);
+            validateLocation(serviceCredentialsFile);
+            if (required && jwksFile == null) {
+                throw invalid("IDP_PROJECTED_JWKS_REQUIRED");
+            }
+            if (required && serviceClient.isConfigured() && serviceCredentialsFile == null) {
+                throw invalid("IDP_PROJECTED_CREDENTIALS_REQUIRED");
+            }
+        }
+
+        private static void validateLocation(Path path) {
+            if (path != null && (!path.isAbsolute() || !path.equals(path.normalize()) || path.getParent() == null)) {
+                throw invalid("IDP_PROJECTION_LOCATION_INVALID");
+            }
+        }
+    }
+
     /** Standard Spring registration identity and cache renewal settings. */
     public static class ServiceClient {
 
@@ -863,6 +890,15 @@ public class IdpStarterProperties {
 
         /** Validates enabled service-client settings. */
         public void validate() {
+            validate(false);
+        }
+
+        public boolean isConfigured() {
+            return appId != null || registrationId != null;
+        }
+
+        /** Validates the workload binding and, for unmanaged clients, the static credential versions. */
+        public void validate(boolean projectedCredentials) {
             if (appId == null || appId.isBlank()
                     || registrationId == null || registrationId.isBlank()) {
                 throw new IllegalStateException(
@@ -891,7 +927,9 @@ public class IdpStarterProperties {
                 if (!registrations.add(registration)) {
                     throw invalid("service-client tenant registrations must be distinct");
                 }
-                credentialVersion(registration);
+                if (!projectedCredentials) {
+                    credentialVersion(registration);
+                }
             });
             credentialVersions.forEach((key, version) -> {
                 if (key == null || !key.matches("[A-Za-z0-9._-]{1,128}")

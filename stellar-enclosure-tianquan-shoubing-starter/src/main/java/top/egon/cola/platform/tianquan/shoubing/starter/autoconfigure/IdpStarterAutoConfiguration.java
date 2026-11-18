@@ -43,11 +43,13 @@ import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2C
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.ProjectedClientRegistrationRepository;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.CurrentIdentity;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpBearerAuthenticationFilter;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpEndpointAuthenticationPolicy;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpJwtVerifier;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.OAuthRevocationReader;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.ProjectedJwksTrustStore;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.TenantIssuerAuthenticationManagerComponent;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.TrustedIssuerRegistry;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.VerifiedPrincipalConverter;
@@ -73,9 +75,11 @@ import top.egon.cola.platform.tianquan.shoubing.starter.security.impl.DatabaseOA
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -102,6 +106,7 @@ import java.util.Set;
         havingValue = "true")
 public class IdpStarterAutoConfiguration {
 
+    private static final String PROJECTION_PREFIX = "egon.cola.platform.tianquan.shoubing.projection";
     private static final int MAX_TOKEN_RESPONSE_BYTES = 64 * 1024;
     private static final Set<String> TOKEN_ERROR_CODES = Set.of("invalid_request", "invalid_client", "invalid_grant",
             "unauthorized_client", "unsupported_grant_type", "invalid_scope", "server_error", "temporarily_unavailable");
@@ -196,6 +201,25 @@ public class IdpStarterAutoConfiguration {
         return new IdpStarterProperties();
     }
 
+    @Bean(name = "idpProjectedIdentityProperties")
+    @ConfigurationProperties(prefix = PROJECTION_PREFIX, ignoreUnknownFields = false)
+    public IdpStarterProperties.ProjectedIdentityProperties idpProjectedIdentityProperties() {
+        return new IdpStarterProperties.ProjectedIdentityProperties();
+    }
+
+    @Bean(name = "idpProjectedJwksTrustStore")
+    @ConditionalOnProperty(prefix = PROJECTION_PREFIX, name = "jwks-file")
+    public ProjectedJwksTrustStore idpProjectedJwksTrustStore(
+            @Qualifier("idpProjectedIdentityProperties") IdpStarterProperties.ProjectedIdentityProperties projection,
+            @Qualifier("idpStarterProperties") IdpStarterProperties properties,
+            @Qualifier("jacksonObjectMapper") ObjectMapper mapper,
+            @Qualifier("idpClock") Clock clock) {
+        projection.validateFor(properties.getServiceClient());
+        var store = new ProjectedJwksTrustStore(projection.getJwksFile(), mapper, clock);
+        store.reload();
+        return store;
+    }
+
     /** Binds only deployment-owned transport entries, independently from canonical identities. */
     @Bean(name = "idpTransportBindingProperties")
     @ConfigurationProperties(prefix = "egon.cola.platform.tianquan.shoubing.transport", ignoreUnknownFields = false)
@@ -246,11 +270,15 @@ public class IdpStarterAutoConfiguration {
     public TenantIssuerAuthenticationManagerComponent tenantIssuerAuthenticationManagerComponent(
             @Qualifier("trustedIssuerRegistry") TrustedIssuerRegistry trustedIssuerRegistry,
             @Qualifier("idpStarterProperties") IdpStarterProperties properties,
+            @Qualifier("idpProjectedIdentityProperties") IdpStarterProperties.ProjectedIdentityProperties projection,
+            @Qualifier("idpProjectedJwksTrustStore") ObjectProvider<ProjectedJwksTrustStore> projectedTrust,
             @Qualifier("idpClock") Clock idpClock,
             @Qualifier("idpSecurityMetricsRecorder") ObjectProvider<IdpSecurityMetricsRecorder> metrics) {
+        projection.validateFor(properties.getServiceClient());
         TenantIssuerAuthenticationManagerComponent component =
                 new TenantIssuerAuthenticationManagerComponent(
-                        trustedIssuerRegistry, properties, idpClock, metrics.getIfAvailable(() -> IdpSecurityMetricsRecorder.NOOP));
+                        trustedIssuerRegistry, properties, idpClock,
+                        metrics.getIfAvailable(() -> IdpSecurityMetricsRecorder.NOOP), projectedTrust.getIfAvailable());
         component.initialize();
         return component;
     }
@@ -289,7 +317,6 @@ public class IdpStarterAutoConfiguration {
 
     /** Creates the request converter used by the standard client-credentials provider. */
     @Bean(name = "idpClientCredentialsRequestEntityConverter")
-    @ConditionalOnBean(ClientRegistrationRepository.class)
     @ConditionalOnMissingBean
     public IdpClientCredentialsRequestEntityConverter
             idpClientCredentialsRequestEntityConverter(
@@ -327,7 +354,7 @@ public class IdpStarterAutoConfiguration {
             @Qualifier("idpStarterProperties") IdpStarterProperties properties,
             @Qualifier("identityAuthorityProperties") IdentityAuthorityProperties authorityProperties
     ) {
-        properties.getServiceClient().validate();
+        properties.getServiceClient().validate(registrations instanceof ProjectedClientRegistrationRepository);
         var errorHandler = new org.springframework.security.oauth2.client.http.OAuth2ErrorResponseErrorHandler();
         var transport = top.egon.cola.platform.tianquan.shoubing.starter.state.HttpIdentityAuthorityClient
                 .boundedTransport(authorityProperties.getTimeout()).mutate().configureMessageConverters(converters -> {
@@ -376,6 +403,33 @@ public class IdpStarterAutoConfiguration {
                 );
         manager.setAuthorizedClientProvider(provider);
         return manager;
+    }
+
+    @Bean(name = "idpProjectedClientRuntime")
+    @ConditionalOnProperty(prefix = PROJECTION_PREFIX, name = "service-credentials-file")
+    ProjectedClientRuntimeVO idpProjectedClientRuntime(
+            @Qualifier("idpProjectedIdentityProperties") IdpStarterProperties.ProjectedIdentityProperties projection,
+            @Qualifier("idpStarterProperties") IdpStarterProperties properties,
+            @Qualifier("jacksonObjectMapper") ObjectMapper mapper,
+            @Qualifier("idpClientCredentialsRequestEntityConverter") IdpClientCredentialsRequestEntityConverter converter,
+            @Qualifier("identityAuthorityProperties") IdentityAuthorityProperties authorityProperties) {
+        var serviceClient = properties.getServiceClient();
+        projection.validateFor(serviceClient);
+        serviceClient.validate(true);
+        var registrations = new ProjectedClientRegistrationRepository(
+                projection.getServiceCredentialsFile(), mapper, serviceClient.getCredentialVersions());
+        Set<String> configuredIds = new HashSet<>(serviceClient.getTenantRegistrationIds().values());
+        configuredIds.add(serviceClient.getRegistrationId());
+        registrations.verifyAvailable(configuredIds);
+        var authorizedClients = new InMemoryOAuth2AuthorizedClientService(registrations);
+        var manager = idpOAuth2AuthorizedClientManager(registrations, authorizedClients, converter, properties,
+                authorityProperties);
+        return new ProjectedClientRuntimeVO(registrations, authorizedClients, manager);
+    }
+
+    record ProjectedClientRuntimeVO(ProjectedClientRegistrationRepository registrations,
+                                    OAuth2AuthorizedClientService authorizedClients,
+                                    OAuth2AuthorizedClientManager manager) {
     }
 
     /** Caps successful and rejected token bodies before any OAuth JSON or error converter reads them. */
@@ -429,34 +483,31 @@ public class IdpStarterAutoConfiguration {
 
     /** Creates the one recommended SERVICE-token API for biz services. */
     @Bean(name = "idpServiceOAuth2Client")
-    @ConditionalOnBean({
-            OAuth2AuthorizedClientManager.class,
-            ClientRegistrationRepository.class,
-            OAuth2AuthorizedClientService.class
-    })
     @ConditionalOnMissingBean
     @ConditionalOnProperty(
             prefix = "egon.cola.platform.tianquan.shoubing.service-client",
             name = {"app-id", "registration-id"}
     )
     public IdpServiceOAuth2Client idpServiceOAuth2Client(
-            @Qualifier("idpOAuth2AuthorizedClientManager") OAuth2AuthorizedClientManager manager,
+            @Qualifier("idpOAuth2AuthorizedClientManager") ObjectProvider<OAuth2AuthorizedClientManager> managers,
             @Qualifier("idpClientCredentialsRequestEntityConverter") IdpClientCredentialsRequestEntityConverter converter,
-            @Qualifier("clientRegistrationRepository") ClientRegistrationRepository registrations,
-            OAuth2AuthorizedClientService authorizedClients,
+            @Qualifier("clientRegistrationRepository") ObjectProvider<ClientRegistrationRepository> registrations,
+            ObjectProvider<OAuth2AuthorizedClientService> authorizedClients,
+            @Qualifier("idpProjectedClientRuntime") ObjectProvider<ProjectedClientRuntimeVO> projection,
             @Qualifier("trustedIssuerRegistry") TrustedIssuerRegistry trustedIssuerRegistry,
             @Qualifier("idpStarterProperties") IdpStarterProperties properties,
             @Qualifier("idpClock") Clock idpClock,
             @Qualifier("idpSecurityMetricsRecorder") ObjectProvider<IdpSecurityMetricsRecorder> metrics
     ) {
-        properties.getServiceClient().validate();
+        ProjectedClientRuntimeVO projected = projection.getIfAvailable();
+        properties.getServiceClient().validate(projected != null);
         return IdpServiceOAuth2Client.createConfigured(
-                manager,
+                projected == null ? managers.getObject() : projected.manager(),
                 converter,
                 idpClock,
                 properties.getServiceClient().getRenewalSkew(),
-                registrations,
-                authorizedClients,
+                projected == null ? registrations.getObject() : projected.registrations(),
+                projected == null ? authorizedClients.getObject() : projected.authorizedClients(),
                 trustedIssuerRegistry,
                 properties,
                 metrics.getIfAvailable(() -> IdpSecurityMetricsRecorder.NOOP)
@@ -519,7 +570,22 @@ public class IdpStarterAutoConfiguration {
             prefix = "egon.cola.platform.tianquan.shoubing",
             name = {"issuer", "jwk-set-uri"})
     @ConditionalOnMissingBean(name = "idpJwtDecoder")
-    public JwtDecoder idpJwtDecoder(@Qualifier("idpStarterProperties") IdpStarterProperties properties) {
+    public JwtDecoder idpJwtDecoder(@Qualifier("idpStarterProperties") IdpStarterProperties properties,
+            @Qualifier("idpProjectedIdentityProperties") IdpStarterProperties.ProjectedIdentityProperties projection,
+            @Qualifier("trustedIssuerRegistry") TrustedIssuerRegistry trustedIssuers,
+            @Qualifier("tenantIssuerAuthenticationManagerComponent") TenantIssuerAuthenticationManagerComponent manager) {
+        if (projection.getJwksFile() == null) {
+            return idpJwtDecoder(properties);
+        }
+        properties.validate();
+        String issuer = properties.getIssuer();
+        long floor = trustedIssuers.findByIssuer(issuer).map(TrustedIssuerRegistry.TrustedIssuerVO::trustVersion)
+                .orElse(0L);
+        return manager.projectedDecoder(URI.create(issuer), URI.create(properties.getJwkSetUri()), floor);
+    }
+
+    /** Preserves the explicit external decoder factory for direct clients. */
+    public JwtDecoder idpJwtDecoder(IdpStarterProperties properties) {
         properties.validate();
         return new RetryingJwtDecoder(() -> decoder(properties));
     }
@@ -529,12 +595,17 @@ public class IdpStarterAutoConfiguration {
     @ConditionalOnMissingBean
     public IdpJwtVerifier idpJwtVerifier(
             @Qualifier("idpStarterProperties") IdpStarterProperties properties,
+            @Qualifier("idpProjectedIdentityProperties") IdpStarterProperties.ProjectedIdentityProperties projection,
             @Qualifier("tenantIssuerAuthenticationManagerComponent") TenantIssuerAuthenticationManagerComponent manager,
             @Qualifier("oauthRevocationReader") OAuthRevocationReader revocations,
             @Qualifier("verifiedPrincipalConverter") VerifiedPrincipalConverter converter,
             @Qualifier("idpClock") Clock clock,
             @Qualifier("idpObservedVerificationComponent") IdpObservedVerificationComponent observations) {
         properties.validateJwtVerification();
+        projection.validateFor(properties.getServiceClient());
+        if (projection.getJwksFile() != null && !manager.usesProjectedTrust()) {
+            throw new IllegalStateException("IDP_PROJECTED_JWKS_UNAVAILABLE");
+        }
         return IdpJwtVerifier.createDatabaseConfigured(properties.getResourceUri(), clock, manager,
                 revocations, converter, observations);
     }

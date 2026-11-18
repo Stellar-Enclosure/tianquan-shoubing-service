@@ -104,6 +104,30 @@ class IdpJwtVerifierTest {
                 .isInstanceOf(AccessTokenVerification.Expired.class);
     }
 
+    @Test
+    void materialAndRemoteKeyFailuresAreUnavailableForEveryEntryPointEvenWhenTheirMessageSaysExpired() {
+        for (Exception cause : List.of(new ProjectedJwksTrustStore.UnavailableException(),
+                new com.nimbusds.jose.RemoteKeySourceException("synthetic expired material",
+                        new java.net.SocketTimeoutException("synthetic timeout")))) {
+            var verifier = new IdpJwtVerifier(token -> {
+                throw new org.springframework.security.oauth2.jwt.JwtException("expired verification source", cause);
+            }, resourceReader(), clientReader(), RESOURCE_ID, RESOURCE_URI, PLATFORM_AUDIENCE, clock());
+            assertThat(verifier.verifyUser("access-token")).isInstanceOf(AccessTokenVerification.Unavailable.class);
+            assertThat(verifier.verifyService("access-token")).isInstanceOf(AccessTokenVerification.Unavailable.class);
+            assertThat(verifier.verifyAny("access-token")).isInstanceOf(AccessTokenVerification.Unavailable.class);
+        }
+    }
+
+    @Test
+    void ordinaryBadJwtDoesNotBecomeUnavailable() {
+        var verifier = new IdpJwtVerifier(token -> {
+            throw new org.springframework.security.oauth2.jwt.BadJwtException("synthetic bad signature");
+        }, resourceReader(), clientReader(), RESOURCE_ID, RESOURCE_URI, PLATFORM_AUDIENCE, clock());
+        assertInvalid(verifier.verifyUser("access-token"), "JWT_INVALID");
+        assertInvalid(verifier.verifyService("access-token"), "JWT_INVALID");
+        assertInvalid(verifier.verifyAny("access-token"), "JWT_INVALID");
+    }
+
     private void assertInvalid(AccessTokenVerification<?> result, String reason) {
         assertThat(result).isInstanceOf(AccessTokenVerification.Invalid.class);
         assertThat(((AccessTokenVerification.Invalid<?>) result).reasonCode())
