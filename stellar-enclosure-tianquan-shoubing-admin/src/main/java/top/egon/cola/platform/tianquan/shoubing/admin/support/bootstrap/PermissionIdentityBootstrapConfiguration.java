@@ -193,9 +193,7 @@ class PermissionIdentityBootstrapConfiguration {
                             java.util.Set.of(top.egon.cola.platform.tianquan.shoubing.core.audit.OAuthSecurityChangedEvent.OUTBOX_DESTINATION)),
                     new ProducerDestination(top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.TransactionalOutboxResourceServerEventAdapter.PROJECTION_CHANNEL,
                             java.util.Set.of(top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.TransactionalOutboxResourceServerEventAdapter.RESOURCE_PROJECTION_DESTINATION,
-                                    top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.TransactionalOutboxResourceServerEventAdapter.SERVICE_GRANT_PROJECTION_DESTINATION)),
-                    new ProducerDestination(top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.TransactionalOutboxResourceServerEventAdapter.CHANNEL,
-                            java.util.Set.of(top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.TransactionalOutboxResourceServerEventAdapter.DISABLED_DESTINATION))));
+                                    top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.TransactionalOutboxResourceServerEventAdapter.SERVICE_GRANT_PROJECTION_DESTINATION))));
         }
 
         @Bean("transactionalOutbox")

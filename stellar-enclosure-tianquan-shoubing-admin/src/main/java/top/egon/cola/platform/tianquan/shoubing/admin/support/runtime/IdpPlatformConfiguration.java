@@ -4,18 +4,18 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.health.contributor.HealthIndicator;
+import org.springframework.dao.DataAccessException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.AuthenticationServiceException;
+import io.grpc.Status;
+import top.egon.cola.component.rpc.provider.server.RpcProviderExceptionMapper;
 
-import top.egon.cola.component.tianshu.model.lease.DdcLeaseRole;
-import top.egon.cola.component.tianshu.service.lifecycle.DdcRuntimeCoordinator;
-import top.egon.cola.component.tianshu.model.instance.DdcRuntimeState;
-import top.egon.cola.component.tianshu.http.registration.DdcHttpRegistrationProperties;
-import top.egon.cola.component.tianshu.http.registration.DdcHttpRegistrationRuntime;
 import top.egon.cola.platform.tianquan.shoubing.admin.support.bootstrap.IdpBootstrapRunner;
 import top.egon.cola.platform.tianquan.shoubing.admin.support.bootstrap.IdpDevelopmentTenantBootstrap;
 import top.egon.cola.platform.tianquan.shoubing.admin.support.bootstrap.IdpBootstrapService;
@@ -35,6 +35,8 @@ import org.springframework.security.oauth2.server.authorization.settings.Authori
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.impl.OAuthSecurityProjectionComponent;
 import top.egon.cola.component.outbox.store.OutboxStore;
 import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Optional;
 
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
@@ -62,7 +64,6 @@ public class IdpPlatformConfiguration {
 
     @Bean
     IdpRuntimeReadiness idpRuntimeReadiness(
-            ObjectProvider<DdcRuntimeCoordinator> coordinators,
             @Qualifier("outboxStore") OutboxStore outbox,
             @Qualifier("oauthManagementRealmResolver") OAuthManagementRealmResolver realms,
             @Qualifier("oAuthRealmRepository") OAuthRealmRepository realmRepository,
@@ -71,13 +72,6 @@ public class IdpPlatformConfiguration {
             @Qualifier("tianquanSecurityAuditReady") ObjectProvider<java.util.function.BooleanSupplier> auditReady
     ) {
         return () -> {
-            DdcRuntimeCoordinator coordinator = coordinators.getIfAvailable();
-            boolean ddcReady = coordinator != null
-                    && coordinator.state() == DdcRuntimeState.READY
-                    && coordinator.currentSession()
-                    .filter(session -> session.role()
-                            == DdcLeaseRole.CONFIG_CLIENT)
-                    .isPresent();
             boolean oauthReady = false;
             AuthorizationServerContext previous = AuthorizationServerContextHolder.getContext();
             try {
@@ -99,7 +93,7 @@ public class IdpPlatformConfiguration {
                             .keyType(KeyType.RSA).privateOnly(true)
                             .keyID(active.get().getActiveKid()).build()), null).isEmpty();
                 }
-            } catch (OAuth2AuthenticationException | KeySourceException notReady) {
+            } catch (OAuth2AuthenticationException | KeySourceException | DataAccessException notReady) {
                 oauthReady = false;
             } finally {
                 AuthorizationServerContextHolder.setContext(previous);
@@ -108,32 +102,34 @@ public class IdpPlatformConfiguration {
             try {
                 outboxReady = outbox.countBacklog() >= 0L
                         && auditReady.getIfAvailable(() -> () -> false).getAsBoolean();
-            } catch (org.springframework.dao.DataAccessException unavailable) { outboxReady = false; }
-            return new IdpHttpProviderPublicationGate.ReadinessStatus(
-                    ddcReady,
-                    oauthReady,
-                    outboxReady
-            );
+            } catch (DataAccessException unavailable) {
+                outboxReady = false;
+            }
+            return new IdpRuntimeReadiness.Status(oauthReady, outboxReady);
         };
     }
 
-    @Bean(name = "ddcHttpRegistrationServerReadyListener")
-    @ConditionalOnProperty(
-            prefix = "egon.cola.component.tianshu.registry.http",
-            name = "enabled",
-            havingValue = "true"
-    )
-    IdpHttpProviderPublicationGate idpHttpProviderPublicationGate(
-            DdcRuntimeCoordinator coordinator,
-            DdcHttpRegistrationRuntime providerRuntime,
-            DdcHttpRegistrationProperties providerProperties,
-            IdpRuntimeReadiness readiness
-    ) {
-        return new IdpHttpProviderPublicationGate(
-                coordinator,
-                providerRuntime,
-                providerProperties,
-                readiness
-        );
+    @Bean("idpRuntime")
+    HealthIndicator idpRuntimeHealthIndicator(@Qualifier("idpRuntimeReadiness") IdpRuntimeReadiness readiness) {
+        return () -> readiness.status().ready() ? Health.up().build() : Health.outOfService().build();
+    }
+
+    @Bean
+    public RpcProviderExceptionMapper identityDirectoryRpcExceptionMapper() {
+        return failure -> {
+            if (failure instanceof AccessDeniedException) {
+                return Optional.of(Status.PERMISSION_DENIED.asRuntimeException());
+            }
+            if (failure instanceof AuthenticationServiceException) {
+                return Optional.of(Status.UNAVAILABLE.asRuntimeException());
+            }
+            if (failure instanceof NoSuchElementException) {
+                return Optional.of(Status.NOT_FOUND.asRuntimeException());
+            }
+            if (failure instanceof IllegalArgumentException) {
+                return Optional.of(Status.INVALID_ARGUMENT.asRuntimeException());
+            }
+            return Optional.empty();
+        };
     }
 }

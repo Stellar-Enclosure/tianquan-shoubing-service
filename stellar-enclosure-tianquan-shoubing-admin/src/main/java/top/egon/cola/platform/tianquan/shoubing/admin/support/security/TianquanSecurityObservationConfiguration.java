@@ -4,6 +4,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.Validator;
 import lombok.extern.slf4j.Slf4j;
 import java.util.function.Supplier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -11,6 +12,9 @@ import org.springframework.context.annotation.Configuration;
 import top.egon.cola.component.common.core.validation.ValidationUtils;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.TokenUsageAuditComponent;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingConverter;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingProperties;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry;
 
 /** Composes host transport and durable-audit checks with the existing security runtime. */
 @Slf4j
@@ -24,11 +28,14 @@ public class TianquanSecurityObservationConfiguration {
             @Qualifier("defaultValidator") Validator validator,
             @Qualifier("idpMeterRegistrySupplier") Supplier<MeterRegistry> registries,
             @Qualifier("environment") org.springframework.core.env.Environment environment,
+            @Qualifier("idpTransportBindingRegistry") ObjectProvider<IdpTransportBindingRegistry> transportBindings,
             @Qualifier("tianquanSecurityAuditReady") java.util.function.BooleanSupplier auditReady) {
-        new ValidationUtils(validator).validate(properties);
+        var schema = new ValidationUtils(validator);
+        schema.validate(properties);
         registries.get();
         java.util.Objects.requireNonNull(producer, "producer");
         validateTransport(environment, properties);
+        validatePhysicalBindings(environment, transportBindings, schema);
         if (!auditReady.getAsBoolean()) { throw new IllegalStateException("OAUTH_AUDIT_NOT_READY"); }
         return new Object();
     }
@@ -73,17 +80,29 @@ public class TianquanSecurityObservationConfiguration {
                 if (endpoint != null) { secureEndpoint(endpoint, "https", local); }
             }
         }
-        for (String prefix : java.util.List.of("egon.cola.component.rpc", "egon.cola.component.tianshu")) {
-            if (!environment.getProperty(prefix + ".enabled", Boolean.class, false)) { continue; }
-            String tls = prefix + (prefix.endsWith("tianshu") ? ".rpc.tls" : ".tls");
-            boolean enabled = environment.getProperty(tls + ".enabled", Boolean.class, false);
-            boolean plaintext = environment.getProperty(tls + ".development-plaintext", Boolean.class, false);
-            if (!enabled && !(local && plaintext) || plaintext && !local) { throw new IllegalStateException("OAUTH_OBSERVATION_RPC_TLS_REQUIRED"); }
-            if (!enabled && (prefix.endsWith("tianshu") || environment.getProperty(prefix + ".provider.enabled", Boolean.class, false))) {
-                String target = environment.getProperty(prefix.endsWith("tianshu") ? prefix + ".rpc.target" : prefix + ".provider.bind-address", "");
-                String host = target.replaceFirst("^dns:///", "").replaceFirst("^https?://", "").replaceFirst(":\\d+$", "");
-                if (!java.util.Set.of("localhost", "127.0.0.1", "[::1]").contains(host)) { throw new IllegalStateException("OAUTH_OBSERVATION_RPC_LOCAL_TARGET_REQUIRED"); }
+        // Native RPC validates its h2c contract; the ConfigData SDK validates its own fixed HTTP binding.
+        // Neither transport inherits the retired application's TLS/certificate readiness requirement.
+    }
+
+    private void validatePhysicalBindings(org.springframework.core.env.Environment environment,
+            ObjectProvider<IdpTransportBindingRegistry> registries, ValidationUtils schema) {
+        var properties = org.springframework.boot.context.properties.bind.Binder.get(environment)
+                .bind("egon.cola.platform.tianquan.shoubing.transport", IdpTransportBindingProperties.class)
+                .orElseGet(IdpTransportBindingProperties::new);
+        schema.validate(properties);
+        if (properties.getBindings().isEmpty()) { return; }
+        var registry = registries.getIfAvailable();
+        if (registry == null) { throw new IllegalStateException("OAUTH_OBSERVATION_TRANSPORT_REGISTRY_REQUIRED"); }
+        for (var entry : properties.getBindings().entrySet()) {
+            var configured = entry.getValue();
+            if (configured.getBindingId() != null && !entry.getKey().equals(configured.getBindingId())) {
+                throw new IllegalStateException("OAUTH_OBSERVATION_TRANSPORT_BINDING_MISMATCH");
             }
+            var expected = IdpTransportBindingConverter.INSTANCE.toTarget(configured.toBuilder().bindingId(entry.getKey()).build());
+            var actual = registry.require(expected.bindingId(), expected.version(), expected.canonicalIssuer(),
+                    expected.canonicalEndpoint(), expected.resource(), expected.registrationId(), expected.operation(), expected.method());
+            // require checks the canonical tuple; equality also checks the namespace, Service, port and physical protocol.
+            if (!expected.equals(actual)) { throw new IllegalStateException("OAUTH_OBSERVATION_TRANSPORT_BINDING_MISMATCH"); }
         }
     }
 

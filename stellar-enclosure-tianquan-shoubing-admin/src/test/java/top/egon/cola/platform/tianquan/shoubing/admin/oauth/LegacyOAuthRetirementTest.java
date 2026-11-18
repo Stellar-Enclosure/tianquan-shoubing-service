@@ -92,16 +92,21 @@ class LegacyOAuthRetirementTest {
 
     @Test
     void readinessUsesTheRegisteredPlatformSigningKeyAndRestoresItsPreviousIssuerContext() throws Exception {
-        verifyPlatformReadiness(false);
+        verifyPlatformReadiness(false, true);
     }
 
     @Test
     void failedPlatformKeyReadinessRemainsClosedAndRestoresItsPreviousIssuerContext() throws Exception {
-        verifyPlatformReadiness(true);
+        verifyPlatformReadiness(true, true);
+    }
+
+    @Test
+    void unavailableAuditKeepsReadinessClosedEvenWithAnActiveSigningKey() throws Exception {
+        verifyPlatformReadiness(false, false);
     }
 
     @SuppressWarnings("unchecked")
-    private void verifyPlatformReadiness(boolean unavailable) throws Exception {
+    private void verifyPlatformReadiness(boolean unavailable, boolean auditReady) throws Exception {
         var settings = org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings
                 .builder().multipleIssuersAllowed(true).build();
         var realm = top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO.builder()
@@ -116,8 +121,6 @@ class LegacyOAuthRetirementTest {
         org.mockito.Mockito.when(repository.findByIssuer(realm)).thenReturn(java.util.Optional.of(
                 top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthRealmBO.builder()
                         .status("ACTIVE").activeKid("active-platform-key").build()));
-        org.springframework.beans.factory.ObjectProvider<top.egon.cola.component.tianshu.service.lifecycle.DdcRuntimeCoordinator>
-                coordinators = org.mockito.Mockito.mock(org.springframework.beans.factory.ObjectProvider.class);
         com.nimbusds.jose.jwk.source.JWKSource<com.nimbusds.jose.proc.SecurityContext> keys = (selector, context) -> {
             assertEquals(realm.getIssuer().toString(), org.springframework.security.oauth2.server.authorization.context
                     .AuthorizationServerContextHolder.getContext().getIssuer());
@@ -138,7 +141,7 @@ class LegacyOAuthRetirementTest {
         org.springframework.security.oauth2.server.authorization.context.AuthorizationServerContextHolder.setContext(prior);
         try {
             var method = top.egon.cola.platform.tianquan.shoubing.admin.support.runtime.IdpPlatformConfiguration.class
-                    .getDeclaredMethod("idpRuntimeReadiness", org.springframework.beans.factory.ObjectProvider.class,
+                    .getDeclaredMethod("idpRuntimeReadiness",
                             top.egon.cola.component.outbox.store.OutboxStore.class,
                             top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver.class,
                             top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository.class,
@@ -147,12 +150,14 @@ class LegacyOAuthRetirementTest {
                             org.springframework.beans.factory.ObjectProvider.class);
             method.setAccessible(true);
             var readinessBeans = new org.springframework.beans.factory.support.StaticListableBeanFactory();
-            readinessBeans.addBean("ready", (java.util.function.BooleanSupplier) () -> true);
+            readinessBeans.addBean("ready", (java.util.function.BooleanSupplier) () -> auditReady);
             var readiness = (top.egon.cola.platform.tianquan.shoubing.admin.support.runtime.IdpRuntimeReadiness)
                     method.invoke(new top.egon.cola.platform.tianquan.shoubing.admin.support.runtime.IdpPlatformConfiguration(),
-                            coordinators, org.mockito.Mockito.mock(top.egon.cola.component.outbox.store.OutboxStore.class),
+                            org.mockito.Mockito.mock(top.egon.cola.component.outbox.store.OutboxStore.class),
                             realms, repository, keys, settings, readinessBeans.getBeanProvider(java.util.function.BooleanSupplier.class));
-            assertEquals(!unavailable, readiness.status().oauthRuntimeReady());
+            var status = readiness.status();
+            assertEquals(!unavailable, status.oauthRuntimeReady());
+            assertEquals(!unavailable && auditReady, status.ready());
             assertSame(prior, org.springframework.security.oauth2.server.authorization.context
                     .AuthorizationServerContextHolder.getContext());
             org.mockito.Mockito.verify(repository).findByIssuer(realm);

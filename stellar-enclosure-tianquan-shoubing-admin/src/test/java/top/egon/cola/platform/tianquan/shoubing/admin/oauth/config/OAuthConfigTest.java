@@ -69,6 +69,12 @@ class OAuthConfigTest {
                     () -> org.mockito.Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthRealmRepository.class));
             context.registerBean("oAuthAuthorizationRepository", top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository.class,
                     () -> org.mockito.Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthorizationRepository.class));
+            context.registerBean("oAuthAuthenticationRepository",
+                    top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class,
+                    () -> org.mockito.Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthAuthenticationRepository.class));
+            context.registerBean("oAuthSecurityStateRepository",
+                    top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class,
+                    () -> org.mockito.Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class));
             context.registerBean("oAuthTokenRepository", top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthTokenRepository.class,
                     () -> org.mockito.Mockito.mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthTokenRepository.class));
             context.registerBean("oAuthClientRepository", top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository.class,

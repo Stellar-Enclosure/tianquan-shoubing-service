@@ -41,7 +41,7 @@ public class OAuthMigrationRunner implements ApplicationRunner {
 
     private static final String PROFILE = "oauth-migration";
     private static final String RPC_ENABLED = "egon.cola.component.rpc.enabled";
-    private static final String HTTP_REGISTRATION_ENABLED = "egon.cola.component.tianshu.registry.http.enabled";
+    private static final String CONFIG_DELIVERY_ENABLED = "egon.cola.component.tianshu.delivery.enabled";
 
     @Qualifier("environment")
     private final Environment environment;
@@ -91,8 +91,8 @@ public class OAuthMigrationRunner implements ApplicationRunner {
                 "migration requires non-web application mode");
         require(Boolean.FALSE.equals(environment.getProperty(RPC_ENABLED, Boolean.class)),
                 "RPC must be disabled in migration mode");
-        require(Boolean.FALSE.equals(environment.getProperty(HTTP_REGISTRATION_ENABLED, Boolean.class)),
-                "Tianshu HTTP registration must be disabled in migration mode");
+        require(Boolean.FALSE.equals(environment.getProperty(CONFIG_DELIVERY_ENABLED, Boolean.class)),
+                "Tianshu config delivery must be disabled in migration mode");
         require(nonBlank(properties.realmKey()), "realm key is required");
         require(nonBlank(properties.sourceSnapshotId()), "source snapshot id is required");
         require(properties.freezeMarkerFile() != null, "freeze marker file is required");

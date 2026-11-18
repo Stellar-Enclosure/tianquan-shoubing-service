@@ -17,8 +17,7 @@
     <description>Identity provider control plane and OAuth server.</description>
 
     <properties>
-        <stellar-enclosure.tianshu.version>0.0.1</stellar-enclosure.tianshu.version>
-        <stellar-enclosure.yuheng.version>0.0.1</stellar-enclosure.yuheng.version>
+        <stellar-enclosure.outbox.version>0.0.2-SNAPSHOT</stellar-enclosure.outbox.version>
         <maven.deploy.skip>true</maven.deploy.skip>
         <gpg.skip>true</gpg.skip>
     </properties>
@@ -68,6 +67,7 @@
         <dependency>
             <groupId>top.egon</groupId>
             <artifactId>stellar-enclosure-component-transactional-outbox-starter</artifactId>
+            <version>${stellar-enclosure.outbox.version}</version>
         </dependency>
         <dependency>
             <groupId>top.egon</groupId>
@@ -75,22 +75,22 @@
         </dependency>
         <dependency>
             <groupId>top.egon</groupId>
-            <artifactId>stellar-enclosure-component-rpc-tianshu-adapter</artifactId>
+            <artifactId>stellar-enclosure-component-access-guard-starter</artifactId>
         </dependency>
         <dependency>
             <groupId>top.egon</groupId>
-            <artifactId>stellar-enclosure-yuheng-starter</artifactId>
-            <version>${stellar-enclosure.yuheng.version}</version>
+            <artifactId>stellar-enclosure-component-rpc-starter</artifactId>
         </dependency>
         <dependency>
             <groupId>top.egon</groupId>
             <artifactId>stellar-enclosure-yuheng-starter-openapi-webmvc</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>top.egon</groupId>
-            <artifactId>stellar-enclosure-tianshu-http-registration-starter</artifactId>
-            <version>${stellar-enclosure.tianshu.version}</version>
+            <version>${stellar-enclosure.yuheng.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>top.egon</groupId>
+                    <artifactId>stellar-enclosure-tianshu-http-registration-starter</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

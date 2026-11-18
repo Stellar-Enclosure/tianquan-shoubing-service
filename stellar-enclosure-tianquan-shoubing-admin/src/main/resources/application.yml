@@ -7,14 +7,11 @@ spring:
   application:
     name: tianquan-shoubing-admin
   profiles:
-    default: local
-  config:
-    import:
-      - optional:file:${UNIFIED_XINGYUAN_RUNTIME_DIR:target/local-unified-xingyuan}/env/tianquan-shoubing.properties
-      - optional:tianshu:application.yml
+    default: cloud-native
   autoconfigure:
     exclude:
       - org.redisson.spring.starter.RedissonAutoConfigurationV4
+      - top.egon.cola.component.yuheng.openapi.config.GatewayOpenApiAutoConfiguration
   datasource:
     url: ${TIANQUAN_SHOUBING_POSTGRES_URL}
     username: ${TIANQUAN_SHOUBING_POSTGRES_USER}
@@ -42,6 +39,10 @@ spring:
     timeout-per-shutdown-phase: 30s
 
 server:
+  address: ${TIANQUAN_SHOUBING_BIND_ADDRESS:0.0.0.0}
+  ssl:
+    enabled: false
+  forward-headers-strategy: NONE
   port: ${TIANQUAN_SHOUBING_ADVERTISED_PORT:18120}
   shutdown: graceful
 
@@ -86,7 +87,7 @@ management:
     health:
       group:
         readiness:
-          include: readinessState,ping,tianquanAuditReadiness
+          include: readinessState,ping,idpRuntime,tianquanAuditReadiness
       probes:
         enabled: true
 
@@ -131,7 +132,7 @@ egon.cola.platform:
         tenant-registration-ids:
           "[${TIANQUAN_SHOUBING_CATALOG_TENANT_ID}]": ${TIANQUAN_SHOUBING_RBAC_REGISTRATION_ID}
         credential-versions:
-          "[${TIANQUAN_SHOUBING_RBAC_REGISTRATION_ID}]": ${TIANQUAN_SHOUBING_RBAC_CREDENTIAL_VERSION}
+          "[${TIANQUAN_SHOUBING_RBAC_REGISTRATION_ID}]": ${TIANQUAN_SHOUBING_RBAC_CREDENTIAL_VERSION:1}
       rpc:
         enabled: ${TIANQUAN_SHOUBING_RPC_ENABLED:true}
         provider:
@@ -198,6 +199,11 @@ egon.cola.platform:
 
 egon:
   tianquan-shoubing:
+    shared-redis:
+      endpoints: ${STELLAR_SHARED_ID_REDIS_ENDPOINTS:}
+      username: ${STELLAR_SHARED_ID_REDIS_USERNAME:}
+      password: ${STELLAR_SHARED_ID_REDIS_PASSWORD:}
+      timeout: ${STELLAR_SHARED_ID_REDIS_TIMEOUT:2s}
     clock-skew: ${EGON_TIANQUAN_SHOUBING_CLOCK_SKEW:30s}
     identity-directory:
       platform-storage-partition-id: ${EGON_TIANQUAN_SHOUBING_PLATFORM_STORAGE_PARTITION_ID}
@@ -220,8 +226,36 @@ egon:
         enabled: false
       id:
         enabled: true
-        machine-id: ${TIANQUAN_SHOUBING_SNOWFLAKE_MACHINE_ID}
+        # Every writer in the same numeric ID domain uses this exact Redis authority and pool key.
+        redis:
+          enabled: true
+          env: ${STELLAR_SHARED_ID_ENV:${DEPLOYMENT_ENV}}
+          app: ${STELLAR_SHARED_ID_DOMAIN}
+          lease-duration: ${STELLAR_SHARED_ID_LEASE_DURATION:5m}
+          renew-interval: ${STELLAR_SHARED_ID_RENEW_INTERVAL:1m}
+      access-guard:
+        enabled: true
+        storage: REDISSON
+        redisson:
+          client-bean-name: redissonClient
+          application: tianquan-shoubing-identity-directory
+      yuheng:
+        openapi:
+          enabled: ${TIANQUAN_SHOUBING_HTTP_OPENAPI_ENABLED:false}
+          publish-to-ddc: false
+          published-groups:
+            - tianquan-shoubing-identity
+            - tianquan-shoubing-audit
+            - tianquan-shoubing-auth
+            - tianquan-shoubing-profile
+            - tianquan-shoubing-oauth
+          biz-code: ${TIANQUAN_SHOUBING_RESOURCE_BIZ_CODE:permission}
+          application-code: ${TIANQUAN_SHOUBING_RESOURCE_APP_CODE:tianquan-shoubing}
+          resource-uri: ${TIANQUAN_SHOUBING_RESOURCE_URI:}
+          artifact-version: ${TIANQUAN_SHOUBING_ARTIFACT_VERSION:local}
+          build-id: ${TIANQUAN_SHOUBING_BUILD_ID:local}
       rpc:
+        transport: h2c
         enabled: ${TIANQUAN_SHOUBING_RPC_ENABLED:true}
         identity:
           env: ${DEPLOYMENT_ENV:local}
@@ -231,17 +265,28 @@ egon:
           enabled: ${TIANQUAN_SHOUBING_RPC_PROVIDER_ENABLED:true}
           bind-address: ${TIANQUAN_SHOUBING_RPC_BIND_ADDRESS:0.0.0.0}
           port: ${TIANQUAN_SHOUBING_RPC_PORT:18122}
-          advertised-host: ${TIANQUAN_SHOUBING_RPC_ADVERTISED_HOST:${TIANQUAN_SHOUBING_ADVERTISED_HOST:127.0.0.1}}
-          advertised-port: ${TIANQUAN_SHOUBING_RPC_ADVERTISED_PORT:${TIANQUAN_SHOUBING_RPC_PORT:18122}}
-          registration-mode: ${TIANQUAN_SHOUBING_RPC_PROVIDER_REGISTRATION_MODE:DISABLED}
+          admission:
+            enabled: ${TIANQUAN_SHOUBING_RPC_PROVIDER_ADMISSION_ENABLED:true}
+            max-concurrent: ${TIANQUAN_SHOUBING_RPC_MAX_CONCURRENT:64}
+            methods:
+              "[egon.tianquan.shoubing.v1.IdentityDirectoryService/GetTenantMembership]":
+                quota: identity-directory:membership-read
+                quota-capacity: ${TIANQUAN_SHOUBING_MEMBERSHIP_QUOTA_CAPACITY}
+                quota-cost: 1
+                max-attempts: 2
+                replay-window: 5s
+                physical-capacity: ${TIANQUAN_SHOUBING_MEMBERSHIP_PHYSICAL_CAPACITY}
+                physical-window: 1s
+              "[egon.tianquan.shoubing.v1.IdentityDirectoryService/BatchGetIdentityProfiles]":
+                quota: identity-directory:profiles-read
+                quota-capacity: ${TIANQUAN_SHOUBING_PROFILES_QUOTA_CAPACITY}
+                quota-cost: 1
+                max-attempts: 1
+                replay-window: 5s
+                physical-capacity: ${TIANQUAN_SHOUBING_PROFILES_PHYSICAL_CAPACITY}
+                physical-window: 1s
         consumer:
           enabled: false
-        tls:
-          enabled: ${TIANQUAN_SHOUBING_RPC_TLS_ENABLED:true}
-          development-plaintext: ${TIANQUAN_SHOUBING_RPC_DEVELOPMENT_PLAINTEXT:false}
-          certificate-chain-path: ${TIANQUAN_SHOUBING_RPC_CERTIFICATE_CHAIN_PATH:}
-          private-key-path: ${TIANQUAN_SHOUBING_RPC_PRIVATE_KEY_PATH:}
-          trust-certificate-collection-path: ${TIANQUAN_SHOUBING_RPC_TRUST_CERTIFICATE_COLLECTION_PATH:}
       mybatis-plus:
         ddl:
           enabled: true
@@ -285,87 +330,109 @@ egon:
           business:
             enabled: false
       tianshu:
-        tenant-id: ${TIANSHU_TENANT_ID:}
-        enabled: ${TIANQUAN_SHOUBING_TIANSHU_ENABLED:false}
-        biz-code: ${TIANQUAN_SHOUBING_RESOURCE_BIZ_CODE:permission}
-        app-code: ${TIANQUAN_SHOUBING_RESOURCE_APP_CODE:tianquan-shoubing}
-        env: ${DEPLOYMENT_ENV:local}
-        namespace: ${DEPLOYMENT_NAMESPACE:default}
-        instance:
-          id: ${TIANQUAN_SHOUBING_INSTANCE_ID:tianquan-shoubing-local-1}
-          lease-seconds: 30
-          heartbeat-interval-seconds: 10
-        consistency:
-          fail-fast: true
-          reconcile-enabled: true
-          reconcile-interval-seconds: 30
-        rpc:
-          target: ${TIANSHU_RPC_TARGET:dns:///tianshu-admin:19080}
-          load-balancing-policy: round_robin
-          tls:
-            enabled: ${TIANSHU_RPC_TLS_ENABLED:true}
-            development-plaintext: ${TIANSHU_RPC_DEVELOPMENT_PLAINTEXT:false}
-          auth:
-            runtime:
-              access-key: ${TIANSHU_RPC_RUNTIME_ACCESS_KEY:}
-              secret-key: ${TIANSHU_RPC_RUNTIME_SECRET_KEY:}
-            registry:
-              access-key: ${TIANSHU_RPC_REGISTRY_ACCESS_KEY:}
-              secret-key: ${TIANSHU_RPC_REGISTRY_SECRET_KEY:}
-            management:
-              access-key: ${TIANSHU_RPC_MANAGEMENT_ACCESS_KEY:}
-              secret-key: ${TIANSHU_RPC_MANAGEMENT_SECRET_KEY:}
-        redis:
-          username: ${TIANSHU_REDIS_USERNAME:}
-          enabled: ${TIANQUAN_SHOUBING_TIANSHU_ENABLED:false}
-          mode: SINGLE
-          host: ${TIANSHU_REGISTRY_REDIS_HOST:127.0.0.1}
-          port: ${TIANSHU_REGISTRY_REDIS_PORT:6379}
-          password: ${TIANSHU_REGISTRY_REDIS_PASSWORD:}
-          database: ${TIANSHU_REGISTRY_REDIS_DATABASE:0}
-        registry:
-          enabled: ${TIANQUAN_SHOUBING_TIANSHU_ENABLED:false}
-          http:
-            enabled: ${TIANQUAN_SHOUBING_HTTP_PROVIDER_ENABLED:false}
-            env: ${DEPLOYMENT_ENV:local}
-            namespace: ${DEPLOYMENT_NAMESPACE:default}
-            instance-id: ${TIANQUAN_SHOUBING_INSTANCE_ID:tianquan-shoubing-local-1}
-            service-name: tianquan-shoubing-admin
-            group: default
-            version: ${TIANQUAN_SHOUBING_ARTIFACT_VERSION:0.0.1}
-            protocol: http
-            advertised-host: ${TIANQUAN_SHOUBING_ADVERTISED_HOST:127.0.0.1}
-            port: ${TIANQUAN_SHOUBING_ADVERTISED_PORT:18120}
-            lease-seconds: 30
-            heartbeat-interval-seconds: 10
-            fail-fast: true
-      yuheng:
-        openapi:
-          enabled: ${TIANQUAN_SHOUBING_HTTP_OPENAPI_ENABLED:false}
-          publish-to-tianshu: true
-          published-groups:
-            - tianquan-shoubing-identity
-            - tianquan-shoubing-audit
-            - tianquan-shoubing-auth
-            - tianquan-shoubing-profile
-            - tianquan-shoubing-oauth
-          biz-code: ${TIANQUAN_SHOUBING_RESOURCE_BIZ_CODE:permission}
-          application-code: ${TIANQUAN_SHOUBING_RESOURCE_APP_CODE:tianquan-shoubing}
-          resource-uri: ${TIANQUAN_SHOUBING_RESOURCE_URI:}
-          artifact-version: ${TIANQUAN_SHOUBING_ARTIFACT_VERSION:local}
-          build-id: ${TIANQUAN_SHOUBING_BUILD_ID:local}
-        reporting:
-          enabled: ${TIANQUAN_SHOUBING_YUHENG_REPORTING_ENABLED:true}
-          admin-base-url: ${YUHENG_ADMIN_BASE_URL:}
-          biz-code: ${TIANQUAN_SHOUBING_RESOURCE_BIZ_CODE:permission}
-          application-code: ${TIANQUAN_SHOUBING_RESOURCE_APP_CODE:tianquan-shoubing}
-          application-name: Tianquan-Shoubing Identity Admin
-          env: ${DEPLOYMENT_ENV:local}
-          namespace: ${DEPLOYMENT_NAMESPACE:default}
-          artifact-version: ${TIANQUAN_SHOUBING_ARTIFACT_VERSION:local}
-          build-id: ${TIANQUAN_SHOUBING_BUILD_ID:local}
-          declared-hosts: ${TIANQUAN_SHOUBING_DECLARED_HOSTS:127.0.0.1}
-          fail-fast: true
-          access-key: ${YUHENG_REPORT_ACCESS_KEY:}
-          secret-key: ${YUHENG_REPORT_SECRET_KEY:}
-          state-file: ${YUHENG_REPORT_STATE_FILE:}
+        enabled: false
+        delivery:
+          enabled: false
+
+---
+# Activate only with an immutable, deployment-pinned baseline and bounded offline validity.
+# OAuth issuer/JWKS/KEK, database, revocation and Redis ID authority remain local bootstrap inputs.
+spring:
+  config:
+    activate:
+      on-profile: cloud-native
+    import:
+      - tianshu-baseline:${TIANQUAN_SHOUBING_TIANSHU_BASELINE_FILE:/var/run/tianshu/config/baseline.json}
+
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: idpRuntime,tianquanAuditReadiness
+        configDelivery:
+          include: readinessState
+
+egon.cola.platform:
+  tianquan:
+    shoubing:
+      projection:
+        required: true
+        jwks-file: ${TIANQUAN_SHOUBING_PROJECTED_JWKS_FILE:/var/run/tianquan/identity/jwks.json}
+        service-credentials-file: ${TIANQUAN_SHOUBING_PROJECTED_SERVICE_CREDENTIALS_FILE:/var/run/tianquan/identity/service-credentials.json}
+      service-client:
+        registration-id: ${TIANQUAN_SHOUBING_CONFIG_REGISTRATION_ID}
+      # Canonical endpoints keep their HTTPS identity; these exact tuples select internal HTTP.
+      transport:
+        bindings:
+          shoubing-config-token:
+            version: ${TIANQUAN_SHOUBING_CONFIG_TOKEN_BINDING_VERSION}
+            canonical-issuer: ${TIANQUAN_SHOUBING_CONFIG_ISSUER}
+            canonical-endpoint: ${TIANQUAN_SHOUBING_CONFIG_ISSUER}/oauth2/token
+            resource: ${TIANQUAN_SHOUBING_CONFIG_RESOURCE_URI}
+            registration-id: ${TIANQUAN_SHOUBING_CONFIG_REGISTRATION_ID}
+            operation: TOKEN
+            method: POST
+            path: ${TIANQUAN_SHOUBING_CONFIG_TOKEN_PATH}
+            namespace: ${TIANQUAN_SHOUBING_TOKEN_SERVICE_NAMESPACE}
+            service: ${TIANQUAN_SHOUBING_TOKEN_SERVICE}
+            port: ${TIANQUAN_SHOUBING_TOKEN_SERVICE_PORT:18120}
+            transport: HTTP
+          shoubing-rbac-token:
+            version: ${TIANQUAN_SHOUBING_RBAC_TOKEN_BINDING_VERSION}
+            canonical-issuer: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}
+            canonical-endpoint: ${TIANQUAN_SHOUBING_OAUTH_ISSUER}/oauth2/token
+            resource: ${TIANQUAN_SHOUBING_RBAC_RESOURCE_URI}
+            registration-id: ${TIANQUAN_SHOUBING_RBAC_REGISTRATION_ID}
+            operation: TOKEN
+            method: POST
+            path: ${TIANQUAN_SHOUBING_RBAC_TOKEN_PATH}
+            namespace: ${TIANQUAN_SHOUBING_TOKEN_SERVICE_NAMESPACE}
+            service: ${TIANQUAN_SHOUBING_TOKEN_SERVICE}
+            port: ${TIANQUAN_SHOUBING_TOKEN_SERVICE_PORT:18120}
+            transport: HTTP
+
+egon:
+  cola:
+    component:
+      rpc:
+        identity:
+          env: ${DEPLOYMENT_ENV}
+          host: ${POD_IP}
+          instance-id: ${POD_UID}
+      transactional-outbox:
+        node-id: ${POD_UID}
+      tianshu:
+        enabled: true
+        baseline:
+          file: ${TIANQUAN_SHOUBING_TIANSHU_BASELINE_FILE:/var/run/tianshu/config/baseline.json}
+          scope:
+            tenant-id: ${TIANSHU_TENANT_ID}
+            biz-code: ${TIANQUAN_SHOUBING_RESOURCE_BIZ_CODE:permission}
+            env: ${DEPLOYMENT_ENV}
+            app-code: ${TIANQUAN_SHOUBING_RESOURCE_APP_CODE:tianquan-shoubing}
+            resource-name: application.yml
+          target:
+            binding-id: ${TIANQUAN_SHOUBING_CONFIG_TARGET_BINDING_ID}
+            binding-revision: ${TIANQUAN_SHOUBING_CONFIG_TARGET_BINDING_REVISION}
+            cluster-id: ${CLUSTER_ID}
+            kubernetes-namespace: ${POD_NAMESPACE}
+            workload-uid: ${WORKLOAD_UID}
+            container-name: ${TIANQUAN_SHOUBING_CONTAINER_NAME:application}
+        delivery:
+          enabled: true
+          service-origin: ${TIANSHU_CONFIG_SERVICE_ORIGIN:http://tianshu-config.platform-system.svc.cluster.local}
+          workload-token-file: ${TIANQUAN_SHOUBING_WORKLOAD_TOKEN_FILE:/var/run/tianshu/identity/workload-token}
+          state-directory: ${TIANQUAN_SHOUBING_CONFIG_STATE_DIRECTORY:/var/run/tianshu/state}
+          pod-uid: ${POD_UID}
+          registration-id: ${TIANQUAN_SHOUBING_CONFIG_REGISTRATION_ID}
+          app-id: ${TIANQUAN_SHOUBING_RBAC_APP_ID}
+          identity-tenant-id: ${TIANQUAN_SHOUBING_CONFIG_IDENTITY_TENANT_ID}
+          expected-issuer: ${TIANQUAN_SHOUBING_CONFIG_ISSUER}
+          canonical-audience: ${TIANQUAN_SHOUBING_CONFIG_RESOURCE_URI}
+          request-timeout: ${TIANQUAN_SHOUBING_CONFIG_REQUEST_TIMEOUT:15s}
+          poll-interval: ${TIANQUAN_SHOUBING_CONFIG_POLL_INTERVAL:30s}
+          max-stale: ${TIANQUAN_SHOUBING_CONFIG_MAX_STALE:5m}
+          allow-offline-start: true
+          # Deployment supplies the verified immutable baseline's real expiry; there is no generated TTL.
+          baseline-valid-until: ${TIANQUAN_SHOUBING_BASELINE_VALID_UNTIL}

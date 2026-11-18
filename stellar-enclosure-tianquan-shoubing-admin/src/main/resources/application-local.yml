@@ -1,4 +1,7 @@
 spring:
+  config:
+    import:
+      - optional:file:${UNIFIED_XINGYUAN_RUNTIME_DIR:target/local-unified-xingyuan}/env/tianquan-shoubing.properties
   datasource:
     url: ${TIANQUAN_SHOUBING_POSTGRES_URL:jdbc:postgresql://127.0.0.1:5432/egon_identity_local}
     username: ${TIANQUAN_SHOUBING_POSTGRES_USER:postgres}
@@ -12,6 +15,12 @@ spring:
 
   flyway:
     enabled: false
+
+server:
+  address: 127.0.0.1
+  ssl:
+    enabled: false
+  forward-headers-strategy: NONE
 
 egon.cola.platform:
   tianquan:
@@ -56,6 +65,8 @@ egon.cola.platform:
 
 egon:
   tianquan-shoubing:
+    shared-redis:
+      endpoints: ${STELLAR_SHARED_ID_REDIS_ENDPOINTS:redis://127.0.0.1:6379}
     clock-skew: ${EGON_TIANQUAN_SHOUBING_CLOCK_SKEW:30s}
     identity-directory:
       platform-storage-partition-id: ${EGON_TIANQUAN_SHOUBING_PLATFORM_STORAGE_PARTITION_ID}
@@ -120,32 +131,17 @@ egon:
           business:
             enabled: false
       rpc:
+        transport: h2c
         provider:
           bind-address: 127.0.0.1
-        tls:
-          enabled: false
-          development-plaintext: ${TIANQUAN_SHOUBING_RPC_DEVELOPMENT_PLAINTEXT:true}
       tianshu:
-        tenant-id: ${TIANSHU_TENANT_ID:}
-        rpc:
-          target: ${TIANSHU_RPC_TARGET:dns:///127.0.0.1:19080}
-          tls:
-            enabled: false
-            development-plaintext: ${TIANSHU_RPC_DEVELOPMENT_PLAINTEXT:true}
-        redis:
-          username: ${TIANSHU_REDIS_USERNAME:}
-          password: ${TIANSHU_REGISTRY_REDIS_PASSWORD:HomeLab666}
-      yuheng:
-        reporting:
-          enabled: ${TIANQUAN_SHOUBING_YUHENG_REPORTING_ENABLED:false}
-          env: local
-          namespace: default
-          application-code: tianquan-shoubing
-          artifact-version: local
+        enabled: false
+        delivery:
+          enabled: false
 
 management:
   endpoint:
     health:
       group:
         readiness:
-          include: readinessState,ping,tianquanAuditReadiness
+          include: readinessState,ping,idpRuntime,tianquanAuditReadiness

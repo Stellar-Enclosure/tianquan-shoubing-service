@@ -3247,7 +3247,9 @@ public class IsolatedOAuthProvisioningIT {
                 @Qualifier("oracleIdpProperties") top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties properties,
                 @Qualifier("idpClock") Clock clock, org.springframework.beans.factory.config.ConfigurableListableBeanFactory beans) {
             return new top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterAutoConfiguration()
-                    .tenantIssuerAuthenticationManagerComponent(issuers, properties, clock,
+                    .tenantIssuerAuthenticationManagerComponent(issuers, properties,
+                            new top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties.ProjectedIdentityProperties(),
+                            beans.getBeanProvider(top.egon.cola.platform.tianquan.shoubing.starter.security.ProjectedJwksTrustStore.class), clock,
                             beans.getBeanProvider(top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder.class));
         }
 
@@ -5417,7 +5419,7 @@ public class IsolatedOAuthProvisioningIT {
                 validateRuntimeMachineId(rendered);
                 validateRuntimeTrust(inputs, registry, rendered);
                 validateRuntimeAudit(role, inputs, registry, rendered);
-                validateRuntimeRpcTransport(role, process, inputs, rendered);
+                validateRuntimeRpcTransport(role, process, rendered);
                 if (role.equals("edge")) { validatePackagedEdgeProperties(inputs.getManifest().getArtifacts().get(role), repository, inputs, registry, rendered); }
                 else {
                     validateRuntimeTransport(role, process, inputs, registry, rendered);
@@ -6200,6 +6202,7 @@ public class IsolatedOAuthProvisioningIT {
         if (!RUNTIME_PROFILES.containsKey(role)) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
         Map<String, String> values = new java.util.TreeMap<>();
         String component = "egon.cola.component.rpc.";
+        values.put(component + "transport", "h2c");
         values.put(component + "identity.env", "${xingyuan.it.environment}");
         values.put(component + "identity.host", "127.0.0.1");
         values.put(component + "identity.instance-id", role + "-${xingyuan.it.run-id}");
@@ -6207,62 +6210,51 @@ public class IsolatedOAuthProvisioningIT {
         values.put(component + "provider.enabled", Boolean.toString(provider));
         if (provider) {
             values.put(component + "enabled", "true");
-            values.put(component + "provider.bind-address", "127.0.0.1"); values.put(component + "provider.advertised-host", "127.0.0.1");
+            values.put(component + "provider.bind-address", "127.0.0.1");
             values.put(component + "provider.port", "${xingyuan.it.process." + role + ".rpc-port}");
-            values.put(component + "provider.advertised-port", "${xingyuan.it.process." + role + ".rpc-port}");
-        }
-        values.put("egon.cola.component.tianshu.rpc.target", "${xingyuan.it.process.tianshu.rpc-target}");
-        for (String tls : List.of(component + "tls.", "egon.cola.component.tianshu.rpc.tls.")) {
-            values.put(tls + "enabled", "true"); values.put(tls + "development-plaintext", "false");
-            values.put(tls + "certificate-chain-path", "${xingyuan.it.secret.tls-server-cert.file}");
-            values.put(tls + "private-key-path", "${xingyuan.it.secret.tls-server-key.file}");
-            values.put(tls + "trust-certificate-collection-path", "${xingyuan.it.secret.tls-ca-cert.file}");
         }
         return java.util.Collections.unmodifiableMap(values);
     }
 
-    private static void validateRuntimeRpcTransport(String role, ProcessTargetDTO process, VerifiedDatabaseInputsBO inputs,
-            Map<String, String> values) throws IOException {
+    private static void validateRuntimeRpcTransport(String role, ProcessTargetDTO process, Map<String, String> values) {
+        boolean provider = RUNTIME_RPC_PORTS.containsKey(role);
         if (!role.equals(process.getId()) || !"JAVA".equals(process.getKind()) || !RUNTIME_PROFILES.containsKey(role)
-                || !RUNTIME_RPC_PORTS.containsKey(role) && !Set.of("biz", "mcp").contains(role)
-                && process.getAdditionalPorts() != null && !process.getAdditionalPorts().isEmpty()) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
+                || !provider && !Set.of("biz", "mcp").contains(role)
+                && process.getAdditionalPorts() != null && !process.getAdditionalPorts().isEmpty()) {
+            throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
+        }
+        rejectRetiredRuntimeTransportKeys(values);
         var binder = new org.springframework.boot.context.properties.bind.Binder(new org.springframework.boot.context.properties.source.MapConfigurationPropertySource(values));
         var rpc = binder.bind("egon.cola.component.rpc", top.egon.cola.component.rpc.config.EgonRpcProperties.class)
                 .orElseThrow(() -> new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"));
-        var tianshu = binder.bind("egon.cola.component.tianshu.rpc", top.egon.cola.component.rpc.tianshu.autoconfigure.DdcRpcProperties.class)
-                .orElseThrow(() -> new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"));
-        boolean provider = RUNTIME_RPC_PORTS.containsKey(role);
-        var tianshuProcesses = inputs.getManifest().getProcesses().stream().filter(value -> "tianshu".equals(value.getId()) && "JAVA".equals(value.getKind())).toList();
-        if (tianshuProcesses.size() != 1 || !tianshu.requireTarget().equals("dns:///127.0.0.1:" + runtimeRpcPort(tianshuProcesses.getFirst()))
-                || rpc.getProvider().isEnabled() != provider || provider && (!rpc.isEnabled()
-                || !"127.0.0.1".equals(rpc.getProvider().getBindAddress()) || !"127.0.0.1".equals(rpc.getProvider().getAdvertisedHost())
-                || rpc.getProvider().getPort() != runtimeRpcPort(process) || !Integer.valueOf(runtimeRpcPort(process)).equals(rpc.getProvider().getAdvertisedPort()))) {
+        if (!"h2c".equals(rpc.getTransport()) || rpc.getProvider().isEnabled() != provider
+                || provider && (!rpc.isEnabled() || !"127.0.0.1".equals(rpc.getProvider().getBindAddress())
+                || rpc.getProvider().getPort() != runtimeRpcPort(process))) {
             throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
         }
-        if (rpc.getConsumer().isEnabled()) { rpc.getConsumer().validateSharedSettings(); }
-        for (Object tls : List.of(rpc.getTls(), tianshu.getTls())) {
-            var properties = new org.springframework.beans.BeanWrapperImpl(tls);
-            if (!Boolean.TRUE.equals(properties.getPropertyValue("enabled")) || !Boolean.FALSE.equals(properties.getPropertyValue("developmentPlaintext"))) {
-                throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
-            }
-            for (var file : Map.of("certificateChainPath", "tls-server-cert", "privateKeyPath", "tls-server-key", "trustCertificateCollectionPath", "tls-ca-cert").entrySet()) {
-                String expected = inputs.getManifest().getSecretFiles().get(file.getValue());
-                if (expected == null || !expected.equals(properties.getPropertyValue(file.getKey()))) { throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE"); }
-                byte[] bytes = readProtectedBytes(Path.of(expected), Path.of(inputs.getManifest().getRuntimeRoot()).resolve("secrets"), 64 * 1024);
-                try { if (bytes.length == 0) { throw new IllegalArgumentException("XINGYUAN_INPUT_UNAVAILABLE"); } }
-                finally { java.util.Arrays.fill(bytes, (byte) 0); }
-            }
+        if (rpc.getConsumer().isEnabled() && !rpc.getConsumer().isRetryApprovalConfigurationValid()) {
+            throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
         }
-        new top.egon.cola.component.rpc.config.RpcTransportSecurity(rpc.getTls().isEnabled(), rpc.getTls().isDevelopmentPlaintext(),
-                rpc.getTls().getCertificateChainPath(), rpc.getTls().getPrivateKeyPath(), rpc.getTls().getTrustCertificateCollectionPath());
-        tianshu.transportSecurity();
+    }
+
+    private static void rejectRetiredRuntimeTransportKeys(Map<String, String> values) {
+        if (values.keySet().stream().anyMatch(key -> key.startsWith("egon.cola.component.rpc.tls.")
+                || key.startsWith("egon.cola.component.tianshu.rpc.")
+                || key.startsWith("egon.cola.component.rpc.provider.advertised-")
+                || key.equals("egon.cola.component.rpc.provider.registration-mode"))) {
+            throw new IllegalArgumentException("XINGYUAN_TARGET_UNSAFE");
+        }
+    }
+
+    private static List<Class<?>> nativeRpcModelTypes() {
+        return List.of(top.egon.cola.component.rpc.config.EgonRpcProperties.class,
+                top.egon.cola.component.rpc.config.RpcTransportSecurity.class,
+                top.egon.cola.component.rpc.consumer.reference.RpcServiceTargetVO.class);
     }
 
     @Test
     void runtimeArtifactsRejectMissingOrStaleStrictAuditClasses(@org.junit.jupiter.api.io.TempDir Path temporary) throws Exception {
-        var rpcRoots = List.<Class<?>>of(top.egon.cola.component.rpc.config.EgonRpcProperties.class,
-                top.egon.cola.component.rpc.tianshu.autoconfigure.DdcRpcProperties.class, top.egon.cola.component.rpc.config.RpcTransportSecurity.class,
-                top.egon.cola.component.rpc.provider.registration.RpcProviderRegistrationMode.class, top.egon.cola.component.rpc.annotation.LoadBalance.class);
+        var rpcRoots = nativeRpcModelTypes();
         var sdkRoots = List.<Class<?>>of(top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent.class,
                 top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterAutoConfiguration.class);
         var rpc = new java.io.ByteArrayOutputStream(); var sdk = new java.util.LinkedHashMap<String, byte[]>();
@@ -6307,11 +6299,7 @@ public class IsolatedOAuthProvisioningIT {
     }
 
     private static void requirePackagedRuntimeRpcModels(ArtifactReferenceDTO artifact) throws IOException {
-        requirePackagedRuntimeClassBytes(artifact, List.of(top.egon.cola.component.rpc.config.EgonRpcProperties.class,
-                top.egon.cola.component.rpc.tianshu.autoconfigure.DdcRpcProperties.class,
-                top.egon.cola.component.rpc.config.RpcTransportSecurity.class,
-                top.egon.cola.component.rpc.provider.registration.RpcProviderRegistrationMode.class,
-                top.egon.cola.component.rpc.annotation.LoadBalance.class), "BOOT-INF/lib/stellar-enclosure-component-rpc-");
+        requirePackagedRuntimeClassBytes(artifact, nativeRpcModelTypes(), "BOOT-INF/lib/stellar-enclosure-component-rpc-");
         requirePackagedRuntimeClassBytes(artifact, List.of(top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent.class,
                 top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterAutoConfiguration.class), "BOOT-INF/lib/stellar-enclosure-tianquan-shoubing-starter-");
     }
@@ -6350,37 +6338,29 @@ public class IsolatedOAuthProvisioningIT {
     }
 
     @Test
-    void runtimeRpcProfilesBindOriginalModelsAndRejectUnownedTransports() throws Exception {
-        var manifest = intent(); Path root = Path.of(manifest.getRuntimeRoot());
-        Files.createDirectories(root.resolve("secrets")); Files.setPosixFilePermissions(root, PosixFilePermissions.fromString("rwx------"));
-        Files.setPosixFilePermissions(root.resolve("secrets"), PosixFilePermissions.fromString("rwx------"));
-        Map<String, String> secrets = new java.util.TreeMap<>();
-        for (String key : List.of("tls-server-cert", "tls-server-key", "tls-ca-cert")) {
-            Path file = root.resolve("secrets/" + key + ".model-only"); Files.writeString(file, "controlled-path-binding-only");
-            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------")); secrets.put(key, file.toString());
-        }
+    void runtimeRpcProfilesBindNativeModelsAndRejectRetiredOrUnownedTransports() throws Exception {
+        var manifest = intent();
         var ports = Map.ofEntries(Map.entry("shoubing", 28120), Map.entry("jianshen", 28130), Map.entry("tianshu", 28150),
                 Map.entry("yuheng", 28140), Map.entry("biz", 28180), Map.entry("mcp", 28185), Map.entry("llm", 28190), Map.entry("edge", 28200),
                 Map.entry("native-light", 28310), Map.entry("native-web", 28311), Map.entry("native-service", 28312), Map.entry("native-agent", 28313));
         var processes = ports.entrySet().stream().map(entry -> ProcessTargetDTO.builder().id(entry.getKey()).kind("JAVA").port(entry.getValue())
                 .additionalPorts(RUNTIME_RPC_PORTS.containsKey(entry.getKey()) ? List.of(RUNTIME_RPC_PORTS.get(entry.getKey()))
                         : entry.getKey().equals("biz") ? List.of(28182) : entry.getKey().equals("mcp") ? List.of(28186) : List.<Integer>of()).build()).toList();
-        manifest.setSecretFiles(secrets).setProcesses(processes);
+        manifest.setProcesses(processes);
         var inputs = VerifiedDatabaseInputsBO.builder().manifest(manifest).manifestSha256("a".repeat(64)).build();
         Map<String, String> facts = new java.util.TreeMap<>(runtimeRegistryFacts(inputs, runtimeRegistryFixture(manifest, inputs.getManifestSha256())));
-        secrets.forEach((key, path) -> facts.put("xingyuan.it.secret." + key + ".file", path));
         for (var process : processes) {
             String role = process.getId(); var values = renderRuntimeProperties(Map.of(), runtimeRpcTemplate(role), facts);
-            org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> validateRuntimeRpcTransport(role, process, inputs, values));
-            for (var change : Map.of("egon.cola.component.rpc.tls.enabled", "false", "egon.cola.component.rpc.tls.development-plaintext", "true",
-                    "egon.cola.component.tianshu.rpc.target", "dns:///foreign:29080", "egon.cola.component.tianshu.rpc.tls.private-key-path", root.resolve("secrets/foreign-key").toString()).entrySet()) {
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> validateRuntimeRpcTransport(role, process, values));
+            for (var change : Map.of("egon.cola.component.rpc.transport", "tls", "egon.cola.component.rpc.tls.enabled", "true",
+                    "egon.cola.component.tianshu.rpc.target", "dns:///foreign:29080", "egon.cola.component.rpc.provider.advertised-port", "29080").entrySet()) {
                 var wrong = new java.util.TreeMap<>(values); wrong.put(change.getKey(), change.getValue());
-                assertThatThrownBy(() -> validateRuntimeRpcTransport(role, process, inputs, wrong)).hasMessage("XINGYUAN_TARGET_UNSAFE");
+                assertThatThrownBy(() -> validateRuntimeRpcTransport(role, process, wrong)).hasMessage("XINGYUAN_TARGET_UNSAFE");
             }
             var wrong = new java.util.TreeMap<>(values);
             if (RUNTIME_RPC_PORTS.containsKey(role)) { wrong.put("egon.cola.component.rpc.provider.bind-address", "0.0.0.0"); }
             else { wrong.put("egon.cola.component.rpc.provider.enabled", "true"); }
-            assertThatThrownBy(() -> validateRuntimeRpcTransport(role, process, inputs, wrong)).hasMessage("XINGYUAN_TARGET_UNSAFE");
+            assertThatThrownBy(() -> validateRuntimeRpcTransport(role, process, wrong)).hasMessage("XINGYUAN_TARGET_UNSAFE");
         }
         var provider = processes.stream().filter(value -> "native-light".equals(value.getId())).findFirst().orElseThrow();
         provider.setAdditionalPorts(List.of(28182));

@@ -254,6 +254,37 @@ class TenantIssuerIsolationTest {
     }
 
     @Test
+    void internalHttpKeepsCanonicalIdentityAndIgnoresForgedForwardingHeaders() throws Exception {
+        for (String claimedProtocol : List.of("https", "http")) {
+            MvcResult metadata = mockMvc.perform(get("/tenants/1001/.well-known/openid-configuration")
+                            .secure(false).with(request -> {
+                                request.setScheme("http"); request.setServerName("tianquan-shoubing-http.platform-prod.svc.cluster.local");
+                                request.setServerPort(18120); return request;
+                            }).header("Forwarded", "for=203.0.113.55;proto=" + claimedProtocol + ";host=attacker.example")
+                            .header("X-Forwarded-Proto", claimedProtocol).header("X-Forwarded-Host", "attacker.example")
+                            .header("X-Forwarded-Prefix", "/untrusted"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.issuer").value("https://idp.example.test/tenants/1001"))
+                    .andExpect(jsonPath("$.jwks_uri").value("https://idp.example.test/tenants/1001/.well-known/jwks.json"))
+                    .andExpect(jsonPath("$.token_endpoint").value("https://idp.example.test/tenants/1001/oauth2/token"))
+                    .andReturn();
+            assertFalse(metadata.getResponse().getContentAsString().contains("attacker.example"));
+            assertFalse(metadata.getResponse().getContentAsString().contains("svc.cluster.local"));
+            mockMvc.perform(get("/tenants/1001/.well-known/jwks.json").secure(false)
+                            .header("Forwarded", "proto=" + claimedProtocol + ";host=attacker.example"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.keys[0].kid").value(SHARED_KID));
+            mockMvc.perform(post("/tenants/1001/oauth2/token").secure(false)
+                            .header("Forwarded", "proto=" + claimedProtocol + ";host=attacker.example")
+                            .header("X-Forwarded-Proto", claimedProtocol)
+                            .contentType("application/x-www-form-urlencoded").param("grant_type", "client_credentials")
+                            .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(
+                                    "missing-client:invalid-secret".getBytes(StandardCharsets.UTF_8))))
+                    .andExpect(status().is4xxClientError()).andExpect(jsonPath("$.error").value("invalid_client"));
+        }
+        verify(requestIssuerService, never()).resolveExactIssuer(URI.create("https://attacker.example/tenants/1001"));
+    }
+
+    @Test
     void servesDiscoveryAndJwksPerTenantAndKeepsTokenErrorsOnTheSasRoute() throws Exception {
         MvcResult discovery = mockMvc.perform(tenantRequest(
                         get("/tenants/1001/.well-known/openid-configuration"), 1001L))

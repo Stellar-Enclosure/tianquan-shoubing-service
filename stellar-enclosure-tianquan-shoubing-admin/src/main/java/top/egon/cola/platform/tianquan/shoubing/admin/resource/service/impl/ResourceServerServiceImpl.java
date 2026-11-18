@@ -198,7 +198,6 @@ public class ResourceServerServiceImpl implements ResourceServerService {
                 .build();
         OAuthResourceBO saved = resources.save(realm, changed, current.getVersion());
         events.enqueueResourceProjection(saved);
-        events.enqueueDisabled(saved);
         return resourceViews.toTarget(saved);
     }
 
@@ -273,9 +272,6 @@ public class ResourceServerServiceImpl implements ResourceServerService {
                     .build();
             OAuthResourceBO value = resources.save(realm, changed, current.getVersion());
             savedById.put(current.getId(), value);
-            if (status == ResourceServerStatus.DISABLED) {
-                events.enqueueDisabled(value);
-            }
         }
         List<OAuthResourceBO> saved = selected.stream().map(resource -> savedById.get(resource.getId())).toList();
         saved.forEach(events::enqueueResourceProjection);

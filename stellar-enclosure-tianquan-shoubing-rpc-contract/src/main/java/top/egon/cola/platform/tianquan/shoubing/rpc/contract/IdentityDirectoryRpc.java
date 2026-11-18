@@ -32,7 +32,7 @@ public interface IdentityDirectoryRpc {
     /**
      * Resolves one tenant membership fact without exposing RBAC identifiers or policy data.
      */
-    @EgonRpcMethod(name = "GetTenantMembership")
+    @EgonRpcMethod(name = "GetTenantMembership", idempotent = true)
     GetTenantMembershipResponse getTenantMembership(
             GetTenantMembershipRequest request);
 }

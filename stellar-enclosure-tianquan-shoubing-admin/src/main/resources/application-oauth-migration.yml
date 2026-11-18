@@ -1,31 +1,40 @@
+# Explicit offline migration profile. Dry-run is the default; apply still requires the approved report digest.
 spring:
   main:
     web-application-type: none
+
+server:
+  ssl:
+    enabled: false
+  forward-headers-strategy: NONE
 
 egon:
   cola:
     component:
       rpc:
         enabled: false
-        tls:
+        transport: h2c
+        provider:
           enabled: false
-          development-plaintext: false
+          admission:
+            enabled: false
       tianshu:
-        rpc:
-          tls:
-            enabled: false
-            development-plaintext: false
-        registry:
-          http:
-            enabled: false
+        enabled: false
+        delivery:
+          enabled: false
   tianquan-shoubing:
     oauth:
       migration:
         enabled: false
+        dry-run: true
 
 egon.cola.platform:
   tianquan:
     shoubing:
+      rpc:
+        enabled: false
+        provider:
+          enabled: false
       revocation:
         primary-endpoint: ${TIANQUAN_SHOUBING_REVOCATION_PRIMARY_ENDPOINT}
       usage-observation:

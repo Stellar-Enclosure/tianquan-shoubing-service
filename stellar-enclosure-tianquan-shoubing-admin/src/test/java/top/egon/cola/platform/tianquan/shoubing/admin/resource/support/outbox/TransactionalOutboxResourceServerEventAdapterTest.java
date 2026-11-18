@@ -31,39 +31,6 @@ import static org.mockito.Mockito.when;
 class TransactionalOutboxResourceServerEventAdapterTest {
 
     @Test
-    void enqueuesStableDisabledEnvelopeWithoutKeyMaterial() {
-        TransactionalOutbox outbox = mock(TransactionalOutbox.class);
-        when(outbox.enqueue(org.mockito.ArgumentMatchers.any()))
-                .thenReturn(new OutboxReceipt("event-1", "key-1", true));
-        TransactionalOutboxResourceServerEventAdapter adapter =
-                new TransactionalOutboxResourceServerEventAdapter(
-                        outbox,
-                        Clock.fixed(
-                                Instant.parse("2026-08-10T00:00:00Z"),
-                                ZoneOffset.UTC
-                        )
-                );
-        OAuthResourceBO resource = resource();
-
-        String eventId = adapter.enqueueDisabled(resource);
-
-        assertThat(eventId).isNotBlank();
-        ArgumentCaptor<OutboxMessage> captured =
-                ArgumentCaptor.forClass(OutboxMessage.class);
-        verify(outbox).enqueue(captured.capture());
-        OutboxMessage message = captured.getValue();
-        assertThat(message.channel()).isEqualTo("identity-resource-runtime");
-        assertThat(message.destination())
-                .isEqualTo("identity.resource-server.disabled.v1");
-        assertThat(message.idempotencyKey())
-                .isEqualTo("permission-tianquan-shoubing-prod:disabled:1");
-        assertThat(message.payload()).isInstanceOf(Map.class);
-        assertThat(message.payload().toString())
-                .contains("permission-tianquan-shoubing-prod", "permission", "tianquan-shoubing", "prod")
-                .doesNotContain("jwk", "private", "secret", "credential");
-    }
-
-    @Test
     void enqueuesVersionedResourceProjectionIntentWithoutSnapshotFields() {
         TransactionalOutbox outbox = mock(TransactionalOutbox.class);
         when(outbox.enqueue(org.mockito.ArgumentMatchers.any()))

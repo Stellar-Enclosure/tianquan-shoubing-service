@@ -156,7 +156,7 @@ class ResourceServerServiceImplTest {
     }
 
     @Test
-    void statusMutationsUseExpectedVersionAndEnqueueDisableEvent() {
+    void statusMutationsUseExpectedVersionAndEnqueueAuthoritativeProjection() {
         OAuthResourceBO disabled = resource("permission-tianquan-shoubing-prod", "tianquan-shoubing",
                 ResourceServerStatus.DISABLED).setVersion(0L);
         AtomicReference<OAuthResourceBO> current = new AtomicReference<>(disabled);
@@ -177,7 +177,8 @@ class ResourceServerServiceImplTest {
                 .isInstanceOf(OptimisticLockingFailureException.class);
 
         service.disable(PLATFORM, disabled.getResourceServerId(), new ResourceVersionDTO(1L));
-        verify(events).enqueueDisabled(any(OAuthResourceBO.class));
+        verify(events).enqueueResourceProjection(org.mockito.ArgumentMatchers.argThat(resource ->
+                ResourceServerStatus.DISABLED.equals(resource.getStatus()) && resource.getVersion() == 2L));
     }
 
     @Test

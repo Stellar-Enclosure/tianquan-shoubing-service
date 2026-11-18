@@ -467,8 +467,10 @@ class TianquanSecurityMetricsContractTest {
             for (var source : sources) { names.addAll(java.util.List.of(((org.springframework.core.env.EnumerablePropertySource<?>) source).getPropertyNames())); }
             assertThat(names).as(profile).contains(prefix + "usage-observation.enabled", prefix + "usage-observation.receiver", prefix + "usage-observation.fallback-issuer",
                     prefix + "usage-observation.allow-local-plaintext",
-                    "egon.cola.component.rpc.tls.enabled", "egon.cola.component.rpc.tls.development-plaintext",
-                    "egon.cola.component.tianshu.rpc.tls.enabled", "egon.cola.component.tianshu.rpc.tls.development-plaintext");
+                    "server.ssl.enabled", "server.forward-headers-strategy", "egon.cola.component.rpc.transport",
+                    "egon.cola.component.tianshu.delivery.enabled");
+            assertThat(names).noneMatch(key -> key.startsWith("egon.cola.component.rpc.tls.")
+                    || key.startsWith("egon.cola.component.tianshu.rpc.tls.") || key.endsWith(".development-plaintext"));
             var environment = new org.springframework.mock.env.MockEnvironment()
                     .withProperty("TIANQUAN_SHOUBING_OAUTH_ISSUER", ISSUER.toASCIIString());
             for (var source : sources) { environment.getPropertySources().addLast(source); }
@@ -509,11 +511,79 @@ class TianquanSecurityMetricsContractTest {
     }
 
     @Test
+    void cloudProbeKeepsLocalAuthorityAvailableToRestoreItsOwnConfigDelivery() throws Exception {
+        var loader = new org.springframework.boot.env.YamlPropertySourceLoader();
+        var resource = new org.springframework.core.io.FileSystemResource("src/main/resources/application.yml");
+        var cloud = loader.load("shoubing", resource).stream()
+                .filter(source -> "cloud-native".equals(source.getProperty("spring.config.activate.on-profile")))
+                .findFirst().orElseThrow();
+        assertThat(cloud.getProperty("management.endpoint.health.group.readiness.include"))
+                .isEqualTo("idpRuntime,tianquanAuditReadiness");
+        assertThat(cloud.getProperty("management.endpoint.health.group.configDelivery.include"))
+                .isEqualTo("readinessState");
+    }
+
+    @Test
+    void nativeHttpAndH2cActivationDoesNotRequireRetiredApplicationTlsFlags() throws Exception {
+        secureHostRunner(false).withPropertyValues(
+                        "server.ssl.enabled=false", "server.forward-headers-strategy=NONE",
+                        "egon.cola.component.rpc.enabled=true", "egon.cola.component.rpc.transport=h2c",
+                        "egon.cola.component.rpc.provider.enabled=true", "egon.cola.component.rpc.provider.port=18122",
+                        "egon.cola.component.tianshu.enabled=true")
+                .run(context -> assertThat(context).hasNotFailed());
+    }
+
+    @Test
+    void configuredPhysicalTransportActivatesTheNamedImmutableRegistryAtStartup() throws Exception {
+        var activated = new java.util.concurrent.atomic.AtomicInteger();
+        secureHostRunner(false).withPropertyValues(physicalBindingProperties())
+                .withBean("idpTransportBindingRegistry",
+                        top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry.class,
+                        () -> {
+                            activated.incrementAndGet();
+                            return new top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry(
+                                    java.util.List.of(physicalBinding("tianquan-shoubing-http")));
+                        }, definition -> definition.setLazyInit(true))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(activated.get()).isEqualTo(1);
+                });
+    }
+
+    @Test
+    void configuredPhysicalTransportRejectsMissingRegistryOrDifferentFixedDestination() throws Exception {
+        secureHostRunner(false).withPropertyValues(physicalBindingProperties())
+                .run(context -> assertThat(context).hasFailed());
+        secureHostRunner(false).withPropertyValues(physicalBindingProperties())
+                .withBean("idpTransportBindingRegistry",
+                        top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry.class,
+                        () -> new top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry(
+                                java.util.List.of(physicalBinding("different-service"))),
+                        definition -> definition.setLazyInit(true))
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    private String[] physicalBindingProperties() {
+        String prefix = "egon.cola.platform.tianquan.shoubing.transport.bindings.internal-token.";
+        return new String[] { prefix + "version=3", prefix + "canonical-issuer=" + ISSUER,
+                prefix + "canonical-endpoint=" + ISSUER + "/oauth2/token", prefix + "resource=" + RESOURCE,
+                prefix + "registration-id=service-caller", prefix + "operation=TOKEN", prefix + "method=POST",
+                prefix + "path=/tenants/1001/oauth2/token", prefix + "namespace=platform-prod",
+                prefix + "service=tianquan-shoubing-http", prefix + "port=18120", prefix + "transport=HTTP" };
+    }
+
+    private top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO physicalBinding(String service) {
+        return new top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO("internal-token", 3,
+                ISSUER, URI.create(ISSUER + "/oauth2/token"), RESOURCE, "service-caller",
+                top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO.Operation.TOKEN,
+                "POST", "/tenants/1001/oauth2/token", "platform-prod", service, 18120,
+                top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO.Transport.HTTP);
+    }
+
+    @Test
     void transportGuardAllowsOnlyTheExplicitLocalLoopbackException() throws Exception {
         secureHostRunner(false).run(context -> assertThat(context).hasNotFailed());
         for (String invalid : java.util.List.of(
-                "egon.cola.component.rpc.enabled=true",
-                "egon.cola.component.tianshu.enabled=true",
                 "egon.cola.platform.tianquan.shoubing.issuer=http://idp.example/tenants/1001",
                 "spring.security.oauth2.client.provider.unsafe.token-uri=http://remote.example/token")) {
             secureHostRunner(false).withPropertyValues(invalid).run(context -> assertThat(context).hasFailed());

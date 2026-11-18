@@ -124,7 +124,7 @@ class OAuthMigrationRunnerTest {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"oauth-migration"});
         when(environment.getProperty("spring.main.web-application-type")).thenReturn("none");
         when(environment.getProperty("egon.cola.component.rpc.enabled", Boolean.class)).thenReturn(false);
-        when(environment.getProperty("egon.cola.component.tianshu.registry.http.enabled", Boolean.class))
+        when(environment.getProperty("egon.cola.component.tianshu.delivery.enabled", Boolean.class))
                 .thenReturn(false);
         OAuthMigrationService migrationService = mock(OAuthMigrationService.class);
         String reportDigest = "a".repeat(64);
@@ -175,7 +175,7 @@ class OAuthMigrationRunnerTest {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"oauth-migration"});
         when(environment.getProperty("spring.main.web-application-type")).thenReturn("none");
         when(environment.getProperty("egon.cola.component.rpc.enabled", Boolean.class)).thenReturn(false);
-        when(environment.getProperty("egon.cola.component.tianshu.registry.http.enabled", Boolean.class))
+        when(environment.getProperty("egon.cola.component.tianshu.delivery.enabled", Boolean.class))
                 .thenReturn(false);
         OAuthMigrationService migrationService = mock(OAuthMigrationService.class);
         OAuthMigrationRunner.MigrationProperties properties = new OAuthMigrationRunner.MigrationProperties(

@@ -1,12 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.resource.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import top.egon.cola.component.outbox.api.TransactionalOutbox;
-import top.egon.cola.component.rpc.tianshu.client.DdcRpcClientFactory;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.OAuthClientRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthManagementRealmResolver;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.TenantIssuerService;
@@ -14,7 +12,6 @@ import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthG
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.OAuthResourceRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.repository.MpResourceServerStore;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.service.ResourceServerProjectionService;
-import top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.DdcResourceServerLifecycleDeliveryHandler;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.ResourceServerProjectionDeliveryHandler;
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.support.outbox.TransactionalOutboxResourceServerEventAdapter;
 import top.egon.cola.platform.tianquan.shoubing.core.port.ResourceServerStore;
@@ -80,31 +77,6 @@ public class ResourceServerConfig {
         return new TransactionalOutboxResourceServerEventAdapter(
                 outbox,
                 clock
-        );
-    }
-
-    /**
-     * 创建按投递临时持有 Direct RPC 客户端的 Tianshu 生命周期投递器。
-     * / Creates the Tianshu lifecycle handler that owns a Direct RPC client only for one delivery.
-     *
-     * @param factory Tianshu Direct RPC 客户端工厂 / Tianshu Direct RPC client factory
-     * @param objectMapper JSON 编解码器 / JSON codec
-     * @return Resource 停用投递器 / Resource-disabled delivery handler
-     */
-    @Bean
-    DdcResourceServerLifecycleDeliveryHandler
-            ddcResourceServerLifecycleDeliveryHandler(
-                    @Qualifier("ddcRpcClientFactory") DdcRpcClientFactory factory,
-                    @Qualifier("jacksonObjectMapper") ObjectMapper objectMapper) {
-        return new DdcResourceServerLifecycleDeliveryHandler(
-                request -> {
-                    try (var handle = factory.managementClient()) {
-                        return handle.client().revokeResourceAdmission(
-                                request
-                        );
-                    }
-                },
-                objectMapper
         );
     }
 

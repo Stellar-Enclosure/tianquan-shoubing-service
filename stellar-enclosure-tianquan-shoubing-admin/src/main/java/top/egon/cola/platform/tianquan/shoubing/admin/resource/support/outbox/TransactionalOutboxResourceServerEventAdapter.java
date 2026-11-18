@@ -9,7 +9,6 @@ import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthGr
 import top.egon.cola.platform.tianquan.shoubing.admin.resource.domain.bo.OAuthResourceBO;
 import top.egon.cola.platform.tianquan.shoubing.core.oauth.OAuthClient;
 import top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceGrantType;
-import top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceServerStatus;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -24,8 +23,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 
 /**
- * 将 Resource Server 停用事实适配为仓库标准事务发件箱消息。
- * / Adapts Resource Server disable facts to repository-standard transactional-outbox messages.
+ * 将 Resource Server 与客户端授权事实适配为仓库标准事务发件箱消息。
+ * / Adapts Resource Server and client grant facts to repository-standard transactional-outbox messages.
  *
  * <p>事件仅携带公开的 Resource 标识、精确业务三元组和版本，不携带 JWK、私钥、Secret
  * 或原始 Admission Ticket。</p>
@@ -44,13 +43,6 @@ public final class TransactionalOutboxResourceServerEventAdapter {
     void setOutboxIdentity(top.egon.cola.platform.tianquan.shoubing.admin.support.outbox.OAuthOutboxIdentity identity) {
         this.outboxIdentity = Objects.requireNonNull(identity, "identity");
     }
-
-    /** Resource 生命周期投递通道；Resource lifecycle delivery channel. */
-    public static final String CHANNEL = "identity-resource-runtime";
-
-    /** Resource 停用事件目的地；Resource-disabled event destination. */
-    public static final String DISABLED_DESTINATION =
-            "identity.resource-server.disabled.v1";
 
     /** MP已提交 Resource 的Redis投影目的地；committed Resource Redis projection destination. */
     public static final String RESOURCE_PROJECTION_DESTINATION =
@@ -72,53 +64,6 @@ public final class TransactionalOutboxResourceServerEventAdapter {
     @NonNull
     @Qualifier("idpClock")
     private final Clock clock;
-
-    /**
-     * 将已推进版本的停用 Resource 写入当前数据库事务。
-     * / Enqueues the disabled Resource with its advanced version in the current database
-     * transaction.
-     *
-     * @param resource 已停用的 Resource 实体 / disabled Resource entity
-     * @return 稳定事件标识 / stable event identifier
-     */
-    public String enqueueDisabled(OAuthResourceBO resource) {
-        Objects.requireNonNull(resource, "resource");
-        if (resource.getStatus() != ResourceServerStatus.DISABLED) {
-            throw new IllegalArgumentException(
-                    "Resource Server must be disabled before enqueue"
-            );
-        }
-        String idempotencyKey = resource.getResourceServerId()
-                + ":disabled:" + resource.getVersion();
-        var scope = outboxIdentity.forPlatform("oauth_resource");
-        String eventId = scope.messageId(sha256(idempotencyKey));
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("resourceServerId", resource.getResourceServerId());
-        payload.put("bizCode", resource.getBizCode());
-        payload.put("appCode", resource.getAppCode());
-        payload.put("env", resource.getEnvironment());
-        payload.put("resourceVersion", resource.getVersion());
-
-        Map<String, Object> envelope = new LinkedHashMap<>();
-        envelope.put("eventId", eventId);
-        envelope.put("eventType", DISABLED_DESTINATION);
-        envelope.put("schemaVersion", 1);
-        envelope.put("occurredAt", clock.instant());
-        envelope.put("aggregateType", "IDENTITY_RESOURCE_SERVER");
-        envelope.put("aggregateId", resource.getResourceServerId());
-        envelope.put("aggregateVersion", resource.getVersion());
-        envelope.put("payload", payload);
-
-        return outbox.enqueue(OutboxMessage.builder()
-                        .messageId(eventId)
-                        .idempotencyKey(scope.idempotencyKey(idempotencyKey))
-                        .channel(CHANNEL)
-                        .destination(DISABLED_DESTINATION)
-                        .payload(envelope)
-                        .schemaVersion("1")
-                        .build())
-                .messageId();
-    }
 
     /**
      * 将Resource投影意图与已提交的Resource事实绑定在同一事务Outbox中。

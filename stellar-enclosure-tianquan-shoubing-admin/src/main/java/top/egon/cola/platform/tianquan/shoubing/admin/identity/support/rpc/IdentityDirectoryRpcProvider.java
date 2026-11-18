@@ -1,5 +1,13 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.identity.support.rpc;
 
+import com.google.protobuf.Message;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 import top.egon.cola.component.rpc.annotation.EgonRpcProvider;
 import top.egon.cola.platform.tianquan.shoubing.admin.identity.repo.IdentityUserDirectory;
 import top.egon.cola.platform.tianquan.shoubing.admin.tenant.domain.bo.IdentityTenantBO;
@@ -13,6 +21,8 @@ import top.egon.cola.platform.tianquan.shoubing.rpc.contract.proto.v1.BatchGetId
 import top.egon.cola.platform.tianquan.shoubing.rpc.contract.proto.v1.GetTenantMembershipRequest;
 import top.egon.cola.platform.tianquan.shoubing.rpc.contract.proto.v1.GetTenantMembershipResponse;
 import top.egon.cola.platform.tianquan.shoubing.rpc.contract.proto.v1.IdentityProfile;
+import top.egon.cola.platform.tianquan.shoubing.rpc.contract.proto.v1.IdentityDirectoryServiceGrpc;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcAdmissionIdentityResolver;
 import top.egon.cola.platform.tianquan.shoubing.rpc.contract.proto.v1.IdentityStatus;
 import top.egon.cola.platform.tianquan.shoubing.rpc.contract.proto.v1.MembershipStatus;
 import top.egon.cola.platform.tianquan.shoubing.rpc.contract.proto.v1.TenantMembershipProfile;
@@ -27,16 +37,23 @@ import java.util.Objects;
  * Maps the Tianquan-Shoubing identity directory to the minimal read-only RPC projection consumed by RBAC.
  */
 @EgonRpcProvider
+@Component("identityDirectoryRpcProvider")
+@ConditionalOnProperty(prefix = "egon.cola.component.rpc.provider", name = "enabled", havingValue = "true")
+@Slf4j
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public final class IdentityDirectoryRpcProvider
         implements IdentityDirectoryRpc {
 
     private static final int MIN_SUBJECTS = 1;
     private static final int MAX_SUBJECTS = 100;
 
-    private final IdentityUserDirectory directory;
-    private final TenantMembershipService memberships;
-    private final java.time.Clock clock;
+    @NonNull @Qualifier("mpIdentityUserDirectory") private final IdentityUserDirectory directory;
+    @NonNull @Qualifier("tenantMembershipServiceImpl") private final TenantMembershipService memberships;
+    @NonNull @Qualifier("idpClock") private final java.time.Clock clock;
+    @Qualifier("idpObservedVerificationComponent")
     private final top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent observations;
+    @NonNull @Qualifier("idpRpcAdmissionIdentityResolver")
+    private final IdpRpcAdmissionIdentityResolver methodIdentity;
 
     public IdentityDirectoryRpcProvider(
             IdentityUserDirectory directory,
@@ -45,21 +62,17 @@ public final class IdentityDirectoryRpcProvider
         this(directory, memberships, java.time.Clock.systemUTC(), null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public IdentityDirectoryRpcProvider(IdentityUserDirectory directory, TenantMembershipService memberships,
             @org.springframework.beans.factory.annotation.Qualifier("idpClock") java.time.Clock clock,
             top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent observations) {
-        this.directory = Objects.requireNonNull(directory, "directory");
-        this.memberships = Objects.requireNonNull(memberships, "memberships");
-        this.clock = Objects.requireNonNull(clock, "clock");
-        this.observations = observations;
+        this(directory, memberships, clock, observations, new IdpRpcAdmissionIdentityResolver());
     }
 
     @Override
     public BatchGetIdentityProfilesResponse batchGetIdentityProfiles(
             BatchGetIdentityProfilesRequest request) {
         Objects.requireNonNull(request, "request");
-        requireService(null);
+        requireService(IdentityDirectoryServiceGrpc.getBatchGetIdentityProfilesMethod().getFullMethodName(), request, null);
         List<String> subjects = normalizedSubjects(request.getSubjectsList());
         LinkedHashMap<String, IdentityUser> users = new LinkedHashMap<>();
         for (IdentityUser user : Objects.requireNonNull(
@@ -92,7 +105,7 @@ public final class IdentityDirectoryRpcProvider
     ) {
         Objects.requireNonNull(request, "request");
         String tenantId = tenantId(request.getTenantId());
-        requireService(tenantId);
+        requireService(IdentityDirectoryServiceGrpc.getGetTenantMembershipMethod().getFullMethodName(), request, tenantId);
         String identitySub = identitySub(request.getIdentitySub());
         TenantMembershipService.TenantMembershipProfile profile;
         try {
@@ -129,7 +142,7 @@ public final class IdentityDirectoryRpcProvider
     }
 
     /** Identity authority terminates locally; this proof gate never calls the RBAC authority that consumes it. */
-    private void requireService(String requestedTenant) {
+    private void requireService(String fullMethodName, Message request, String requestedTenant) {
         var principal = top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcSecurityContext.currentPrincipalOrNull();
         var proof = top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcSecurityContext.currentProofOrNull();
         var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
@@ -140,6 +153,25 @@ public final class IdentityDirectoryRpcProvider
                 || service.scopeContext() != top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext.TENANT
                 || service.tenantId() == null || !service.scopes().contains("identity:read")
                 || requestedTenant != null && !requestedTenant.equals(service.tenantId())) {
+            denyService(proof);
+        }
+        try {
+            // This is a read-only identity bridge. The native server remains the sole owner of quota admission.
+            var admitted = methodIdentity.resolve(fullMethodName, request);
+            var service = (top.egon.cola.platform.tianquan.shoubing.contract.ServiceIdentityPrincipal) principal;
+            if (!Long.toString(admitted.tenantId()).equals(service.tenantId())
+                    || !admitted.clientId().equals(service.clientId())
+                    || !admitted.resource().equals(service.resourceUri().toASCIIString())) denyService(proof);
+        } catch (io.grpc.StatusRuntimeException rejected) {
+            if (rejected.getStatus().getCode() != io.grpc.Status.Code.UNAUTHENTICATED
+                    && rejected.getStatus().getCode() != io.grpc.Status.Code.PERMISSION_DENIED) {
+                throw new org.springframework.security.authentication.AuthenticationServiceException("IDENTITY_DIRECTORY_AUTHORITY_UNAVAILABLE");
+            }
+            denyService(proof);
+        }
+    }
+
+    private void denyService(top.egon.cola.platform.tianquan.shoubing.starter.security.domain.TokenAuditProofBO proof) {
             if (observations != null && observations.enabled()) {
                 var marker = top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcSecurityContext.currentAuthorizationObservationContext();
                 boolean confirmed = proof == null ? observations.authenticationFailure()
@@ -147,7 +179,6 @@ public final class IdentityDirectoryRpcProvider
                 if (!confirmed) throw new org.springframework.security.authentication.AuthenticationServiceException("OAUTH_AUDIT_DELIVERY_UNAVAILABLE");
             }
             throw new org.springframework.security.access.AccessDeniedException("IDENTITY_DIRECTORY_SERVICE_REQUIRED");
-        }
     }
 
     private List<String> normalizedSubjects(List<String> values) {

@@ -3,5 +3,11 @@ package top.egon.cola.platform.tianquan.shoubing.admin.support.runtime;
 @FunctionalInterface
 public interface IdpRuntimeReadiness {
 
-    IdpHttpProviderPublicationGate.ReadinessStatus status();
+    Status status();
+
+    record Status(boolean oauthRuntimeReady, boolean outboxAndAuditReady) {
+        public boolean ready() {
+            return oauthRuntimeReady && outboxAndAuditReady;
+        }
+    }
 }

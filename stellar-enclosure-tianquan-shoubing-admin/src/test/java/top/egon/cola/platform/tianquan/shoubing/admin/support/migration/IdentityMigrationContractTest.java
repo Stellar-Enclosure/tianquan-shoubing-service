@@ -36,7 +36,11 @@ class IdentityMigrationContractTest {
 
         assertThat(profile).contains("spring:", "web-application-type:", "none");
         assertThat(profile).contains("enabled:", "false");
-        assertThat(profile).contains("rpc:", "registry:", "http:");
+        var yaml = new org.springframework.boot.env.YamlPropertySourceLoader().load("migration",
+                new org.springframework.core.io.FileSystemResource(profilePath)).getFirst();
+        assertThat(yaml.getProperty("egon.cola.component.rpc.enabled")).isEqualTo(false);
+        assertThat(yaml.getProperty("egon.cola.component.tianshu.delivery.enabled")).isEqualTo(false);
+        assertThat(profile).doesNotContain("registry:");
         assertThat(profile).doesNotContain("server.port", "jdbc:", "password:", "secret:");
 
         Class<?> platformConfiguration = load(PLATFORM_CONFIGURATION_CLASS);

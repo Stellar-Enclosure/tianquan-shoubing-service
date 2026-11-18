@@ -1,12 +1,16 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.support.tianshu;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
+/**
+ * Publishes one validated startup policy for the lifetime of the process.
+ * The historical class name remains source compatible; the snapshot has no mutation entry point.
+ */
 public final class AtomicIdpRuntimePolicy implements IdpRuntimePolicy {
 
     public static final String ACCESS_TOKEN_TTL_KEY =
@@ -28,145 +32,70 @@ public final class AtomicIdpRuntimePolicy implements IdpRuntimePolicy {
             AUTHORIZATION_CODE_TTL_KEY,
             MAXIMUM_LOGIN_FAILURES_KEY,
             LOGIN_LOCK_DURATION_KEY,
-            PASSWORD_MAXIMUM_CONCURRENCY_KEY
-    );
+            PASSWORD_MAXIMUM_CONCURRENCY_KEY);
 
     private static final Pattern UNSIGNED_INTEGER = Pattern.compile("[0-9]+");
+    private static final Map<String, Long> DEFAULT_VALUES = Map.of(
+            ACCESS_TOKEN_TTL_KEY, 900L,
+            REFRESH_TOKEN_TTL_KEY, 604800L,
+            AUTHORIZATION_CODE_TTL_KEY, 60L,
+            MAXIMUM_LOGIN_FAILURES_KEY, 5L,
+            LOGIN_LOCK_DURATION_KEY, 900L,
+            PASSWORD_MAXIMUM_CONCURRENCY_KEY, 8L);
 
-    private final AtomicReference<Snapshot> snapshot = new AtomicReference<>(
-            defaults()
-    );
+    private final Snapshot snapshot;
+
+    public AtomicIdpRuntimePolicy() {
+        this(DEFAULT_VALUES, 0L);
+    }
+
+    AtomicIdpRuntimePolicy(Map<String, Long> startupValues, long revision) {
+        if (!startupValues.keySet().equals(CONFIG_KEYS) || revision < 0L) {
+            throw new IllegalArgumentException("IDP_POLICY_STARTUP_VALUES_INVALID");
+        }
+        Map<String, Long> versions = new LinkedHashMap<>();
+        CONFIG_KEYS.stream().sorted().forEach(key -> versions.put(key, revision));
+        snapshot = new Snapshot(
+                Duration.ofSeconds(startupValues.get(ACCESS_TOKEN_TTL_KEY)),
+                Duration.ofSeconds(startupValues.get(REFRESH_TOKEN_TTL_KEY)),
+                Duration.ofSeconds(startupValues.get(AUTHORIZATION_CODE_TTL_KEY)),
+                integer(startupValues.get(MAXIMUM_LOGIN_FAILURES_KEY)),
+                Duration.ofSeconds(startupValues.get(LOGIN_LOCK_DURATION_KEY)),
+                integer(startupValues.get(PASSWORD_MAXIMUM_CONCURRENCY_KEY)),
+                versions);
+    }
 
     @Override
     public Snapshot current() {
-        return snapshot.get();
+        return snapshot;
     }
 
-    public synchronized void apply(String key, String rawValue, long version) {
+    static long defaultValue(String key) {
+        return DEFAULT_VALUES.get(key);
+    }
+
+    /** Accepts exact integral typed baseline numbers and the existing unsigned string syntax. */
+    static long numericValue(Object value) {
         try {
-            requireKnownKey(key);
-            long value = parse(rawValue);
-            Snapshot current = snapshot.get();
-            long currentVersion = current.configVersions().get(key);
-            if (version < currentVersion) {
-                throw new PolicyApplyException("STALE_CONFIG_VERSION");
+            if (value instanceof String text && UNSIGNED_INTEGER.matcher(text).matches()) {
+                return Long.parseLong(text);
             }
-            snapshot.set(candidate(current, key, value, version));
-        } catch (RuntimeException failure) {
-            throw new IllegalArgumentException(
-                    "Tianquan-Shoubing runtime policy rejected key=" + safeKey(key)
-                            + " version=" + version
-                            + " code=" + errorCode(failure),
-                    failure
-            );
+            if (value instanceof Number number) {
+                long parsed = new BigDecimal(number.toString()).longValueExact();
+                if (parsed >= 0L) return parsed;
+            }
+        } catch (RuntimeException invalid) {
+            // Conversion failures can contain the raw input; do not retain them as causes.
+            throw new IllegalArgumentException("IDP_POLICY_INTEGER_INVALID");
         }
+        throw new IllegalArgumentException("IDP_POLICY_INTEGER_INVALID");
     }
 
-    private Snapshot candidate(
-            Snapshot current,
-            String key,
-            long value,
-            long version
-    ) {
-        Duration accessTtl = current.accessTokenTtl();
-        Duration refreshTtl = current.refreshTokenTtl();
-        Duration codeTtl = current.authorizationCodeTtl();
-        int failures = current.maximumLoginFailures();
-        Duration lockDuration = current.loginLockDuration();
-        int concurrency = current.passwordMaximumConcurrency();
-        switch (key) {
-            case ACCESS_TOKEN_TTL_KEY -> accessTtl = Duration.ofSeconds(value);
-            case REFRESH_TOKEN_TTL_KEY -> refreshTtl = Duration.ofSeconds(value);
-            case AUTHORIZATION_CODE_TTL_KEY -> codeTtl =
-                    Duration.ofSeconds(value);
-            case MAXIMUM_LOGIN_FAILURES_KEY -> failures = integer(value);
-            case LOGIN_LOCK_DURATION_KEY -> lockDuration =
-                    Duration.ofSeconds(value);
-            case PASSWORD_MAXIMUM_CONCURRENCY_KEY -> concurrency =
-                    integer(value);
-            default -> throw new PolicyApplyException("UNKNOWN_KEY");
-        }
-        Map<String, Long> versions = new LinkedHashMap<>(
-                current.configVersions()
-        );
-        versions.put(key, version);
-        return new Snapshot(
-                accessTtl,
-                refreshTtl,
-                codeTtl,
-                failures,
-                lockDuration,
-                concurrency,
-                versions
-        );
-    }
-
-    private long parse(String rawValue) {
-        if (rawValue == null || !UNSIGNED_INTEGER.matcher(rawValue).matches()) {
-            throw new PolicyApplyException("INVALID_INTEGER");
-        }
-        try {
-            return Long.parseLong(rawValue);
-        } catch (NumberFormatException exception) {
-            throw new PolicyApplyException("INVALID_INTEGER", exception);
-        }
-    }
-
-    private int integer(long value) {
+    private static int integer(long value) {
         try {
             return Math.toIntExact(value);
-        } catch (ArithmeticException exception) {
-            throw new PolicyApplyException("INTEGER_OUT_OF_RANGE", exception);
-        }
-    }
-
-    private void requireKnownKey(String key) {
-        if (!CONFIG_KEYS.contains(key)) {
-            throw new PolicyApplyException("UNKNOWN_KEY");
-        }
-    }
-
-    private String errorCode(RuntimeException failure) {
-        if (failure instanceof PolicyApplyException policyFailure) {
-            return policyFailure.errorCode;
-        }
-        String message = failure.getMessage();
-        return message == null || !message.matches("[A-Z0-9_]+")
-                ? "INVALID_POLICY"
-                : message;
-    }
-
-    private String safeKey(String key) {
-        return key == null || key.isBlank() ? "<missing>" : key;
-    }
-
-    private static Snapshot defaults() {
-        Map<String, Long> versions = new LinkedHashMap<>();
-        CONFIG_KEYS.stream().sorted().forEach(key -> versions.put(key, 0L));
-        return new Snapshot(
-                Duration.ofMinutes(15),
-                Duration.ofDays(7),
-                Duration.ofSeconds(60),
-                5,
-                Duration.ofMinutes(15),
-                8,
-                versions
-        );
-    }
-
-    private static final class PolicyApplyException
-            extends IllegalArgumentException {
-
-        private final String errorCode;
-
-        private PolicyApplyException(String errorCode) {
-            super(errorCode);
-            this.errorCode = errorCode;
-        }
-
-        private PolicyApplyException(String errorCode, Throwable cause) {
-            super(errorCode, cause);
-            this.errorCode = errorCode;
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException("INTEGER_OUT_OF_RANGE");
         }
     }
 }
