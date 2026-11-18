@@ -17,6 +17,7 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import jakarta.validation.Validator;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import top.egon.cola.component.rpc.annotation.FailStrategy;
@@ -31,15 +32,27 @@ import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.webclient.autoconfigure.WebClientAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.http.RequestEntity;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager;
+import org.springframework.security.oauth2.client.OAuth2AuthorizeRequest;
+import org.springframework.security.oauth2.client.InMemoryOAuth2AuthorizedClientService;
+import org.springframework.security.oauth2.client.endpoint.OAuth2ClientCredentialsGrantRequest;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.core.OAuth2AuthorizationException;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.web.reactive.function.client.WebClient;
 import top.egon.cola.component.rpc.consumer.interceptor.RpcClientInterceptorFactory;
+import top.egon.cola.platform.tianquan.shoubing.contract.ServiceTokenContext;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpClientCredentialsRequestEntityConverter;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO.Operation;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO.Transport;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.ServiceTokenWebClientConfiguration;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.CurrentIdentity;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpBearerAuthenticationFilter;
@@ -62,6 +75,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static top.egon.cola.platform.tianquan.shoubing.starter.state.AuthorityTestFixture.settings;
 import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClient;
 import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityClientResolver;
+import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityProperties;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -313,6 +327,129 @@ class IdpStarterAutoConfigurationTest {
     void localAuthorityAdapterDoesNotNeedAnHttpServiceClient() {
         contextRunner.run(context -> assertThat(context).hasNotFailed().hasSingleBean(IdpJwtVerifier.class)
                 .doesNotHaveBean(IdpServiceOAuth2Client.class));
+    }
+
+    @Test
+    void bindsOneNamedDeploymentRegistryAndRejectsUnknownTransportFields() {
+        String prefix = "egon.cola.platform.tianquan.shoubing.transport.bindings.orders-token.";
+        var configured = contextRunner.withPropertyValues(
+                prefix + "version=2", prefix + "canonical-issuer=https://identity.example/tenant",
+                prefix + "canonical-endpoint=https://identity.example/oauth2/token",
+                prefix + "resource=https://orders.example", prefix + "registration-id=orders",
+                prefix + "operation=TOKEN", prefix + "method=POST", prefix + "path=/oauth2/token",
+                prefix + "namespace=identity", prefix + "service=token", prefix + "port=18080",
+                prefix + "transport=HTTP");
+        configured.run(context -> {
+            assertThat(context).hasNotFailed().hasSingleBean(IdpTransportBindingRegistry.class);
+            var registry = context.getBean("idpTransportBindingRegistry", IdpTransportBindingRegistry.class);
+            assertThat(registry.select(URI.create("https://identity.example/tenant"),
+                    URI.create("https://identity.example/oauth2/token"), URI.create("https://orders.example"),
+                    "orders", Operation.TOKEN, "POST")).hasValueSatisfying(binding -> {
+                        assertThat(binding.physicalUri().toString())
+                                .isEqualTo("http://token.identity.svc.cluster.local:18080/oauth2/token");
+                        assertThat(binding.version()).isEqualTo(2L);
+                    });
+        });
+        configured.withPropertyValues(prefix + "untrusted-target=http://arbitrary.invalid")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasStackTraceContaining("untrusted-target"));
+    }
+
+    @Test
+    void actualTokenManagerPreservesBasicAndFormAndRejectsRedirectAndOversizeResponse() throws IOException {
+        var fixture = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var payload = new AtomicReference<String>();
+        var auth = new AtomicReference<String>();
+        var calls = new AtomicInteger();
+        var redirects = new AtomicInteger();
+        fixture.createContext("/elsewhere", exchange -> {
+            redirects.incrementAndGet();
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        fixture.createContext("/oauth2/token", exchange -> {
+            try (exchange) {
+                auth.set(exchange.getRequestHeaders().getFirst("Authorization"));
+                payload.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                int request = calls.incrementAndGet();
+                if (request == 2) {
+                    exchange.getResponseHeaders().set("Location", "/elsewhere");
+                    exchange.sendResponseHeaders(302, -1);
+                    return;
+                }
+                if (request == 4) {
+                    byte[] invalidScope = "{\"error\":\"invalid_scope\",\"error_description\":\"fixture-private-error\"}"
+                            .getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(400, invalidScope.length);
+                    exchange.getResponseBody().write(invalidScope);
+                    return;
+                }
+                byte[] bytes = request == 1
+                        ? "{\"access_token\":\"fixture-token\",\"token_type\":\"Bearer\",\"expires_in\":300}"
+                                .getBytes(StandardCharsets.UTF_8)
+                        : new byte[64 * 1024 + 1];
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+            }
+        });
+        fixture.start();
+        try {
+            URI loopback = URI.create("http://127.0.0.1:" + fixture.getAddress().getPort() + "/oauth2/token");
+            URI canonicalIssuer = URI.create("https://identity.example.invalid");
+            URI canonicalEndpoint = canonicalIssuer.resolve("/oauth2/token");
+            URI resource = URI.create("https://orders.example");
+            var registration = ClientRegistration.withRegistrationId("local-orders")
+                    .clientId("fixture-client").clientSecret("fixture-secret")
+                    .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                    .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+                    .issuerUri(canonicalIssuer.toASCIIString()).tokenUri(canonicalEndpoint.toASCIIString()).build();
+            var registrations = new InMemoryClientRegistrationRepository(registration);
+            var properties = new IdpStarterProperties();
+            properties.getServiceClient().setAppId("orders");
+            properties.getServiceClient().setRegistrationId("local-orders");
+            properties.getServiceClient().setCredentialVersions(java.util.Map.of("local-orders", 1L));
+            var binding = new IdpTransportBindingVO("test-token", 1L, canonicalIssuer,
+                    canonicalEndpoint, resource, "local-orders", Operation.TOKEN, "POST",
+                    "/oauth2/token", "identity", "token", 18080, Transport.HTTP);
+            // Only the test fixture substitutes the listener. The real converter must select the exact Service first.
+            var converter = new IdpClientCredentialsRequestEntityConverter(
+                    new IdpTransportBindingRegistry(List.of(binding))) {
+                @Override
+                public RequestEntity<?> convert(OAuth2ClientCredentialsGrantRequest grant) {
+                    var request = super.convert(grant);
+                    assertThat(request.getUrl()).isEqualTo(binding.physicalUri());
+                    return new RequestEntity<>(request.getBody(), request.getHeaders(), request.getMethod(), loopback);
+                }
+            };
+            var manager = new IdpStarterAutoConfiguration().idpOAuth2AuthorizedClientManager(
+                    registrations, new InMemoryOAuth2AuthorizedClientService(registrations),
+                    converter, properties, new IdentityAuthorityProperties());
+
+            converter.bind(resource, ServiceTokenContext.TENANT, "41", java.util.Set.of("orders:read"));
+            try {
+                assertThat(manager.authorize(OAuth2AuthorizeRequest.withClientRegistrationId("local-orders")
+                        .principal("valid-principal").build()).getAccessToken().getTokenValue()).isEqualTo("fixture-token");
+                assertThat(auth.get()).startsWith("Basic ");
+                assertThat(payload.get()).contains("grant_type=client_credentials",
+                        "resource=https%3A%2F%2Forders.example", "tenant_id=41", "scope=orders%3Aread");
+                assertThatThrownBy(() -> manager.authorize(OAuth2AuthorizeRequest.withClientRegistrationId("local-orders")
+                        .principal("redirect-principal").build())).isInstanceOf(OAuth2AuthorizationException.class);
+                assertThatThrownBy(() -> manager.authorize(OAuth2AuthorizeRequest.withClientRegistrationId("local-orders")
+                        .principal("oversize-principal").build())).isInstanceOf(OAuth2AuthorizationException.class);
+                assertThatThrownBy(() -> manager.authorize(OAuth2AuthorizeRequest.withClientRegistrationId("local-orders")
+                        .principal("invalid-scope-principal").build()))
+                        .isInstanceOfSatisfying(OAuth2AuthorizationException.class, failure -> {
+                            assertThat(failure.getError().getErrorCode()).isEqualTo("invalid_scope");
+                            assertThat(failure.getError().getDescription()).isNull();
+                        });
+            } finally {
+                converter.clear();
+            }
+            assertThat(calls).hasValue(4);
+            assertThat(redirects).hasValue(0);
+        } finally {
+            fixture.stop(0);
+        }
     }
 
     @Test

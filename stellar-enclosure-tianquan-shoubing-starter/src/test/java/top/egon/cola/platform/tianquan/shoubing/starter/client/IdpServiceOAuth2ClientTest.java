@@ -27,6 +27,10 @@ import top.egon.cola.platform.tianquan.shoubing.starter.security.TrustedIssuerRe
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.ProxySelector;
+import java.net.URLDecoder;
+import java.net.http.HttpClient;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -34,6 +38,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -71,6 +76,8 @@ class IdpServiceOAuth2ClientTest {
     private static final String TENANT_ISSUER_B = "https://idp.example/tenants/1001/alternate";
     private static final String TENANT_REGISTRATION_A = "orders-tenant-a";
     private static final String TENANT_REGISTRATION_B = "orders-tenant-b";
+    private static final URI INTERNAL_TOKEN_ENDPOINT = URI.create(
+            "http://tianquan-shoubing-http.permission-prod.svc.cluster.local:18080/oauth2/token");
     private final List<IdpServiceOAuth2Client> clients = new ArrayList<>();
 
     @AfterEach
@@ -127,6 +134,16 @@ class IdpServiceOAuth2ClientTest {
                 base, ISSUER, "other-client", 7L));
         assertThat(key).isNotEqualTo(ServiceAuthorizationKey.from(
                 base, ISSUER, CLIENT_ID, 8L));
+        ServiceAuthorizationKey bound = ServiceAuthorizationKey.from(base, ISSUER, CLIENT_ID, 7L,
+                "identity-token", 1L);
+        assertThat(bound).isNotEqualTo(key);
+        assertThat(bound.principalName()).isNotEqualTo(key.principalName());
+        for (ServiceAuthorizationKey changed : List.of(
+                ServiceAuthorizationKey.from(base, ISSUER, CLIENT_ID, 7L, "identity-token", 2L),
+                ServiceAuthorizationKey.from(base, ISSUER, CLIENT_ID, 7L, "replacement-token", 1L))) {
+            assertThat(changed).isNotEqualTo(bound);
+            assertThat(changed.principalName()).isNotEqualTo(bound.principalName());
+        }
     }
 
     @Test
@@ -641,6 +658,250 @@ class IdpServiceOAuth2ClientTest {
     }
 
     @Test
+    void keepsCanonicalOAuthIdentityWhileSendingTheGrantToTheFixedInternalTokenService() {
+        ClientRegistration canonical = registration();
+        var grant = new org.springframework.security.oauth2.client.endpoint
+                .OAuth2ClientCredentialsGrantRequest(canonical);
+        var converter = new IdpClientCredentialsRequestEntityConverter(tokenBindings(1));
+
+        var entity = converter.convert(grant, RESOURCE, ServiceTokenContext.TENANT,
+                "1001", Set.of("orders:write", "orders:read"));
+
+        assertThat(entity.getUrl()).isEqualTo(INTERNAL_TOKEN_ENDPOINT);
+        assertThat(entity.getMethod()).isEqualTo(org.springframework.http.HttpMethod.POST);
+        assertThat(canonical.getProviderDetails().getIssuerUri()).isEqualTo(ISSUER);
+        assertThat(canonical.getProviderDetails().getTokenUri()).isEqualTo(ISSUER + "/oauth2/token");
+        assertThat(entity.getHeaders().getFirst("Authorization")).isEqualTo("Basic "
+                + Base64.getEncoder().encodeToString((CLIENT_ID + ":orders-secret")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        @SuppressWarnings("unchecked")
+        MultiValueMap<String, String> body = (MultiValueMap<String, String>) entity.getBody();
+        assertThat(body).containsOnlyKeys("grant_type", "resource", "tenant_id", "scope");
+        assertThat(body.getFirst("grant_type")).isEqualTo("client_credentials");
+        assertThat(body.getFirst("resource")).isEqualTo(RESOURCE.toASCIIString());
+        assertThat(body.getFirst("tenant_id")).isEqualTo("1001");
+        assertThat(body.getFirst("scope")).isEqualTo("orders:read orders:write");
+    }
+
+    @Test
+    void preservesExternalCanonicalEndpointWhenTheUnboundRegistrationUsesItsTrustedStarterIssuer() {
+        ClientRegistration external = ClientRegistration.withRegistrationId(REGISTRATION_ID)
+                .clientId(CLIENT_ID).clientSecret("orders-secret")
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+                .tokenUri(ISSUER + "/oauth2/token").build();
+        var grant = new org.springframework.security.oauth2.client.endpoint.OAuth2ClientCredentialsGrantRequest(external);
+
+        assertThat(new IdpClientCredentialsRequestEntityConverter().convert(grant, RESOURCE,
+                ServiceTokenContext.TENANT, "1001", Set.of("orders:read")).getUrl())
+                .isEqualTo(URI.create(ISSUER + "/oauth2/token"));
+        assertThatThrownBy(() -> new IdpClientCredentialsRequestEntityConverter(tokenBindings(1))
+                .convert(grant, RESOURCE, ServiceTokenContext.TENANT, "1001", Set.of("orders:read")))
+                .isInstanceOf(IdpServiceTokenRequest.IdpServiceTokenRequestException.class)
+                .hasMessage("OAuth token transport binding is invalid");
+    }
+
+    @Test
+    void tokenBindingRevisionsPartitionBothCachesWithoutChangingTheCanonicalResourceOrRegistration() {
+        var manager = mock(OAuth2AuthorizedClientManager.class);
+        var authorized = mock(OAuth2AuthorizedClientService.class);
+        Instant now = Instant.parse("2026-11-18T00:00:00Z");
+        var converterV1 = new IdpClientCredentialsRequestEntityConverter(tokenBindings(1));
+        var converterV2 = new IdpClientCredentialsRequestEntityConverter(tokenBindings(2));
+        List<String> principals = new ArrayList<>();
+        AtomicInteger acquisitions = new AtomicInteger();
+        var grant = new org.springframework.security.oauth2.client.endpoint.OAuth2ClientCredentialsGrantRequest(registration());
+        when(manager.authorize(any(OAuth2AuthorizeRequest.class))).thenAnswer(invocation -> {
+            OAuth2AuthorizeRequest authorize = invocation.getArgument(0);
+            principals.add(authorize.getPrincipal().getName());
+            var active = acquisitions.get() == 0 ? converterV1 : converterV2;
+            assertThat(active.convert(grant).getUrl()).isEqualTo(INTERNAL_TOKEN_ENDPOINT);
+            return authorizedClient(authorize, "bound-" + acquisitions.incrementAndGet(), now, now.plusSeconds(300));
+        });
+        var properties = serviceProperties();
+        var v1 = IdpServiceOAuth2Client.createConfigured(manager, converterV1, Clock.fixed(now, ZoneOffset.UTC),
+                Duration.ofSeconds(60), registrations(registration()), authorized, new TrustedIssuerRegistry(properties), properties);
+        var v2 = IdpServiceOAuth2Client.createConfigured(manager, converterV2, Clock.fixed(now, ZoneOffset.UTC),
+                Duration.ofSeconds(60), registrations(registration()), authorized, new TrustedIssuerRegistry(properties), properties);
+        clients.add(v1);
+        clients.add(v2);
+        var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+
+        assertThat(v1.authorize(request).getTokenValue()).isEqualTo("bound-1");
+        assertThat(v1.authorize(request).getTokenValue()).isEqualTo("bound-1");
+        assertThat(v2.authorize(request).getTokenValue()).isEqualTo("bound-2");
+        assertThat(acquisitions).hasValue(2);
+        assertThat(principals).hasSize(2).doesNotHaveDuplicates();
+        assertThat(v1.authorizationKey(request).bindingId()).isEqualTo("identity-token");
+        assertThat(v1.authorizationKey(request).bindingVersion()).isEqualTo(1);
+        assertThat(v2.authorizationKey(request).bindingVersion()).isEqualTo(2);
+        assertThat(v2.authorizationKey(request).issuer()).isEqualTo(ISSUER);
+        assertThat(v2.authorizationKey(request).audience()).isEqualTo(RESOURCE);
+        assertThatThrownBy(() -> converterV1.convert(grant))
+                .isInstanceOf(IdpServiceTokenRequest.IdpServiceTokenRequestException.class)
+                .hasMessage("OAuth request parameters are required");
+    }
+
+    @Test
+    void obtainsAndCachesAnOAuthTokenOverFixedInternalHttpWithoutFollowingRedirects() throws Exception {
+        // The test HTTP proxy receives the literal .svc URI; production has no localhost mapping or DNS override.
+        HttpServer proxy = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer redirect = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicInteger proxyHits = new AtomicInteger();
+        AtomicInteger redirectHits = new AtomicInteger();
+        AtomicReference<URI> destination = new AtomicReference<>();
+        AtomicReference<String> basic = new AtomicReference<>();
+        AtomicReference<Map<String, String>> form = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean sendRedirect = new java.util.concurrent.atomic.AtomicBoolean();
+        redirect.createContext("/steal", exchange -> {
+            redirectHits.incrementAndGet();
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        proxy.createContext("/", exchange -> {
+            int call = proxyHits.incrementAndGet();
+            destination.set(exchange.getRequestURI());
+            basic.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            Map<String, String> parameters = new LinkedHashMap<>();
+            for (String field : new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8).split("&")) {
+                String[] parts = field.split("=", 2);
+                parameters.put(URLDecoder.decode(parts[0], StandardCharsets.UTF_8),
+                        URLDecoder.decode(parts.length == 1 ? "" : parts[1], StandardCharsets.UTF_8));
+            }
+            form.set(parameters);
+            if (sendRedirect.get()) {
+                exchange.getResponseHeaders().set("Location", "http://127.0.0.1:"
+                        + redirect.getAddress().getPort() + "/steal");
+                exchange.sendResponseHeaders(302, -1);
+            } else {
+                byte[] response = ("{\"access_token\":\"wire-" + call + "\",\"token_type\":\"Bearer\","
+                        + "\"expires_in\":300,\"scope\":\"" + parameters.get("scope") + "\"}")
+                        .getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, response.length);
+                exchange.getResponseBody().write(response);
+            }
+            exchange.close();
+        });
+        proxy.start();
+        redirect.start();
+        try (HttpClient transport = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2))
+                .followRedirects(HttpClient.Redirect.NEVER).proxy(ProxySelector.of(proxy.getAddress())).build()) {
+            var factory = new org.springframework.http.client.JdkClientHttpRequestFactory(transport);
+            factory.setReadTimeout(Duration.ofSeconds(2));
+            var rest = org.springframework.web.client.RestClient.builder().requestFactory(factory)
+                    .configureMessageConverters(converters -> {
+                        converters.addCustomConverter(new org.springframework.http.converter.FormHttpMessageConverter());
+                        converters.addCustomConverter(new org.springframework.security.oauth2.core.http.converter
+                                .OAuth2AccessTokenResponseHttpMessageConverter());
+                    }).defaultStatusHandler(new org.springframework.security.oauth2.client.http
+                            .OAuth2ErrorResponseErrorHandler()).build();
+            var converter = new IdpClientCredentialsRequestEntityConverter(tokenBindings(1));
+            var registrations = registrations(registration());
+            var store = new org.springframework.security.oauth2.client.InMemoryOAuth2AuthorizedClientService(registrations);
+            var provider = new org.springframework.security.oauth2.client.ClientCredentialsOAuth2AuthorizedClientProvider();
+            provider.setAccessTokenResponseClient(grant -> {
+                var entity = converter.convert(grant);
+                return rest.method(entity.getMethod()).uri(entity.getUrl())
+                        .headers(headers -> headers.addAll(entity.getHeaders())).body(entity.getBody())
+                        .retrieve().body(org.springframework.security.oauth2.core.endpoint.OAuth2AccessTokenResponse.class);
+            });
+            var manager = new org.springframework.security.oauth2.client.AuthorizedClientServiceOAuth2AuthorizedClientManager(
+                    registrations, store);
+            manager.setAuthorizedClientProvider(provider);
+            var properties = serviceProperties();
+            var client = IdpServiceOAuth2Client.createConfigured(manager, converter, Clock.systemUTC(),
+                    Duration.ofSeconds(60), registrations, store, new TrustedIssuerRegistry(properties), properties);
+            clients.add(client);
+            var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001",
+                    Set.of("orders:write", "orders:read"));
+
+            assertThat(client.authorize(request).getTokenValue()).isEqualTo("wire-1");
+            assertThat(client.authorize(request).getTokenValue()).isEqualTo("wire-1");
+            assertThat(proxyHits).hasValue(1);
+            assertThat(destination).hasValue(INTERNAL_TOKEN_ENDPOINT);
+            assertThat(basic).hasValue("Basic " + Base64.getEncoder()
+                    .encodeToString((CLIENT_ID + ":orders-secret").getBytes(StandardCharsets.UTF_8)));
+            assertThat(form.get()).containsExactlyInAnyOrderEntriesOf(Map.of("grant_type", "client_credentials",
+                    "resource", RESOURCE.toASCIIString(), "tenant_id", "1001", "scope", "orders:read orders:write"));
+            String previousPrincipal = client.authorizationKey(request).principalName();
+            properties.getServiceClient().getCredentialVersions().put(REGISTRATION_ID, 8L);
+            assertThat(client.authorize(request).getTokenValue()).isEqualTo("wire-2");
+            OAuth2AuthorizedClient evicted = store.loadAuthorizedClient(REGISTRATION_ID, previousPrincipal);
+            assertThat(evicted).isNull();
+            assertThat(proxyHits).hasValue(2);
+
+            client.invalidate(request);
+            sendRedirect.set(true);
+            assertThatThrownBy(() -> client.authorize(request))
+                    .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class);
+            assertThat(proxyHits).hasValue(3);
+            assertThat(redirectHits).hasValue(0);
+        } finally {
+            proxy.stop(0);
+            redirect.stop(0);
+        }
+    }
+
+    @Test
+    void optedInTokenBindingsRejectWrongResourceAndCanonicalEndpointBeforeTheManager() {
+        var manager = mock(OAuth2AuthorizedClientManager.class);
+        var authorized = mock(OAuth2AuthorizedClientService.class);
+        var properties = serviceProperties();
+        var converter = new IdpClientCredentialsRequestEntityConverter(tokenBindings(1));
+        for (String tokenUri : List.of(ISSUER + "/oauth2/other", INTERNAL_TOKEN_ENDPOINT.toString(),
+                "http://127.0.0.1:18080/oauth2/token", "https://other.example/oauth2/token",
+                ISSUER + "/oauth2/token?target=wrong", ISSUER + "/oauth2/token#wrong",
+                "https://user:secret@tianquan-shoubing.example/oauth2/token")) {
+            ClientRegistration registration = ClientRegistration.withClientRegistration(registration()).tokenUri(tokenUri).build();
+            var client = IdpServiceOAuth2Client.createConfigured(manager, converter, Clock.systemUTC(),
+                    Duration.ofSeconds(60), registrations(registration), authorized, new TrustedIssuerRegistry(properties), properties);
+            clients.add(client);
+            assertThatThrownBy(() -> client.authorize(request(REGISTRATION_ID, APP_ID,
+                    ServiceTokenContext.TENANT, "1001", Set.of("orders:read"))))
+                    .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class)
+                    .hasMessageNotContaining("user:secret").hasMessageNotContaining("127.0.0.1");
+        }
+        var client = IdpServiceOAuth2Client.createConfigured(manager, converter, Clock.systemUTC(),
+                Duration.ofSeconds(60), registrations(registration()), authorized, new TrustedIssuerRegistry(properties), properties);
+        clients.add(client);
+        assertThatThrownBy(() -> client.authorize(request(REGISTRATION_ID, APP_ID,
+                URI.create("https://api.example/prod/unapproved"), ServiceTokenContext.TENANT,
+                "1001", Set.of("orders:read"))))
+                .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class)
+                .hasMessageContaining("transport_binding_invalid");
+        verify(manager, never()).authorize(any(OAuth2AuthorizeRequest.class));
+    }
+
+    @Test
+    void failedAcquisitionClearsBoundParametersAndPlatformGrantsCarryNoTenant() {
+        var manager = mock(OAuth2AuthorizedClientManager.class);
+        var authorized = mock(OAuth2AuthorizedClientService.class);
+        var properties = serviceProperties();
+        var converter = new IdpClientCredentialsRequestEntityConverter(tokenBindings(1));
+        var grant = new org.springframework.security.oauth2.client.endpoint.OAuth2ClientCredentialsGrantRequest(registration());
+        when(manager.authorize(any(OAuth2AuthorizeRequest.class))).thenAnswer(invocation -> {
+            var entity = converter.convert(grant);
+            @SuppressWarnings("unchecked")
+            MultiValueMap<String, String> body = (MultiValueMap<String, String>) entity.getBody();
+            assertThat(entity.getUrl()).isEqualTo(INTERNAL_TOKEN_ENDPOINT);
+            assertThat(body).doesNotContainKey("tenant_id");
+            throw new org.springframework.security.oauth2.core.OAuth2AuthorizationException(
+                    new org.springframework.security.oauth2.core.OAuth2Error("invalid_client"));
+        });
+        var client = IdpServiceOAuth2Client.createConfigured(manager, converter, Clock.systemUTC(),
+                Duration.ofSeconds(60), registrations(registration()), authorized, new TrustedIssuerRegistry(properties), properties);
+        clients.add(client);
+        assertThatThrownBy(() -> client.authorize(request(REGISTRATION_ID, APP_ID,
+                ServiceTokenContext.PLATFORM, null, Set.of("orders:read"))))
+                .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class)
+                .hasMessageContaining("invalid_client");
+        assertThatThrownBy(() -> converter.convert(grant))
+                .isInstanceOf(IdpServiceTokenRequest.IdpServiceTokenRequestException.class)
+                .hasMessage("OAuth request parameters are required");
+    }
+
+    @Test
     void converterUsesBasicHeaderAndOnlyStandardExtensionParameters()
             throws Exception {
         ClientRegistration registration = registration();
@@ -913,6 +1174,13 @@ class IdpServiceOAuth2ClientTest {
         properties.getServiceClient().getCredentialVersions()
                 .put(REGISTRATION_ID, 7L);
         return properties;
+    }
+
+    private static IdpTransportBindingRegistry tokenBindings(long version) {
+        return new IdpTransportBindingRegistry(List.of(new IdpTransportBindingVO("identity-token", version,
+                URI.create(ISSUER), URI.create(ISSUER + "/oauth2/token"), RESOURCE, REGISTRATION_ID,
+                IdpTransportBindingVO.Operation.TOKEN, "POST", "/oauth2/token", "permission-prod",
+                "tianquan-shoubing-http", 18080, IdpTransportBindingVO.Transport.HTTP)));
     }
 
     private static IdpStarterProperties multiIssuerProperties(

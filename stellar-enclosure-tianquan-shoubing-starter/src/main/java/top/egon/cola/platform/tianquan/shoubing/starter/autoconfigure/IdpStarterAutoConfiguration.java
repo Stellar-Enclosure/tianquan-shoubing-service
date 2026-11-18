@@ -29,7 +29,6 @@ import org.springframework.security.oauth2.client.ClientCredentialsOAuth2Authori
 import org.springframework.security.oauth2.client.InMemoryOAuth2AuthorizedClientService;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClientService;
-import org.springframework.security.oauth2.client.endpoint.RestClientClientCredentialsTokenResponseClient;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
@@ -41,6 +40,9 @@ import org.springframework.security.oauth2.jwt.JwtTypeValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpClientCredentialsRequestEntityConverter;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingConverter;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingProperties;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.CurrentIdentity;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpBearerAuthenticationFilter;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpEndpointAuthenticationPolicy;
@@ -68,9 +70,14 @@ import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityAuthorityP
 import top.egon.cola.platform.tianquan.shoubing.starter.state.ConfiguredIdentityAuthorityClients;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.impl.DatabaseOAuthRevocationReader;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 为普通 Servlet 资源服务器装配统一 Tianquan-Shoubing 身份验证能力。
@@ -94,6 +101,10 @@ import java.util.List;
         name = "enabled",
         havingValue = "true")
 public class IdpStarterAutoConfiguration {
+
+    private static final int MAX_TOKEN_RESPONSE_BYTES = 64 * 1024;
+    private static final Set<String> TOKEN_ERROR_CODES = Set.of("invalid_request", "invalid_client", "invalid_grant",
+            "unauthorized_client", "unsupported_grant_type", "invalid_scope", "server_error", "temporarily_unavailable");
 
     /** Retains the SDK mapper qualifier with Boot 4's Jackson 2 compatibility module. */
     @Bean
@@ -185,6 +196,30 @@ public class IdpStarterAutoConfiguration {
         return new IdpStarterProperties();
     }
 
+    /** Binds only deployment-owned transport entries, independently from canonical identities. */
+    @Bean(name = "idpTransportBindingProperties")
+    @ConfigurationProperties(prefix = "egon.cola.platform.tianquan.shoubing.transport", ignoreUnknownFields = false)
+    @ConditionalOnMissingBean(name = "idpTransportBindingProperties")
+    public IdpTransportBindingProperties idpTransportBindingProperties() {
+        return new IdpTransportBindingProperties();
+    }
+
+    /** Shares the generated immutable transport conversion contract across all managed clients. */
+    @Bean(name = "idpTransportBindingConverter")
+    @ConditionalOnMissingBean(name = "idpTransportBindingConverter")
+    public IdpTransportBindingConverter idpTransportBindingConverter() {
+        return IdpTransportBindingConverter.INSTANCE;
+    }
+
+    /** Freezes one validated deployment snapshot for OAuth, authority and execution clients. */
+    @Bean(name = "idpTransportBindingRegistry")
+    @ConditionalOnMissingBean(name = "idpTransportBindingRegistry")
+    public IdpTransportBindingRegistry idpTransportBindingRegistry(
+            @Qualifier("idpTransportBindingProperties") IdpTransportBindingProperties properties,
+            @Qualifier("idpTransportBindingConverter") IdpTransportBindingConverter converter) {
+        return new IdpTransportBindingRegistry(properties, converter);
+    }
+
     @Bean(name = "idpClock")
     @ConditionalOnMissingBean(name = "idpClock")
     public Clock idpClock() {
@@ -234,8 +269,9 @@ public class IdpStarterAutoConfiguration {
             @Qualifier("idpStarterProperties") IdpStarterProperties properties,
             @Qualifier("trustedIssuerRegistry") TrustedIssuerRegistry issuers,
             @Qualifier("idpServiceOAuth2Client") IdpServiceOAuth2Client serviceClient,
-            @Qualifier("jacksonObjectMapper") ObjectMapper mapper) {
-        return new ConfiguredIdentityAuthorityClients(authority, properties, issuers, serviceClient, mapper);
+            @Qualifier("jacksonObjectMapper") ObjectMapper mapper,
+            @Qualifier("idpTransportBindingRegistry") IdpTransportBindingRegistry bindings) {
+        return new ConfiguredIdentityAuthorityClients(authority, properties, issuers, serviceClient, mapper, bindings);
     }
 
     @Bean(name = "oauthRevocationReader")
@@ -256,8 +292,9 @@ public class IdpStarterAutoConfiguration {
     @ConditionalOnBean(ClientRegistrationRepository.class)
     @ConditionalOnMissingBean
     public IdpClientCredentialsRequestEntityConverter
-            idpClientCredentialsRequestEntityConverter() {
-        return new IdpClientCredentialsRequestEntityConverter();
+            idpClientCredentialsRequestEntityConverter(
+                    @Qualifier("idpTransportBindingRegistry") IdpTransportBindingRegistry bindings) {
+        return new IdpClientCredentialsRequestEntityConverter(bindings);
     }
 
     /** Provides the default in-memory authorized-client store for service tokens. */
@@ -286,26 +323,52 @@ public class IdpStarterAutoConfiguration {
     public OAuth2AuthorizedClientManager idpOAuth2AuthorizedClientManager(
             ClientRegistrationRepository registrations,
             OAuth2AuthorizedClientService authorizedClients,
-            IdpClientCredentialsRequestEntityConverter converter,
+            @Qualifier("idpClientCredentialsRequestEntityConverter") IdpClientCredentialsRequestEntityConverter converter,
             @Qualifier("idpStarterProperties") IdpStarterProperties properties,
             @Qualifier("identityAuthorityProperties") IdentityAuthorityProperties authorityProperties
     ) {
         properties.getServiceClient().validate();
-        RestClientClientCredentialsTokenResponseClient responseClient =
-                new RestClientClientCredentialsTokenResponseClient();
-        responseClient.setRestClient(top.egon.cola.platform.tianquan.shoubing.starter.state.HttpIdentityAuthorityClient
+        var errorHandler = new org.springframework.security.oauth2.client.http.OAuth2ErrorResponseErrorHandler();
+        var transport = top.egon.cola.platform.tianquan.shoubing.starter.state.HttpIdentityAuthorityClient
                 .boundedTransport(authorityProperties.getTimeout()).mutate().configureMessageConverters(converters -> {
                     converters.addCustomConverter(new org.springframework.http.converter.FormHttpMessageConverter());
                     converters.addCustomConverter(new org.springframework.security.oauth2.core.http.converter.OAuth2AccessTokenResponseHttpMessageConverter());
-                }).defaultStatusHandler(new org.springframework.security.oauth2.client.http.OAuth2ErrorResponseErrorHandler()).build());
-        responseClient.setHeadersConverter(converter::convertHeaders);
-        responseClient.setParametersConverter(converter::convertParameters);
+                }).requestInterceptor((request, body, execution) -> boundedTokenResponse(execution.execute(request, body)))
+                .defaultStatusHandler(errorHandler).build();
         ClientCredentialsOAuth2AuthorizedClientProvider provider =
                 new ClientCredentialsOAuth2AuthorizedClientProvider();
         provider.setClockSkew(
                 properties.getServiceClient().getRenewalSkew()
         );
-        provider.setAccessTokenResponseClient(responseClient);
+        provider.setAccessTokenResponseClient(grant -> {
+            // The complete converter owns the final URI as well as Basic credentials and form dimensions.
+            var request = java.util.Objects.requireNonNull(converter.convert(grant), "token request");
+            try {
+                var response = transport.method(request.getMethod()).uri(request.getUrl())
+                        .headers(headers -> headers.addAll(request.getHeaders()))
+                        .body(java.util.Objects.requireNonNull(request.getBody(), "token request body"))
+                        .retrieve().onStatus(status -> !status.is2xxSuccessful(), (sent, received) -> {
+                            if (received.getStatusCode().isError()) {
+                                errorHandler.handleError(sent.getURI(), sent.getMethod(), received);
+                            }
+                            throw invalidTokenResponse();
+                        }).body(org.springframework.security.oauth2.core.endpoint.OAuth2AccessTokenResponse.class);
+                if (response == null) {
+                    throw invalidTokenResponse();
+                }
+                return response;
+            } catch (org.springframework.security.oauth2.core.OAuth2AuthorizationException failure) {
+                String error = failure.getError().getErrorCode();
+                if (TOKEN_ERROR_CODES.contains(error)) {
+                    throw new org.springframework.security.oauth2.core.OAuth2AuthorizationException(
+                            new org.springframework.security.oauth2.core.OAuth2Error(error));
+                }
+                throw invalidTokenResponse();
+            } catch (org.springframework.web.client.RestClientException failure) {
+                // Do not propagate remote response text or request details through the public error message.
+                throw invalidTokenResponse();
+            }
+        });
         AuthorizedClientServiceOAuth2AuthorizedClientManager manager =
                 new AuthorizedClientServiceOAuth2AuthorizedClientManager(
                         registrations,
@@ -313,6 +376,55 @@ public class IdpStarterAutoConfiguration {
                 );
         manager.setAuthorizedClientProvider(provider);
         return manager;
+    }
+
+    /** Caps successful and rejected token bodies before any OAuth JSON or error converter reads them. */
+    private static org.springframework.http.client.ClientHttpResponse boundedTokenResponse(
+            org.springframework.http.client.ClientHttpResponse response) throws IOException {
+        byte[] bytes;
+        try {
+            bytes = response.getBody().readNBytes(MAX_TOKEN_RESPONSE_BYTES + 1);
+            if (bytes.length > MAX_TOKEN_RESPONSE_BYTES) {
+                Arrays.fill(bytes, (byte) 0);
+                throw new IOException("OAuth token response exceeds the configured bound");
+            }
+        } catch (IOException | RuntimeException failure) {
+            response.close();
+            throw failure;
+        }
+        return new org.springframework.http.client.ClientHttpResponse() {
+            @Override
+            public org.springframework.http.HttpStatusCode getStatusCode() throws IOException {
+                return response.getStatusCode();
+            }
+
+            @Override
+            public String getStatusText() throws IOException {
+                return response.getStatusText();
+            }
+
+            @Override
+            public InputStream getBody() {
+                return new ByteArrayInputStream(bytes);
+            }
+
+            @Override
+            public org.springframework.http.HttpHeaders getHeaders() {
+                return response.getHeaders();
+            }
+
+            @Override
+            public void close() {
+                Arrays.fill(bytes, (byte) 0);
+                response.close();
+            }
+        };
+    }
+
+    private static org.springframework.security.oauth2.core.OAuth2AuthorizationException invalidTokenResponse() {
+        return new org.springframework.security.oauth2.core.OAuth2AuthorizationException(
+                new org.springframework.security.oauth2.core.OAuth2Error("invalid_token_response",
+                        "OAuth token endpoint returned an invalid response", null));
     }
 
     /** Creates the one recommended SERVICE-token API for biz services. */

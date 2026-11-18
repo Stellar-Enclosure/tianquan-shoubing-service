@@ -28,7 +28,9 @@ public record ServiceAuthorizationKey(
         URI audience,
         ServiceTokenContext context,
         String tenantId,
-        Set<String> scopes
+        Set<String> scopes,
+        String bindingId,
+        long bindingVersion
 ) {
 
     public ServiceAuthorizationKey {
@@ -47,6 +49,12 @@ public record ServiceAuthorizationKey(
         }
         registrationId = required(registrationId, "registrationId");
         clientId = required(clientId, "clientId");
+        if (bindingId == null || bindingVersion < 0 || bindingId.isEmpty() != (bindingVersion == 0)) {
+            throw new IdpServiceTokenRequest.IdpServiceTokenRequestException("transport binding identity is invalid");
+        }
+        if (!bindingId.isEmpty()) {
+            bindingId = required(bindingId, "bindingId");
+        }
         if (credentialVersion < 0L) {
             throw new IdpServiceTokenRequest.IdpServiceTokenRequestException(
                     "credentialVersion is invalid");
@@ -65,12 +73,24 @@ public record ServiceAuthorizationKey(
         scopes = Collections.unmodifiableSet(new LinkedHashSet<>(normalized));
     }
 
+    /** Keeps the former external-HTTPS source contract; no physical mapping is implied. */
+    public ServiceAuthorizationKey(String issuer, String registrationId, String clientId, long credentialVersion,
+            String appId, URI audience, ServiceTokenContext context, String tenantId, Set<String> scopes) {
+        this(issuer, registrationId, clientId, credentialVersion, appId, audience, context, tenantId, scopes, "", 0L);
+    }
+
     /** Creates the cache key from the request and its trusted registration identity. */
     public static ServiceAuthorizationKey from(
             IdpServiceTokenRequest request,
             String issuer,
             String clientId,
             long credentialVersion) {
+        return from(request, issuer, clientId, credentialVersion, "", 0L);
+    }
+
+    /** Adds the immutable deployed transport revision to both authorization-cache layers. */
+    public static ServiceAuthorizationKey from(IdpServiceTokenRequest request, String issuer, String clientId,
+            long credentialVersion, String bindingId, long bindingVersion) {
         if (request == null) {
             throw new IdpServiceTokenRequest.IdpServiceTokenRequestException(
                     "request is required"
@@ -85,7 +105,9 @@ public record ServiceAuthorizationKey(
                 request.audience(),
                 request.context(),
                 request.tenantId(),
-                request.scopes()
+                request.scopes(),
+                bindingId,
+                bindingVersion
         );
     }
 
@@ -102,6 +124,8 @@ public record ServiceAuthorizationKey(
                 + lengthPrefix(issuer)
                 + lengthPrefix(clientId)
                 + lengthPrefix(Long.toString(credentialVersion))
+                + lengthPrefix(bindingId)
+                + lengthPrefix(Long.toString(bindingVersion))
                 + lengthPrefix(appId)
                 + lengthPrefix(audience.toString())
                 + lengthPrefix(context.name())

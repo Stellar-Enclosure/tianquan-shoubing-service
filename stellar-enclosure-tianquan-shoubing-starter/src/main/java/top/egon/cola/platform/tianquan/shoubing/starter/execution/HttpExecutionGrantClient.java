@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
+import java.net.ProxySelector;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -14,6 +15,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -29,6 +31,10 @@ import top.egon.cola.platform.tianquan.shoubing.contract.execution.ServiceExecut
 import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthorityScopes;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceTokenRequest;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingProperties;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO.Operation;
 
 /** One explicitly configured tenant, issuer and SERVICE registration; no write is automatically replayed. */
 public final class HttpExecutionGrantClient {
@@ -41,16 +47,36 @@ public final class HttpExecutionGrantClient {
     private final ObjectMapper mapper;
     private final Duration timeout;
     private final Clock clock;
+    private final IdpTransportBindingRegistry bindings;
+    private final Map<Operation, Reference> references;
 
     public HttpExecutionGrantClient(URI baseUri, URI issuer, IdpServiceTokenRequest service,
             IdpServiceOAuth2Client serviceOAuth, ObjectMapper mapper, Duration timeout) {
+        this(baseUri, issuer, service, serviceOAuth, mapper, timeout, IdpTransportBindingRegistry.empty(), Map.of());
+    }
+
+    public HttpExecutionGrantClient(URI baseUri, URI issuer, IdpServiceTokenRequest service,
+            IdpServiceOAuth2Client serviceOAuth, ObjectMapper mapper, Duration timeout, IdpTransportBindingRegistry bindings) {
+        this(baseUri, issuer, service, serviceOAuth, mapper, timeout, bindings, Map.of());
+    }
+
+    public HttpExecutionGrantClient(URI baseUri, URI issuer, IdpServiceTokenRequest service,
+            IdpServiceOAuth2Client serviceOAuth, ObjectMapper mapper, Duration timeout, IdpTransportBindingRegistry bindings,
+            Map<Operation, IdpTransportBindingProperties.Reference> references) {
         this(baseUri, issuer, service, serviceOAuth, mapper, timeout,
-                HttpClient.newBuilder().connectTimeout(requireTimeout(timeout)).followRedirects(HttpClient.Redirect.NEVER).build(),
-                Clock.systemUTC());
+                HttpClient.newBuilder().connectTimeout(requireTimeout(timeout)).proxy(ProxySelector.of(null))
+                        .followRedirects(HttpClient.Redirect.NEVER).build(),
+                Clock.systemUTC(), bindings, references);
     }
 
     HttpExecutionGrantClient(URI baseUri, URI issuer, IdpServiceTokenRequest service,
             IdpServiceOAuth2Client serviceOAuth, ObjectMapper mapper, Duration timeout, HttpClient http, Clock clock) {
+        this(baseUri, issuer, service, serviceOAuth, mapper, timeout, http, clock, IdpTransportBindingRegistry.empty(), Map.of());
+    }
+
+    HttpExecutionGrantClient(URI baseUri, URI issuer, IdpServiceTokenRequest service,
+            IdpServiceOAuth2Client serviceOAuth, ObjectMapper mapper, Duration timeout, HttpClient http, Clock clock,
+            IdpTransportBindingRegistry bindings, Map<Operation, IdpTransportBindingProperties.Reference> references) {
         this.baseUri = base(baseUri);
         this.issuer = secureUri(issuer);
         this.service = Objects.requireNonNull(service, "service");
@@ -64,6 +90,8 @@ public final class HttpExecutionGrantClient {
         this.timeout = requireTimeout(timeout);
         this.http = Objects.requireNonNull(http, "http");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.bindings = Objects.requireNonNull(bindings, "bindings");
+        this.references = references(references);
         if (http.followRedirects() != HttpClient.Redirect.NEVER || service.context() != ServiceTokenContext.TENANT
                 || service.tenantId() == null || !service.tenantId().matches("[1-9][0-9]{0,18}")) {
             throw new IllegalArgumentException("EXECUTION_GRANT_CLIENT_BINDING_INVALID");
@@ -122,6 +150,7 @@ public final class HttpExecutionGrantClient {
 
     private <T> T post(String path, Object requestBody, String requiredScope, Class<T> type) {
         if (!service.scopes().contains(requiredScope)) throw unavailable();
+        URI target = target(path);
         var context = new IdpServiceTokenRequest(service.registrationId(), service.appId(), service.audience(),
                 service.context(), service.tenantId(), Set.of(requiredScope));
         long started = System.nanoTime();
@@ -138,7 +167,6 @@ public final class HttpExecutionGrantClient {
         CompletableFuture<HttpResponse<byte[]>> pending = null;
         byte[] responseBody = null;
         try {
-            var target = baseUri.resolve(path.substring(1));
             var builder = HttpRequest.newBuilder(target).timeout(Duration.ofNanos(remaining(started))).header("Authorization", "Bearer " + token)
                     .header("Content-Type", "application/json").header("Accept", "application/json")
                     .header("Cache-Control", "no-store");
@@ -210,6 +238,48 @@ public final class HttpExecutionGrantClient {
         } catch (ExecutionGrantUnavailableException failure) { throw failure; }
         catch (RuntimeException invalid) { throw unavailable(); }
     }
+
+    private URI target(String path) {
+        Operation operation = switch (path) {
+            case ExecutionGrantContract.ISSUE_PATH -> Operation.EXECUTION_ISSUE;
+            case ExecutionGrantContract.RESOLVE_PATH -> Operation.EXECUTION_RESOLVE;
+            case ExecutionGrantContract.REVOKE_PATH -> Operation.EXECUTION_REVOKE;
+            case ServiceExecutionGrantContract.ISSUE_PATH -> Operation.SERVICE_EXECUTION_ISSUE;
+            case ServiceExecutionGrantContract.RESOLVE_PATH -> Operation.SERVICE_EXECUTION_RESOLVE;
+            case ServiceExecutionGrantContract.REVOKE_PATH -> Operation.SERVICE_EXECUTION_REVOKE;
+            default -> throw new IllegalArgumentException("EXECUTION_GRANT_OPERATION_INVALID");
+        };
+        URI canonical = baseUri.resolve(path.substring(1));
+        Reference reference = references.get(operation);
+        IdpTransportBindingVO selected = reference == null
+                ? bindings.select(issuer, canonical, service.audience(), service.registrationId(), operation, "POST").orElse(null)
+                : bindings.require(reference.bindingId(), reference.version(), issuer, canonical, service.audience(),
+                        service.registrationId(), operation, "POST");
+        if (selected == null) {
+            return canonical;
+        }
+        if (selected.transport() != IdpTransportBindingVO.Transport.HTTP) {
+            throw new IllegalArgumentException("EXECUTION_GRANT_TRANSPORT_INVALID");
+        }
+        return selected.physicalUri();
+    }
+
+    private static Map<Operation, Reference> references(Map<Operation, IdpTransportBindingProperties.Reference> values) {
+        if (values == null) {
+            throw new IllegalArgumentException("EXECUTION_GRANT_TRANSPORT_REFERENCES_INVALID");
+        }
+        Map<Operation, Reference> result = new LinkedHashMap<>();
+        values.forEach((operation, reference) -> {
+            if (operation == null || reference == null || reference.getBindingId() == null
+                    || reference.getBindingId().isBlank() || reference.getVersion() <= 0) {
+                throw new IllegalArgumentException("EXECUTION_GRANT_TRANSPORT_REFERENCES_INVALID");
+            }
+            result.put(operation, new Reference(reference.getBindingId(), reference.getVersion()));
+        });
+        return Map.copyOf(result);
+    }
+
+    private record Reference(String bindingId, long version) { }
 
     private static URI base(URI value) {
         URI checked = secureUri(value);

@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Callable;
@@ -91,6 +92,7 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
             new ConcurrentHashMap<>();
     private final Map<ServiceAuthorizationKey, Long> refreshGenerations =
             new ConcurrentHashMap<>();
+    private final Map<String, Long> observedCredentialVersions = new ConcurrentHashMap<>();
     private final Object cacheLock = new Object();
     private final ScheduledThreadPoolExecutor refreshScheduler = newRefreshScheduler();
     private final ThreadPoolExecutor boundedOperations = newBoundedOperations();
@@ -161,6 +163,7 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
 
     private OAuth2AccessToken authorizeResolved(IdpServiceTokenRequest request, ServiceAuthorizationKey key) {
         ensureOpen();
+        retireSupersededRevisions(key);
         OAuth2AccessToken cached = cache.get(key);
         boolean usable = usable(cached);
         recordMetric("token.cache.access", cached == null ? "MISS" : usable ? "HIT" : "EXPIRED", null);
@@ -337,9 +340,16 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
             throw new IdpServiceAuthorizationException(
                     "credential_version_unconfigured", invalid);
         }
+        Optional<IdpTransportBindingVO> transport;
+        try {
+            transport = converter.selectTransport(registration, request.audience());
+        } catch (IdpServiceTokenRequest.IdpServiceTokenRequestException invalid) {
+            throw new IdpServiceAuthorizationException("transport_binding_invalid", null);
+        }
         return ServiceAuthorizationKey.from(
                 request, issuerUri.toASCIIString(), registration.getClientId(),
-                credentialVersion);
+                credentialVersion, transport.map(IdpTransportBindingVO::bindingId).orElse(""),
+                transport.map(IdpTransportBindingVO::version).orElse(0L));
     }
 
     private String configuredIssuer(ClientRegistration registration) {
@@ -402,19 +412,13 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         }
         String scheme = uri.getScheme();
         boolean secure = "https".equalsIgnoreCase(scheme);
-        boolean loopback = "http".equalsIgnoreCase(scheme) && isLoopback(uri.getHost());
         if (!uri.isAbsolute() || uri.isOpaque() || uri.getHost() == null
-                || (!secure && !loopback) || uri.getUserInfo() != null
+                || !secure || uri.getUserInfo() != null
                 || uri.getQuery() != null || uri.getFragment() != null
                 || !uri.normalize().equals(uri) || !uri.toASCIIString().equals(value)) {
             throw new IdpServiceAuthorizationException("registration_uri_invalid", null);
         }
         return uri;
-    }
-
-    private static boolean isLoopback(String host) {
-        return "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host)
-                || "::1".equals(host) || "[::1]".equals(host);
     }
 
     private static boolean sameOrigin(URI left, URI right) {
@@ -427,10 +431,9 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         URI uri = Objects.requireNonNull(audience, "audience");
         String scheme = uri.getScheme();
         boolean secure = "https".equalsIgnoreCase(scheme);
-        boolean loopback = "http".equalsIgnoreCase(scheme) && isLoopback(uri.getHost());
         if (!uri.isAbsolute() || uri.isOpaque() || uri.getHost() == null
-                || (!secure && !loopback) || uri.getUserInfo() != null
-                || uri.getFragment() != null || !uri.normalize().equals(uri)
+                || !secure || uri.getUserInfo() != null
+                || uri.getQuery() != null || uri.getFragment() != null || !uri.normalize().equals(uri)
                 || !uri.toASCIIString().equals(audience.toString())) {
             throw new IdpServiceAuthorizationException("audience_invalid", null);
         }
@@ -568,6 +571,22 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         }
     }
 
+    private void retireSupersededRevisions(ServiceAuthorizationKey current) {
+        synchronized (cacheLock) {
+            Long previous = observedCredentialVersions.get(current.registrationId());
+            if (previous != null && previous > current.credentialVersion()) {
+                throw new IdpServiceAuthorizationException("credential_version_regression", null);
+            }
+            observedCredentialVersions.put(current.registrationId(), current.credentialVersion());
+            if (previous != null && previous != current.credentialVersion()) {
+                cache.keySet().stream().filter(key -> key.registrationId().equals(current.registrationId())
+                        && key.credentialVersion() != current.credentialVersion())
+                        .toList().forEach(this::evictLocked);
+            }
+            // Transport bindings are immutable per facade: replacement assembles a new facade and revisioned principal.
+        }
+    }
+
     private void evictLocked(ServiceAuthorizationKey key) {
         cache.remove(key);
         requests.remove(key);
@@ -633,6 +652,7 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
             refreshGenerations.clear();
             requests.clear();
             lastUsed.clear();
+            observedCredentialVersions.clear();
             cache.clear();
         }
         refreshScheduler.shutdownNow();

@@ -31,6 +31,10 @@ import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthority
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceTokenRequest;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.ServiceAuthorizationKey;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingProperties;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO.Operation;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -130,6 +134,80 @@ class HttpExecutionGrantClientTest {
                 Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE), Set.of(IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE)),
                 captured.getAllValues().stream().map(IdpServiceTokenRequest::scopes).toList());
         assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> client.issueService(serviceIssue));
+    }
+
+    @Test void mapsAllSixManagedHttpOperationsWithoutChangingTheCanonicalIssuerOrScope() throws Exception {
+        var allScopes = Set.of(IdentityAuthorityScopes.EXECUTION_GRANT_ISSUE, IdentityAuthorityScopes.EXECUTION_GRANT_RESOLVE,
+                IdentityAuthorityScopes.EXECUTION_GRANT_REVOKE, IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_ISSUE,
+                IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_RESOLVE, IdentityAuthorityScopes.SERVICE_EXECUTION_GRANT_REVOKE);
+        var context = new IdpServiceTokenRequest(service.registrationId(), service.appId(), service.audience(),
+                service.context(), service.tenantId(), allScopes);
+        var registry = new IdpTransportBindingRegistry(List.of(
+                binding("execution-issue", Operation.EXECUTION_ISSUE, ExecutionGrantContract.ISSUE_PATH),
+                binding("execution-resolve", Operation.EXECUTION_RESOLVE, ExecutionGrantContract.RESOLVE_PATH),
+                binding("execution-revoke", Operation.EXECUTION_REVOKE, ExecutionGrantContract.REVOKE_PATH),
+                binding("service-issue", Operation.SERVICE_EXECUTION_ISSUE, ServiceExecutionGrantContract.ISSUE_PATH),
+                binding("service-resolve", Operation.SERVICE_EXECUTION_RESOLVE, ServiceExecutionGrantContract.RESOLVE_PATH),
+                binding("service-revoke", Operation.SERVICE_EXECUTION_REVOKE, ServiceExecutionGrantContract.REVOKE_PATH)));
+        var managed = new HttpExecutionGrantClient(BASE, ISSUER, context, oauth, mapper, Duration.ofSeconds(1), http,
+                Clock.fixed(NOW, ZoneOffset.UTC), registry, Map.of());
+        var serviceTicket = new ServiceExecutionGrantContract.Ticket("8" + "1".repeat(62), SECRET);
+        var serviceIssue = new ServiceExecutionGrantContract.IssueRequest("worker-token-sentinel", issue.purpose(), INTENT,
+                issue.bindingSha256(), true, issue.deadlineAt());
+        add(200, mapper.writeValueAsBytes(new ExecutionGrantContract.Issued(ticket, NOW.plusSeconds(60))));
+        add(200, mapper.writeValueAsBytes(resolution(ISSUER.toString(), 101, ID, NOW.plusSeconds(60))));
+        add(204, new byte[0]);
+        add(200, mapper.writeValueAsBytes(new ServiceExecutionGrantContract.Issued(serviceTicket, NOW.plusSeconds(60))));
+        add(200, mapper.writeValueAsBytes(serviceResolution(ISSUER.toString(), 101, serviceTicket.grantId(), NOW.plusSeconds(60))));
+        add(204, new byte[0]);
+        managed.issue(issue);
+        managed.resolve(ticket);
+        managed.revoke(new ExecutionGrantContract.RevokeRequest(USER, ticket));
+        managed.issueService(serviceIssue);
+        managed.resolveService(serviceTicket);
+        managed.revokeService(serviceTicket);
+        assertEquals(List.of(ExecutionGrantContract.ISSUE_PATH, ExecutionGrantContract.RESOLVE_PATH, ExecutionGrantContract.REVOKE_PATH,
+                        ServiceExecutionGrantContract.ISSUE_PATH, ServiceExecutionGrantContract.RESOLVE_PATH, ServiceExecutionGrantContract.REVOKE_PATH),
+                requests.stream().map(captured -> captured.request().uri().getPath().substring("/prefix".length())).toList());
+        assertTrue(requests.stream().allMatch(captured -> "http".equals(captured.request().uri().getScheme())
+                && "idp-admin.identity-prod.svc.cluster.local".equals(captured.request().uri().getHost())
+                && captured.request().uri().getPort() == 8080));
+        verify(oauth, times(6)).authorizeBounded(any(), eq(ISSUER.toASCIIString()), any());
+    }
+
+    @Test void aManagedFamilyNeverFallsBackWhenTheOperationOrExplicitReferenceIsMissing() {
+        var registry = new IdpTransportBindingRegistry(List.of(
+                binding("execution-issue", Operation.EXECUTION_ISSUE, ExecutionGrantContract.ISSUE_PATH)));
+        var managed = new HttpExecutionGrantClient(BASE, ISSUER, service, oauth, mapper, Duration.ofSeconds(1), http,
+                Clock.fixed(NOW, ZoneOffset.UTC), registry, Map.of());
+        assertThrows(IllegalArgumentException.class, () -> managed.resolve(ticket));
+        var explicit = new HttpExecutionGrantClient(BASE, ISSUER, service, oauth, mapper, Duration.ofSeconds(1), http,
+                Clock.fixed(NOW, ZoneOffset.UTC), registry,
+                Map.of(Operation.EXECUTION_ISSUE, new IdpTransportBindingProperties.Reference("execution-issue", 2)));
+        assertThrows(IllegalArgumentException.class, () -> explicit.issue(issue));
+        verify(oauth, never()).authorizeBounded(any(), anyString(), any());
+        verify(http, never()).sendAsync(any(), any());
+    }
+
+    @Test void managedWriteFailuresHaveOneAttemptAndNeverSwitchToTheCanonicalHttpsEndpoint() {
+        var registry = new IdpTransportBindingRegistry(List.of(
+                binding("execution-issue", Operation.EXECUTION_ISSUE, ExecutionGrantContract.ISSUE_PATH)));
+        var managed = new HttpExecutionGrantClient(BASE, ISSUER, service, oauth, mapper, Duration.ofSeconds(1), http,
+                Clock.fixed(NOW, ZoneOffset.UTC), registry, Map.of());
+        for (int status : new int[]{401, 302, 503}) {
+            add(status, new byte[0]);
+            assertThrows(HttpExecutionGrantClient.ExecutionGrantUnavailableException.class, () -> managed.issue(issue));
+        }
+        assertEquals(3, requests.size());
+        assertTrue(requests.stream().allMatch(captured -> "http".equals(captured.request().uri().getScheme())));
+        verify(oauth).invalidateBounded(any(), eq(ISSUER.toASCIIString()), any());
+    }
+
+    private IdpTransportBindingVO binding(String id, Operation operation, String path) {
+        String endpointPath = "/prefix" + path;
+        return new IdpTransportBindingVO(id, 1, ISSUER, URI.create("https://idp.example" + endpointPath), service.audience(),
+                service.registrationId(), operation, "POST", endpointPath, "identity-prod", "idp-admin", 8080,
+                IdpTransportBindingVO.Transport.HTTP);
     }
 
     @Test void service_client_rejects_forged_response_binding_and_never_retries_writes() throws Exception {

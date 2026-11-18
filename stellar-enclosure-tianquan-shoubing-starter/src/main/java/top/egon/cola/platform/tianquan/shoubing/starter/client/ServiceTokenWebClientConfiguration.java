@@ -1,7 +1,15 @@
 package top.egon.cola.platform.tianquan.shoubing.starter.client;
 
+import java.io.IOException;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.SocketAddress;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -13,6 +21,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.client.reactive.JdkClientHttpConnector;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
@@ -30,26 +39,44 @@ import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceTokenRe
 @ConditionalOnProperty(
         prefix = "egon.cola.platform.tianquan.shoubing.service-client",
         name = {"app-id", "registration-id"})
-public class ServiceTokenWebClientConfiguration {
+public class ServiceTokenWebClientConfiguration implements DisposableBean {
 
     /** WebClient attribute carrying the typed authorization request for exactly one call. */
     public static final String SERVICE_TOKEN_REQUEST_ATTRIBUTE =
             "egon.cola.platform.tianquan.shoubing.serviceTokenRequest";
+
+    private HttpClient ownedHttpClient;
 
     @Bean(name = "serviceTokenWebClient")
     @ConditionalOnBean({IdpServiceOAuth2Client.class, WebClient.Builder.class})
     @ConditionalOnMissingBean(name = "serviceTokenWebClient")
     public WebClient serviceTokenWebClient(
             WebClient.Builder builder,
-            @Qualifier("idpServiceOAuth2Client") IdpServiceOAuth2Client tokenClient) {
+            @Qualifier("idpServiceOAuth2Client") IdpServiceOAuth2Client tokenClient,
+            @Qualifier("idpTransportBindingRegistry") IdpTransportBindingRegistry bindings) {
         return builder.clone()
-                .filter(serviceTokenFilter(tokenClient))
+                // Preserve codecs/URI defaults, but own the credential-bearing terminal and retry policy.
+                .filters(List::clear)
+                .exchangeFunction(null)
+                .clientConnector(new JdkClientHttpConnector(ownedHttpClient()))
+                .filter(serviceTokenFilter(tokenClient, bindings))
                 .build();
     }
 
+    /** Keeps existing explicit callers on the HTTPS/loopback-only contract. */
+    public WebClient serviceTokenWebClient(WebClient.Builder builder, IdpServiceOAuth2Client tokenClient) {
+        return serviceTokenWebClient(builder, tokenClient, IdpTransportBindingRegistry.empty());
+    }
+
     ExchangeFilterFunction serviceTokenFilter(IdpServiceOAuth2Client tokenClient) {
+        return serviceTokenFilter(tokenClient, IdpTransportBindingRegistry.empty());
+    }
+
+    ExchangeFilterFunction serviceTokenFilter(IdpServiceOAuth2Client tokenClient,
+                                             IdpTransportBindingRegistry registry) {
         IdpServiceOAuth2Client client = Objects.requireNonNull(tokenClient, "tokenClient");
-        return (request, next) -> {
+        IdpTransportBindingRegistry bindings = Objects.requireNonNull(registry, "registry");
+        return (request, next) -> Mono.defer(() -> {
             Object attribute = request.attributes().get(SERVICE_TOKEN_REQUEST_ATTRIBUTE);
             if (!(attribute instanceof IdpServiceTokenRequest tokenRequest)) {
                 return Mono.error(new IdpServiceTokenRequestException(
@@ -59,12 +86,76 @@ public class ServiceTokenWebClientConfiguration {
                 return Mono.error(new IdpServiceTokenRequestException(
                         "caller-supplied Authorization is not allowed"));
             }
+            rejectTransportOverrides(request);
             if (!sameOrigin(tokenRequest.audience(), request.url())) {
                 return Mono.error(new IdpServiceTokenRequestException(
                         "SERVICE token audience and request origin do not match"));
             }
-            return exchange(request, next, client, tokenRequest, false);
-        };
+            ClientRequest outbound = request;
+            if (bindings.hasBindings(tokenRequest.registrationId(), IdpTransportBindingVO.Operation.RESOURCE)) {
+                ServiceAuthorizationKey identity = client.authorizationKey(tokenRequest);
+                requireRequestIdentity(identity, tokenRequest);
+                IdpTransportBindingVO binding = bindings.select(URI.create(identity.issuer()), request.url(),
+                                tokenRequest.audience(), tokenRequest.registrationId(),
+                                IdpTransportBindingVO.Operation.RESOURCE, request.method().name())
+                        .orElseThrow(() -> new IdpServiceTokenRequestException("SERVICE transport binding is required"));
+                if (binding.transport() != IdpTransportBindingVO.Transport.HTTP) {
+                    return Mono.error(new IdpServiceTokenRequestException("SERVICE resource transport is invalid"));
+                }
+                outbound = ClientRequest.from(request).url(binding.physicalUri()).build();
+            }
+            return exchange(outbound, next, client, tokenRequest, false);
+        });
+    }
+
+    private static void requireRequestIdentity(ServiceAuthorizationKey identity, IdpServiceTokenRequest request) {
+        if (identity == null || !request.registrationId().equals(identity.registrationId())
+                || !request.appId().equals(identity.appId()) || !request.audience().equals(identity.audience())
+                || request.context() != identity.context() || !Objects.equals(request.tenantId(), identity.tenantId())
+                || !request.scopes().equals(identity.scopes())) {
+            throw new IdpServiceTokenRequestException("SERVICE authorization identity does not match the request");
+        }
+    }
+
+    private static void rejectTransportOverrides(ClientRequest request) {
+        if (!request.cookies().isEmpty() || request.httpRequest() != null) {
+            throw new IdpServiceTokenRequestException("SERVICE cookies and native transport customizers are not allowed");
+        }
+        for (String name : request.headers().headerNames()) {
+            String header = name.toLowerCase(Locale.ROOT);
+            if (header.equals("cookie") || header.equals("proxy-authorization") || header.equals("host")
+                    || header.equals(":authority") || header.equals("forwarded") || header.startsWith("x-forwarded-")
+                    || header.equals("x-original-url") || header.equals("x-rewrite-url")
+                    || header.equals("x-envoy-original-dst-host") || header.equals("x-envoy-original-path")) {
+                throw new IdpServiceTokenRequestException("SERVICE credential and target override headers are not allowed");
+            }
+        }
+    }
+
+    private synchronized HttpClient ownedHttpClient() {
+        if (ownedHttpClient == null) {
+            ownedHttpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER)
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .proxy(new ProxySelector() {
+                        @Override
+                        public List<Proxy> select(URI uri) {
+                            return List.of(Proxy.NO_PROXY);
+                        }
+
+                        @Override
+                        public void connectFailed(URI uri, SocketAddress address, IOException failure) {
+                            // Direct transport has no proxy to mark failed; the connector reports the request failure.
+                        }
+                    }).build();
+        }
+        return ownedHttpClient;
+    }
+
+    @Override
+    public synchronized void destroy() {
+        if (ownedHttpClient != null) {
+            ownedHttpClient.shutdownNow();
+        }
     }
 
     private Mono<ClientResponse> exchange(

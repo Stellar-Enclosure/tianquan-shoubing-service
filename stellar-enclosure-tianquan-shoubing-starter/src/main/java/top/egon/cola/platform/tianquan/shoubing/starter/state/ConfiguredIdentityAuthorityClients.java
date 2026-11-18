@@ -11,6 +11,7 @@ import top.egon.cola.platform.tianquan.shoubing.contract.state.IdentityAuthority
 import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceOAuth2Client;
 import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpServiceTokenRequest;
+import top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.TrustedIssuerRegistry;
 
 /** Finite issuer-to-client routing; configuration is validated without acquiring or sharing a USER credential. */
@@ -20,6 +21,12 @@ public final class ConfiguredIdentityAuthorityClients implements IdentityAuthori
 
     public ConfiguredIdentityAuthorityClients(IdentityAuthorityProperties properties, IdpStarterProperties starter,
             TrustedIssuerRegistry issuers, IdpServiceOAuth2Client serviceOAuth, ObjectMapper mapper) {
+        this(properties, starter, issuers, serviceOAuth, mapper, IdpTransportBindingRegistry.empty());
+    }
+
+    public ConfiguredIdentityAuthorityClients(IdentityAuthorityProperties properties, IdpStarterProperties starter,
+            TrustedIssuerRegistry issuers, IdpServiceOAuth2Client serviceOAuth, ObjectMapper mapper,
+            IdpTransportBindingRegistry bindings) {
         Objects.requireNonNull(properties, "properties");
         Objects.requireNonNull(serviceOAuth, "serviceOAuth");
         var transport = HttpIdentityAuthorityClient.boundedTransport(properties.getTimeout());
@@ -51,7 +58,8 @@ public final class ConfiguredIdentityAuthorityClients implements IdentityAuthori
                     binding.getAudience(), binding.getContext(), binding.getTenantId(), Set.copyOf(binding.getScopes()));
             var key = serviceOAuth.authorizationKey(request);
             if (!binding.getIssuer().toASCIIString().equals(key.issuer()) || values.putIfAbsent(new AuthorityBinding(binding.getIssuer(), sourceResource),
-                    new HttpIdentityAuthorityClient(properties.getBaseUri(), transport, mapper, serviceOAuth, request)) != null) {
+                    new HttpIdentityAuthorityClient(properties.getBaseUri(), transport, mapper, serviceOAuth, request,
+                            bindings, binding.getTransportBindings(), properties.getTimeout())) != null) {
                 throw new IllegalStateException("IDENTITY_AUTHORITY_REGISTRATION_INVALID");
             }
         });

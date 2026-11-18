@@ -6,6 +6,7 @@ import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -111,6 +112,8 @@ public class IdpStarterProperties {
     private Migration migration = new Migration();
 
     /** Standard Spring OAuth2 Client machine-token settings. */
+    @Valid
+    @NotNull
     private ServiceClient serviceClient = new ServiceClient();
 
     /** Local RPC selectors and provider policies; credentials never come from request metadata. */
@@ -978,6 +981,20 @@ public class IdpStarterProperties {
         private ServiceTokenContext scopeContext;
         @NotNull @Size(max = 64) @Builder.Default
         private Set<@NotNull @Pattern(regexp = "[A-Za-z0-9._:-]{1,128}") String> scopes = Set.of();
+
+        /** References the component-rpc deployment binding; never resolved through HTTP transport routes. */
+        @Pattern(regexp = "[A-Za-z0-9._:-]{1,128}")
+        private String transportBindingId;
+        @Positive
+        private Long transportBindingVersion;
+
+        /** Step 13 consumes the optional pair without deriving a network target from identity selectors. */
+        @AssertTrue
+        public boolean isTransportBindingReferenceValid() {
+            return transportBindingId == null && transportBindingVersion == null
+                    || transportBindingId != null && !transportBindingId.isBlank()
+                    && transportBindingVersion != null && transportBindingVersion > 0L;
+        }
 
         @AssertTrue
         public boolean isSelectorValid() {
