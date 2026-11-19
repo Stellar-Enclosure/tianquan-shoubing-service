@@ -54,9 +54,16 @@ public final class IdpRpcClientCredentialInterceptorFactory
     @Qualifier("idpServiceOAuth2Client") private final IdpServiceOAuth2Client serviceClient;
     @Qualifier("idpStarterProperties") private final IdpStarterProperties properties;
     @Qualifier("defaultValidator") private final Validator validator;
+    @Qualifier("idpRpcClientTenantResolver") private final IdpRpcClientTenantResolver tenantResolver;
 
     /** Preserves the existing USER-relay-only entry point. */
-    public IdpRpcClientCredentialInterceptorFactory() { this(null, new IdpStarterProperties(), null); }
+    public IdpRpcClientCredentialInterceptorFactory() { this(null, new IdpStarterProperties(), null, null); }
+
+    /** Existing consumers keep the verified IdP-principal strategy unless they explicitly opt in. */
+    public static IdpRpcClientCredentialInterceptorFactory createConfigured(IdpServiceOAuth2Client serviceClient,
+            IdpStarterProperties properties, Validator validator) {
+        return new IdpRpcClientCredentialInterceptorFactory(serviceClient, properties, validator, null);
+    }
 
     @PostConstruct
     public void validateConfiguration() {
@@ -100,7 +107,15 @@ public final class IdpRpcClientCredentialInterceptorFactory
                 && authentication.getPrincipal() instanceof IdpPrincipal verified) {
             principal = verified;
         }
-        String tenant = binding.getScopeContext() == ServiceTokenContext.TENANT && principal != null ? principal.tenantId() : null;
+        String tenant = null;
+        if (binding.getScopeContext() == ServiceTokenContext.TENANT) {
+            if (tenantResolver != null) {
+                var resolved = tenantResolver.resolve(invocation, authentication);
+                if (resolved == null) { throw new IllegalStateException("RPC tenant resolver returned no decision"); }
+                tenant = resolved.orElse(null);
+            }
+            if (tenant == null && principal != null) { tenant = principal.tenantId(); }
+        }
         String registration = binding.getScopeContext() == ServiceTokenContext.PLATFORM ? binding.getRegistrationId()
                 : tenant == null ? null : binding.getTenantRegistrationIds().get(tenant);
         if (registration == null) { throw new IllegalStateException("RPC tenant registration is unavailable"); }

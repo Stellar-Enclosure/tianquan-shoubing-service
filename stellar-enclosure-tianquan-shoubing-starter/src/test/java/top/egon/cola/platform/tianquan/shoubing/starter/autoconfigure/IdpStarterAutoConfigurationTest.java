@@ -63,6 +63,7 @@ import top.egon.cola.platform.tianquan.shoubing.starter.security.ServiceScopeAut
 import top.egon.cola.platform.tianquan.shoubing.starter.security.UserAccessTokenVerifier;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcBearerServerInterceptor;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcClientCredentialInterceptorFactory;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcClientTenantResolver;
 import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityOAuthClientStateReader;
 import top.egon.cola.platform.tianquan.shoubing.starter.state.IdentityResourceServerStateReader;
 
@@ -277,6 +278,60 @@ class IdpStarterAutoConfigurationTest {
                     }
                     verifyNoInteractions(client);
                 });
+    }
+
+    @Test
+    void onlyTheExplicitNamedTenantResolverOptsIntoTheDefaultRpcFactory() {
+        for (String beanName : List.of("idpRpcClientTenantResolver", "unrelatedTenantResolver")) {
+            var client = mock(IdpServiceOAuth2Client.class);
+            var resolutions = new java.util.concurrent.atomic.AtomicInteger();
+            IdpRpcClientTenantResolver resolver = (invocation, authentication) -> {
+                resolutions.incrementAndGet();
+                return java.util.Optional.of("tenant-1");
+            };
+            contextRunner.withBean("idpServiceOAuth2Client", IdpServiceOAuth2Client.class, () -> client)
+                    .withBean(beanName, IdpRpcClientTenantResolver.class, () -> resolver)
+                    .withPropertyValues(consumerTenantSettings()).run(context -> {
+                        assertThat(context).hasNotFailed().hasSingleBean(IdpRpcClientCredentialInterceptorFactory.class);
+                        var factory = context.getBean("idpRpcClientCredentialInterceptorFactory", IdpRpcClientCredentialInterceptorFactory.class);
+                        var generic = new RpcGenericInvocation("inventory-native", "example.Inventory", "internal", "v1",
+                                "example.Inventory/Read", new byte[]{1}, 1000);
+                        var target = new RpcServiceTargetVO("inventory-native", 2L, "workloads", "inventory-rpc", 9090, Set.of("example.Inventory/Read"));
+                        var invocation = RpcClientInvocation.generic(generic, new RpcProcessIdentity("orders", "test", "local", 1, "test"), "call-1", target);
+                        if (beanName.equals("idpRpcClientTenantResolver")) {
+                            assertThat(factory.create(invocation)).isNotNull();
+                            assertThat(resolutions.get()).isOne();
+                        } else {
+                            assertThatThrownBy(() -> factory.create(invocation)).isInstanceOf(IllegalStateException.class)
+                                    .hasMessage("RPC tenant registration is unavailable");
+                            assertThat(resolutions.get()).isZero();
+                        }
+                        verifyNoInteractions(client);
+                    });
+        }
+    }
+
+    @Test
+    void optInTenantResolverCannotBypassStrictUnknownRpcKeyValidation() {
+        var resolutions = new java.util.concurrent.atomic.AtomicInteger();
+        contextRunner.withBean("idpServiceOAuth2Client", IdpServiceOAuth2Client.class, () -> mock(IdpServiceOAuth2Client.class))
+                .withBean("idpRpcClientTenantResolver", IdpRpcClientTenantResolver.class, () -> (invocation, authentication) -> {
+                    resolutions.incrementAndGet(); return java.util.Optional.of("tenant-1");
+                }).withPropertyValues(consumerTenantSettings())
+                .withPropertyValues("egon.cola.platform.tianquan.shoubing.rpc.consumer.bindings.inventory.unknown-authority=grant")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).hasStackTraceContaining("unknown-authority");
+                    assertThat(resolutions.get()).isZero();
+                });
+    }
+
+    private String[] consumerTenantSettings() {
+        return java.util.stream.Stream.concat(java.util.Arrays.stream(consumerSettings())
+                        .filter(value -> !value.contains(".registration-id="))
+                        .map(value -> value.replace("scope-context=PLATFORM", "scope-context=TENANT")),
+                java.util.stream.Stream.of("egon.cola.platform.tianquan.shoubing.rpc.consumer.bindings.inventory.tenant-registration-ids.tenant-1=tenant-inventory-client"))
+                .toArray(String[]::new);
     }
 
     @Test

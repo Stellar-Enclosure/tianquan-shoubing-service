@@ -24,6 +24,8 @@ import io.grpc.Context;
 import io.grpc.Status;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -297,6 +299,118 @@ class IdpRpcClientCredentialInterceptorFactoryTest {
             assertThat(channel.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
             assertThat(server.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
         }
+    }
+
+    @Test
+    void optInTenantIsCapturedSynchronouslyForLocallyAuthenticatedCaller() throws Exception {
+        var client = mock(IdpServiceOAuth2Client.class);
+        when(client.authorize(any())).thenReturn(accessToken());
+        var localAuthentication = UsernamePasswordAuthenticationToken.authenticated("local-projection", "", List.of());
+        SecurityContextHolder.getContext().setAuthentication(localAuthentication);
+        var currentTenant = new AtomicReference<>("tenant-1");
+        var resolutions = new AtomicInteger();
+        var invocation = IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process());
+        var factory = optInFactory(client, (actual, authentication) -> {
+            assertThat(actual).isSameAs(invocation);
+            assertThat(authentication).isSameAs(localAuthentication);
+            resolutions.incrementAndGet();
+            return Optional.of(currentTenant.get());
+        });
+        var interceptor = factory.create(invocation);
+        assertThat(resolutions.get()).isOne();
+        SecurityContextHolder.clearContext();
+        currentTenant.set("untrusted-worker-tenant");
+        var channel = new CapturingChannel();
+        interceptor.interceptCall(realMethod(), CallOptions.DEFAULT, channel);
+        var queued = new AtomicReference<Runnable>();
+        var applier = new RecordingApplier();
+        channel.options.getCredentials().applyRequestMetadata(requestInfo(), queued::set, applier);
+        verifyNoInteractions(client);
+        try (var executor = Executors.newSingleThreadExecutor()) { executor.submit(queued.get()).get(5, TimeUnit.SECONDS); }
+        verify(client).authorize(new IdpServiceTokenRequest("tenant-inventory-client", "orders-app", IdpRpcBindingPropertiesTest.RESOURCE,
+                ServiceTokenContext.TENANT, "tenant-1", Set.of("inventory:read")));
+        assertThat(resolutions.get()).isOne();
+        assertThat(applier.completions.get()).isOne();
+    }
+
+    private IdpRpcClientCredentialInterceptorFactory optInFactory(IdpServiceOAuth2Client client,
+            IdpRpcClientTenantResolver resolver) {
+        return IdpRpcClientCredentialInterceptorFactory.createConfigured(client,
+                IdpRpcBindingPropertiesTest.properties(ServiceTokenContext.TENANT), validator, resolver);
+    }
+
+    @Test
+    void tenantResolverEmptyRetainsVerifiedPrincipalAndExplicitValueCanSelectAnotherApprovedTenant() throws Exception {
+        var client = mock(IdpServiceOAuth2Client.class);
+        when(client.authorize(any())).thenReturn(accessToken());
+        var invocation = IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process());
+        for (boolean override : List.of(false, true)) {
+            var properties = IdpRpcBindingPropertiesTest.properties(ServiceTokenContext.TENANT);
+            properties.getRpc().getConsumer().getBindings().get("inventory").setTenantRegistrationIds(
+                    java.util.Map.of("tenant-1", "tenant-inventory-client", "tenant-2", "target-inventory-client"));
+            var selected = IdpRpcClientCredentialInterceptorFactory.createConfigured(client, properties, validator,
+                    (ignored, authentication) -> override ? Optional.of("tenant-2") : Optional.empty());
+            var interceptor = new AtomicReference<ClientInterceptor>();
+            IdpRpcSecurityContext.with(principal(), "verified-user").run(() -> interceptor.set(selected.create(invocation)));
+            var channel = new CapturingChannel();
+            interceptor.get().interceptCall(realMethod(), CallOptions.DEFAULT, channel);
+            var applier = new RecordingApplier();
+            channel.options.getCredentials().applyRequestMetadata(requestInfo(), Runnable::run, applier);
+            assertThat(applier.completions.get()).isOne();
+        }
+        verify(client).authorize(new IdpServiceTokenRequest("tenant-inventory-client", "orders-app", IdpRpcBindingPropertiesTest.RESOURCE,
+                ServiceTokenContext.TENANT, "tenant-1", Set.of("inventory:read")));
+        verify(client).authorize(new IdpServiceTokenRequest("target-inventory-client", "orders-app", IdpRpcBindingPropertiesTest.RESOURCE,
+                ServiceTokenContext.TENANT, "tenant-2", Set.of("inventory:read")));
+    }
+
+    @Test
+    void nullDecisionAndResolverDenialNeverFallBackToValidPrincipal() throws Exception {
+        var client = mock(IdpServiceOAuth2Client.class);
+        var invocation = IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process());
+        List<IdpRpcClientTenantResolver> resolvers = List.of((ignored, authentication) -> null,
+                (ignored, authentication) -> { throw new IllegalStateException("controlled denial"); });
+        for (var resolver : resolvers) {
+            IdpRpcSecurityContext.with(principal(), "verified-user").run(() ->
+                    assertThatThrownBy(() -> optInFactory(client, resolver).create(invocation)).isInstanceOf(IllegalStateException.class));
+        }
+        verifyNoInteractions(client);
+    }
+
+    @Test
+    void explicitEmptyBlankOrUnregisteredTenantNeverFallsBack() throws Exception {
+        var client = mock(IdpServiceOAuth2Client.class);
+        var invocation = IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process());
+        for (String invalid : List.of("", " ", "tenant-unregistered")) {
+            IdpRpcSecurityContext.with(principal(), "verified-user").run(() -> assertThatThrownBy(() ->
+                    optInFactory(client, (ignored, authentication) -> Optional.of(invalid)).create(invocation))
+                    .isInstanceOf(IllegalStateException.class));
+        }
+        verifyNoInteractions(client);
+    }
+
+    @Test
+    void resolverIsNeverCalledBeforeNativeBindingApprovalOrForOtherCredentialModes() throws Exception {
+        var client = mock(IdpServiceOAuth2Client.class);
+        var resolutions = new AtomicInteger();
+        IdpRpcClientTenantResolver resolver = (ignored, authentication) -> { resolutions.incrementAndGet(); return Optional.of("tenant-1"); };
+        var tenantFactory = optInFactory(client, resolver);
+        var wrongProcess = IdpRpcBindingPropertiesTest.invocation(new RpcProcessIdentity("unapproved", "test", "local", 1, "test"));
+        assertThatThrownBy(() -> tenantFactory.create(wrongProcess)).isInstanceOf(IllegalStateException.class);
+        var otherTarget = new top.egon.cola.component.rpc.consumer.reference.RpcServiceTargetVO("other-rpc", 1, "apps-test", "other-rpc", 18122,
+                Set.of(IdpRpcBindingPropertiesTest.METHOD));
+        var generic = new RpcGenericInvocation("other-rpc", IdpRpcBindingPropertiesTest.SERVICE, "internal", "v1",
+                IdpRpcBindingPropertiesTest.METHOD, new byte[]{1}, 1000);
+        assertThatThrownBy(() -> tenantFactory.create(RpcClientInvocation.generic(generic, IdpRpcBindingPropertiesTest.process(), "call-1", otherTarget)))
+                .isInstanceOf(IllegalStateException.class);
+        var invocation = IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process());
+        var platform = IdpRpcBindingPropertiesTest.properties(ServiceTokenContext.PLATFORM);
+        assertThat(IdpRpcClientCredentialInterceptorFactory.createConfigured(client, platform, validator, resolver).create(invocation)).isNotNull();
+        platform.getRpc().getConsumer().getBindings().get("inventory").setMode(RpcConsumerModeEnum.USER_RELAY);
+        IdpRpcSecurityContext.with(principal(), "verified-user").run(() -> assertThat(
+                IdpRpcClientCredentialInterceptorFactory.createConfigured(client, platform, validator, resolver).create(invocation)).isNotNull());
+        assertThat(resolutions.get()).isZero();
+        verifyNoInteractions(client);
     }
 
     @Test

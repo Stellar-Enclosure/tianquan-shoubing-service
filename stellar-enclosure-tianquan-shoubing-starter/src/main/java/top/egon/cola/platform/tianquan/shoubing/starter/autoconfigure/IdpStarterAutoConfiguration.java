@@ -62,6 +62,7 @@ import top.egon.cola.platform.tianquan.shoubing.starter.security.ServiceScopeAut
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcAdmissionIdentityResolver;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcBearerServerInterceptor;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcClientCredentialInterceptorFactory;
+import top.egon.cola.platform.tianquan.shoubing.starter.security.rpc.IdpRpcClientTenantResolver;
 import top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder;
 import top.egon.cola.platform.tianquan.shoubing.starter.audit.OAuthUsageObservationProperties;
 import top.egon.cola.platform.tianquan.shoubing.starter.security.IdpObservedVerificationComponent;
@@ -635,7 +636,19 @@ public class IdpStarterAutoConfiguration {
                     @Qualifier("idpStarterProperties") IdpStarterProperties properties,
                     @Qualifier("idpServiceOAuth2Client") ObjectProvider<IdpServiceOAuth2Client> clients,
                     @Qualifier("defaultValidator") ObjectProvider<jakarta.validation.Validator> validators,
-                    Environment environment) {
+                    Environment environment,
+                    @Qualifier("idpRpcClientTenantResolver") ObjectProvider<IdpRpcClientTenantResolver> tenantResolvers) {
+        validateRpcBindings(properties, validators.getIfAvailable(), environment);
+        var resolver = tenantResolvers.getIfAvailable();
+        return resolver == null
+                ? IdpRpcClientCredentialInterceptorFactory.createConfigured(clients.getIfAvailable(), properties, validators.getIfAvailable())
+                : IdpRpcClientCredentialInterceptorFactory.createConfigured(clients.getIfAvailable(), properties, validators.getIfAvailable(), resolver);
+    }
+
+    /** Preserves direct configured callers with strict validation and the original principal strategy. */
+    public IdpRpcClientCredentialInterceptorFactory idpRpcClientCredentialInterceptorFactory(
+            IdpStarterProperties properties, ObjectProvider<IdpServiceOAuth2Client> clients,
+            ObjectProvider<jakarta.validation.Validator> validators, Environment environment) {
         validateRpcBindings(properties, validators.getIfAvailable(), environment);
         return IdpRpcClientCredentialInterceptorFactory.createConfigured(clients.getIfAvailable(), properties, validators.getIfAvailable());
     }
