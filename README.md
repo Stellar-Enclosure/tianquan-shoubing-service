@@ -8,7 +8,7 @@ Identity, OAuth2/OIDC authorization-server and resource-token infrastructure for
 - Configure OAuth clients, redirect URIs, client secrets and permitted resource URIs; implement authorization-code, refresh-token and client-credentials processing through Spring Authorization Server.
 - Expose OAuth/OIDC metadata, consent, token/revocation and JWK support; manage signing-key publication, activation and retirement.
 - Manage resource servers and client-resource grants; issue resource-bound USER/SERVICE tokens and validate the associated audience/version/scope constraints.
-- Expose identity audit APIs and reusable service-side token validation/client support for platform applications and gateways.
+- Expose identity audit APIs and reusable service-side token validation/client support for platform applications.
 
 ## Modules and integration
 
@@ -17,10 +17,9 @@ Identity, OAuth2/OIDC authorization-server and resource-token infrastructure for
 | [Core](stellar-enclosure-tianquan-shoubing-core/) | Identity/token/resource contracts, verification and shared security primitives. |
 | [RPC contract](stellar-enclosure-tianquan-shoubing-rpc-contract/) | Cross-process Protobuf/gRPC identity contracts. |
 | [Starter](stellar-enclosure-tianquan-shoubing-starter/) | Spring integration for resource-bound bearer validation and service-client support. |
-| [Gateway adapter](stellar-enclosure-tianquan-shoubing-gateway-adapter/) | Shoubing identity/resource validation in the Yuheng gateway pipeline. |
 | [Admin](stellar-enclosure-tianquan-shoubing-admin/) | Executable identity administration and OAuth/OIDC authorization server with persistence and key management. |
 
-Management APIs use `/api/v1/tianquan-shoubing`; [tianquan-shoubing-web](https://github.com/Stellar-Enclosure/tianquan-shoubing-web) provides the console. Yuheng Edge is the browser OAuth client/BFF and retains tokens on the server. Tianshu and downstream services consume SERVICE tokens for their own resource/scope checks.
+Management APIs use `/api/v1/tianquan-shoubing`. The administration console is provided by [tianquan-shoubing-web](https://github.com/Stellar-Enclosure/tianquan-shoubing-web). Browser applications register as PUBLIC OAuth clients and use the authorization code flow with S256 PKCE. They call each approved resource through Cilium Gateway with a bearer token issued for that resource. Resource servers use the Shoubing Starter to verify identity, audience and current token state. Tianshu and service-to-service callers use scoped SERVICE tokens.
 
 At the code level, Shoubing handles identity and token issuance; [Jianshen](https://github.com/Stellar-Enclosure/tianquan-jianshen-service) owns role graphs, active roles and fine-grained USER authorization. OAuth resource grants here do not replace Jianshen's function/data/field decisions. A package build does not establish a working browser login, consent, revocation or key-rotation flow against live infrastructure.
 
@@ -63,7 +62,7 @@ The bootstrap installs parent/BOM models before building components and business
 
 ## Publish to Maven Central
 
-Publishes the Shoubing parent, core, RPC contract and Starter. Admin and the gateway adapter remain internal and are excluded. Requires the published platform parent and Components.
+Publishes the Shoubing parent, core, RPC contract and Starter. The executable Admin is delivered internally. Requires the published platform parent and Components.
 
 Run these commands from this repository. Configure a Central Portal token under Maven server ID `central` and a local GPG signing key; credentials stay outside Git. See the [credential setup and initial dependency order](https://github.com/Stellar-Enclosure/Stellar-Enclosure-Parent/blob/main/docs/first-release.md).
 

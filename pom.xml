@@ -27,7 +27,6 @@
         <module>stellar-enclosure-tianquan-shoubing-core</module>
         <module>stellar-enclosure-tianquan-shoubing-rpc-contract</module>
         <module>stellar-enclosure-tianquan-shoubing-starter</module>
-        <module>stellar-enclosure-tianquan-shoubing-gateway-adapter</module>
         <module>stellar-enclosure-tianquan-shoubing-admin</module>
     </modules>
 
@@ -50,18 +49,8 @@
             </dependency>
             <dependency>
                 <groupId>top.egon</groupId>
-                <artifactId>stellar-enclosure-tianquan-shoubing-gateway-adapter</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>top.egon</groupId>
                 <artifactId>stellar-enclosure-tianquan-shoubing-admin</artifactId>
                 <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>top.egon</groupId>
-                <artifactId>stellar-enclosure-yuheng-core</artifactId>
-                <version>${stellar-enclosure.yuheng.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
