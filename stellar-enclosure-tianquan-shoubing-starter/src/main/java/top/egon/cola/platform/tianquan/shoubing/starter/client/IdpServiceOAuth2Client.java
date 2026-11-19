@@ -64,6 +64,16 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
     private static final Duration ACTIVE_KEY_WINDOW = Duration.ofMinutes(2);
     private static final long MAX_REFRESH_JITTER_MILLIS = 5_000L;
 
+    // Only established machine-readable categories may cross the bounded-worker boundary.
+    // Never forward arbitrary OAuth descriptions, endpoints, exception messages or causes.
+    private static final Set<String> SAFE_BOUNDED_FAILURES = Set.of(
+            "invalid_client", "invalid_grant", "invalid_token", "unauthorized_client", "invalid_token_response",
+            "invalid_scope", "access_denied", "insufficient_scope", "request_invalid", "registration_invalid",
+            "registration_identity_unavailable", "app_id_mismatch", "issuer_mismatch", "issuer_untrusted",
+            "issuer_unconfigured", "issuer_context_mismatch", "registration_uri_invalid", "token_origin_mismatch",
+            "token_uri_invalid", "audience_invalid", "transport_binding_required", "transport_binding_invalid",
+            "credential_version_unconfigured", "credential_version_regression");
+
     @Qualifier("idpOAuth2AuthorizedClientManager")
     private final OAuth2AuthorizedClientManager manager;
     @Qualifier("idpClientCredentialsRequestEntityConverter")
@@ -222,6 +232,10 @@ public class IdpServiceOAuth2Client implements AutoCloseable {
         } catch (TimeoutException expired) {
             future.cancel(true); throw new IdpServiceAuthorizationException("authorization_timeout", null);
         } catch (ExecutionException failed) {
+            if (failed.getCause() instanceof IdpServiceAuthorizationException authorization
+                    && authorization.errorCode() != null && SAFE_BOUNDED_FAILURES.contains(authorization.errorCode())) {
+                throw new IdpServiceAuthorizationException(authorization.errorCode(), null);
+            }
             throw new IdpServiceAuthorizationException("authorization_failed", null);
         }
     }

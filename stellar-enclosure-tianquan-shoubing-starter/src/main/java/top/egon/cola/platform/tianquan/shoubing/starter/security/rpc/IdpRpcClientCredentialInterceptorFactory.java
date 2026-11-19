@@ -108,11 +108,15 @@ public final class IdpRpcClientCredentialInterceptorFactory
             principal = verified;
         }
         String tenant = null;
+        String expectedIssuer = null;
         if (binding.getScopeContext() == ServiceTokenContext.TENANT) {
             if (tenantResolver != null) {
                 var resolved = tenantResolver.resolve(invocation, authentication);
                 if (resolved == null) { throw new IllegalStateException("RPC tenant resolver returned no decision"); }
                 tenant = resolved.orElse(null);
+                var issuer = tenantResolver.expectedIssuer(invocation, authentication);
+                if (issuer == null) { throw new IllegalStateException("RPC issuer resolver returned no decision"); }
+                expectedIssuer = issuer.map(IdpRpcClientCredentialInterceptorFactory::canonicalIssuer).orElse(null);
             }
             if (tenant == null && principal != null) { tenant = principal.tenantId(); }
         }
@@ -121,8 +125,32 @@ public final class IdpRpcClientCredentialInterceptorFactory
         if (registration == null) { throw new IllegalStateException("RPC tenant registration is unavailable"); }
         final IdpServiceTokenRequest request = new IdpServiceTokenRequest(registration, binding.getAppId(), binding.getResourceUri(),
                 binding.getScopeContext(), tenant, binding.getScopes());
+        final String capturedIssuer = expectedIssuer;
         return boundInterceptor(invocation, binding.getFullMethodName(),
-                () -> bearer(serviceClient.authorize(request).getTokenValue()));
+                () -> bearer((capturedIssuer == null ? serviceClient.authorize(request)
+                        : serviceClient.authorizeBounded(request, capturedIssuer, remainingAuthorizationTime())).getTokenValue()));
+    }
+
+    private static String canonicalIssuer(String value) {
+        try {
+            var issuer = java.net.URI.create(value);
+            if (!"https".equals(issuer.getScheme()) || issuer.getHost() == null || issuer.isOpaque()
+                    || issuer.getRawUserInfo() != null || issuer.getRawQuery() != null || issuer.getRawFragment() != null
+                    || !issuer.equals(issuer.normalize()) || !value.equals(issuer.toASCIIString()) || value.length() > 2048) {
+                throw new IllegalArgumentException();
+            }
+            return value;
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalStateException("RPC issuer binding is invalid");
+        }
+    }
+
+    private static java.time.Duration remainingAuthorizationTime() {
+        var deadline = Context.current().getDeadline();
+        if (deadline == null) { throw new IdpServiceTokenRequestException("RPC credential deadline is required"); }
+        long remaining = deadline.timeRemaining(java.util.concurrent.TimeUnit.NANOSECONDS);
+        if (remaining <= 0) { throw new IdpServiceAuthorizationException("authorization_timeout", null); }
+        return java.time.Duration.ofNanos(Math.min(remaining, java.time.Duration.ofSeconds(30).toNanos()));
     }
 
     private ClientInterceptor boundInterceptor(RpcClientInvocation invocation, String fullMethodName,

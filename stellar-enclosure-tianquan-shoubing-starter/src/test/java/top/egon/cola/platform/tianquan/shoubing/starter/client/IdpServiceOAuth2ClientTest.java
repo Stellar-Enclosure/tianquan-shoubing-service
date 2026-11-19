@@ -92,6 +92,32 @@ class IdpServiceOAuth2ClientTest {
     }
 
     @Test
+    void serviceClientManagerRetainsFieldAndGeneratedConstructorQualifierContract() throws Exception {
+        var expected = Map.of("manager", "idpOAuth2AuthorizedClientManager",
+                "converter", "idpClientCredentialsRequestEntityConverter", "clock", "idpClock",
+                "registrations", "clientRegistrationRepository", "authorizedClients", "idpOAuth2AuthorizedClientService",
+                "trustedIssuerRegistry", "trustedIssuerRegistry", "properties", "idpStarterProperties",
+                "metrics", "idpSecurityMetricsRecorder");
+        for (var entry : expected.entrySet()) {
+            assertThat(IdpServiceOAuth2Client.class.getDeclaredField(entry.getKey())
+                    .getAnnotation(org.springframework.beans.factory.annotation.Qualifier.class))
+                    .as("field qualifier for %s", entry.getKey()).isNotNull()
+                    .extracting(org.springframework.beans.factory.annotation.Qualifier::value).isEqualTo(entry.getValue());
+        }
+        var constructor = java.util.Arrays.stream(IdpServiceOAuth2Client.class.getDeclaredConstructors())
+                .filter(candidate -> candidate.getParameterCount() == 9).findFirst().orElseThrow();
+        for (var parameter : constructor.getParameters()) {
+            if (expected.containsKey(parameter.getName())) {
+                assertThat(parameter.getAnnotation(org.springframework.beans.factory.annotation.Qualifier.class))
+                        .as("generated constructor qualifier for %s", parameter.getName()).isNotNull()
+                        .extracting(org.springframework.beans.factory.annotation.Qualifier::value).isEqualTo(expected.get(parameter.getName()));
+            }
+        }
+        assertThat(IdpServiceOAuth2Client.class.getDeclaredField("SAFE_BOUNDED_FAILURES")
+                .getAnnotation(org.springframework.beans.factory.annotation.Qualifier.class)).isNull();
+    }
+
+    @Test
     void projectedCredentialRotationUsesOneGenerationAcrossTheRealSpringManager(@TempDir Path directory)
             throws Exception {
         Path projection = directory.resolve("registrations.json");
@@ -1166,6 +1192,42 @@ class IdpServiceOAuth2ClientTest {
     }
 
     @Test
+    void boundedAcquisitionRetainsOnlyWhitelistedSafeAuthorizationReasons() {
+        for (String code : List.of("invalid_client", "invalid_scope", "access_denied", "invalid_token_response")) {
+            var manager = mock(OAuth2AuthorizedClientManager.class);
+            when(manager.authorize(any(OAuth2AuthorizeRequest.class))).thenThrow(
+                    new org.springframework.security.oauth2.core.OAuth2AuthorizationException(
+                            new org.springframework.security.oauth2.core.OAuth2Error(code, "private-detail-sentinel", "https://private.invalid")));
+            var client = newClient(manager, mock(OAuth2AuthorizedClientService.class), Clock.systemUTC(), Duration.ofSeconds(60),
+                    serviceProperties(), registrations(registration()));
+            var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+            assertThatThrownBy(() -> client.authorizeBounded(request, ISSUER, Duration.ofSeconds(2)))
+                    .isInstanceOfSatisfying(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class,
+                            failure -> assertThat(failure.errorCode()).isEqualTo(code))
+                    .hasNoCause().hasMessageNotContaining("private-detail-sentinel").hasMessageNotContaining("private.invalid");
+        }
+    }
+
+    @Test
+    void boundedUnknownWorkerReasonsRemainUnavailableAndNeverExposeMessagesOrCauses() {
+        for (RuntimeException reason : List.of(
+                new org.springframework.security.oauth2.core.OAuth2AuthorizationException(
+                        new org.springframework.security.oauth2.core.OAuth2Error("private-detail-sentinel")),
+                new IdpServiceOAuth2Client.IdpServiceAuthorizationException(null,
+                        new IllegalStateException("private-detail-sentinel")))) {
+            var manager = mock(OAuth2AuthorizedClientManager.class);
+            when(manager.authorize(any(OAuth2AuthorizeRequest.class))).thenThrow(reason);
+            var client = newClient(manager, mock(OAuth2AuthorizedClientService.class), Clock.systemUTC(), Duration.ofSeconds(60),
+                    serviceProperties(), registrations(registration()));
+            var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
+            assertThatThrownBy(() -> client.authorizeBounded(request, ISSUER, Duration.ofSeconds(2)))
+                    .isInstanceOfSatisfying(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class,
+                            failure -> assertThat(failure.errorCode()).isEqualTo("authorization_failed"))
+                    .hasNoCause().hasMessageNotContaining("private-detail-sentinel");
+        }
+    }
+
+    @Test
     void boundedIssuerMismatchAndInvalidationFailureExposeNoUnderlyingDetails() {
         Instant now = Instant.parse("2026-10-10T00:00:00Z");
         var manager = mock(OAuth2AuthorizedClientManager.class);
@@ -1174,7 +1236,8 @@ class IdpServiceOAuth2ClientTest {
                 serviceProperties(), registrations(registration()));
         var request = request(REGISTRATION_ID, APP_ID, ServiceTokenContext.TENANT, "1001", Set.of("orders:read"));
         assertThatThrownBy(() -> client.authorizeBounded(request, "https://other.example", Duration.ofSeconds(1)))
-                .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class).hasNoCause();
+                .isInstanceOf(IdpServiceOAuth2Client.IdpServiceAuthorizationException.class).hasNoCause()
+                .hasMessageContaining("issuer_mismatch");
         verify(manager, never()).authorize(any(OAuth2AuthorizeRequest.class));
         org.mockito.Mockito.doThrow(new IllegalStateException("private-detail-sentinel")).when(authorizedClients)
                 .removeAuthorizedClient(any(), any());

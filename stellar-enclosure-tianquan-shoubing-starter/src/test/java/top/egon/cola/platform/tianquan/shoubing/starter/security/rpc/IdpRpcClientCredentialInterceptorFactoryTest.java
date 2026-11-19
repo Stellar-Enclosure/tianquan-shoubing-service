@@ -72,6 +72,18 @@ class IdpRpcClientCredentialInterceptorFactoryTest {
             new IdpRpcClientCredentialInterceptorFactory();
     private final LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
 
+    @Test
+    void optionalIssuerPinIsABackwardsCompatibleFunctionalResolverContract() throws Exception {
+        var method = IdpRpcClientTenantResolver.class.getMethod("expectedIssuer", RpcClientInvocation.class,
+                org.springframework.security.core.Authentication.class);
+        assertThat(method.isDefault()).isTrue();
+        assertThat(IdpRpcClientTenantResolver.class.getMethods()).filteredOn(candidate ->
+                java.lang.reflect.Modifier.isAbstract(candidate.getModifiers())).hasSize(1);
+        IdpRpcClientTenantResolver legacy = (invocation, authentication) -> Optional.of("17");
+        assertThat(method.invoke(legacy, IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process()), null))
+                .isEqualTo(Optional.empty());
+    }
+
     @BeforeEach void prepare() { validator.afterPropertiesSet(); }
 
     @AfterEach
@@ -578,6 +590,191 @@ class IdpRpcClientCredentialInterceptorFactoryTest {
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(5, TimeUnit.SECONDS)) { throw new AssertionError("bounded worker barrier timed out"); } }
         catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new AssertionError(interrupted); }
+    }
+
+    @Test
+    void issuerPinRejectsARegistrationRotatedAfterCaptureBeforeAnyBearerMetadata(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        try (var fixture = new ProjectedIssuerFixture(directory); var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var request = fixture.request();
+            assertThat(fixture.client.authorizationKey(request).issuer()).isEqualTo(ProjectedIssuerFixture.ISSUER_A);
+            var context = Context.current().withDeadlineAfter(5, TimeUnit.SECONDS, timer);
+            var calls = new AtomicInteger();
+            ScopedValue<String> issuerScope = ScopedValue.newInstance();
+            var resolver = new IdpRpcClientTenantResolver() {
+                @Override public Optional<String> resolve(RpcClientInvocation invocation, org.springframework.security.core.Authentication auth) {
+                    if (!issuerScope.isBound()) throw new IllegalStateException("test capability missing");
+                    return Optional.of("1001");
+                }
+                @Override public Optional<String> expectedIssuer(RpcClientInvocation invocation, org.springframework.security.core.Authentication auth) {
+                    calls.incrementAndGet(); return Optional.of(issuerScope.get());
+                }
+            };
+            try {
+                var interceptor = context.call(() -> ScopedValue.where(issuerScope, ProjectedIssuerFixture.ISSUER_A).call(() ->
+                        IdpRpcClientCredentialInterceptorFactory.createConfigured(fixture.client, fixture.properties, validator, resolver)
+                                .create(IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process()))));
+                var channel = new CapturingChannel();
+                interceptor.interceptCall(realMethod(), CallOptions.DEFAULT, channel).start(new ClientCall.Listener<>() { }, new Metadata());
+                var queued = new AtomicReference<Runnable>(); var applier = new RecordingApplier();
+                channel.options.getCredentials().applyRequestMetadata(requestInfo(), queued::set, applier);
+                fixture.write(ProjectedIssuerFixture.ISSUER_B, 2, "rotated-secret");
+                fixture.registrations.verifyAvailable();
+                // This second issuer is independently trusted and has an approved immutable TOKEN route.
+                // Prime its real OAuth cache: the issuer-pinned call must reject even a cached B token.
+                assertThat(fixture.client.authorizationKey(request).issuer()).isEqualTo(ProjectedIssuerFixture.ISSUER_B);
+                assertThat(fixture.client.authorize(request).getTokenValue()).isEqualTo("token-2");
+                assertThat(fixture.acquisitions.get()).isOne();
+                assertThat(issuerScope.isBound()).isFalse();
+                try (var worker = Executors.newSingleThreadExecutor()) { worker.submit(queued.get()).get(2, TimeUnit.SECONDS); }
+                assertThat(applier.headers).isNull();
+                assertThat(applier.status.getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+                assertThat(applier.completions.get()).isOne();
+                assertThat(calls.get()).isOne();
+                assertThat(fixture.acquisitions.get()).as("no second token acquisition under wrong issuer").isOne();
+            } finally { context.cancel(null); }
+        }
+    }
+
+    @Test
+    void pinnedIssuerAllowsNewSecretUnderTheSameIssuerAndUsesNewProjection(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        try (var fixture = new ProjectedIssuerFixture(directory); var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var context = Context.current().withDeadlineAfter(5, TimeUnit.SECONDS, timer);
+            try {
+                var resolver = new IdpRpcClientTenantResolver() {
+                    @Override public Optional<String> resolve(RpcClientInvocation invocation, org.springframework.security.core.Authentication auth) { return Optional.of("1001"); }
+                    @Override public Optional<String> expectedIssuer(RpcClientInvocation invocation, org.springframework.security.core.Authentication auth) { return Optional.of(ProjectedIssuerFixture.ISSUER_A); }
+                };
+                var interceptor = context.call(() -> IdpRpcClientCredentialInterceptorFactory.createConfigured(
+                        fixture.client, fixture.properties, validator, resolver)
+                        .create(IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process())));
+                var channel = new CapturingChannel();
+                interceptor.interceptCall(realMethod(), CallOptions.DEFAULT, channel).start(new ClientCall.Listener<>() { }, new Metadata());
+                var queued = new AtomicReference<Runnable>(); var applier = new RecordingApplier();
+                channel.options.getCredentials().applyRequestMetadata(requestInfo(), queued::set, applier);
+                fixture.write(ProjectedIssuerFixture.ISSUER_A, 2, "new-secret");
+                try (var worker = Executors.newSingleThreadExecutor()) { worker.submit(queued.get()).get(2, TimeUnit.SECONDS); }
+                assertThat(applier.status).isNull();
+                assertThat(applier.headers.getAll(RpcMetadataKeys.AUTHORIZATION)).containsExactly("Bearer token-2");
+                assertThat(fixture.observedSecret.get()).isEqualTo("new-secret");
+                assertThat(fixture.acquisitions.get()).isOne();
+            } finally { context.cancel(null); }
+        }
+    }
+
+    @Test
+    void pinnedIssuerAuthorizationIsBoundedByTheActualGrpcDeadlineAndNeverUsesUnpinnedAuthorize() throws Exception {
+        var client = mock(IdpServiceOAuth2Client.class); var duration = new AtomicReference<Duration>();
+        when(client.authorizeBounded(any(), any(), any())).thenAnswer(answer -> { duration.set(answer.getArgument(2)); return accessToken(); });
+        try (var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var context = Context.current().withDeadlineAfter(750, TimeUnit.MILLISECONDS, timer);
+            try {
+                var interceptor = context.call(() -> IdpRpcClientCredentialInterceptorFactory.createConfigured(client,
+                        IdpRpcBindingPropertiesTest.properties(ServiceTokenContext.TENANT), validator, issuerResolver(ProjectedIssuerFixture.ISSUER_A))
+                        .create(IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process())));
+                var channel = new CapturingChannel();
+                interceptor.interceptCall(realMethod(), CallOptions.DEFAULT, channel).start(new ClientCall.Listener<>() { }, new Metadata());
+                var applier = new RecordingApplier();
+                channel.options.getCredentials().applyRequestMetadata(requestInfo(), Runnable::run, applier);
+                assertThat(applier.status).isNull();
+                assertThat(duration.get()).isPositive().isLessThanOrEqualTo(Duration.ofMillis(750));
+                verify(client, org.mockito.Mockito.never()).authorize(any());
+            } finally { context.cancel(null); }
+        }
+    }
+
+    @Test
+    void pinWithoutDeadlineAndInvalidIssuerDecisionsFailBeforeAuthorization() throws Exception {
+        var client = mock(IdpServiceOAuth2Client.class);
+        var props = IdpRpcBindingPropertiesTest.properties(ServiceTokenContext.TENANT);
+        var interceptor = IdpRpcClientCredentialInterceptorFactory.createConfigured(client, props, validator,
+                issuerResolver(ProjectedIssuerFixture.ISSUER_A)).create(IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process()));
+        var channel = new CapturingChannel();
+        interceptor.interceptCall(realMethod(), CallOptions.DEFAULT, channel).start(new ClientCall.Listener<>() { }, new Metadata());
+        var applier = new RecordingApplier();
+        channel.options.getCredentials().applyRequestMetadata(requestInfo(), Runnable::run, applier);
+        assertThat(applier.status.getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        for (String invalid : List.of("", "http://issuer.example", "https://issuer.example/path?bad=1")) {
+            assertThatThrownBy(() -> IdpRpcClientCredentialInterceptorFactory.createConfigured(client, props, validator,
+                    issuerResolver(invalid)).create(IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process())))
+                    .isInstanceOf(IllegalStateException.class);
+        }
+        var nullResolver = new IdpRpcClientTenantResolver() {
+            @Override public Optional<String> resolve(RpcClientInvocation invocation, org.springframework.security.core.Authentication auth) { return Optional.of("tenant-1"); }
+            @Override public Optional<String> expectedIssuer(RpcClientInvocation invocation, org.springframework.security.core.Authentication auth) { return null; }
+        };
+        assertThatThrownBy(() -> IdpRpcClientCredentialInterceptorFactory.createConfigured(client, props, validator, nullResolver)
+                .create(IdpRpcBindingPropertiesTest.invocation(IdpRpcBindingPropertiesTest.process()))).isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(client);
+    }
+
+    private static IdpRpcClientTenantResolver issuerResolver(String issuer) {
+        return new IdpRpcClientTenantResolver() {
+            @Override public Optional<String> resolve(RpcClientInvocation invocation, org.springframework.security.core.Authentication authentication) { return Optional.of("tenant-1"); }
+            @Override public Optional<String> expectedIssuer(RpcClientInvocation invocation, org.springframework.security.core.Authentication authentication) { return Optional.of(issuer); }
+        };
+    }
+
+    private static final class ProjectedIssuerFixture implements AutoCloseable {
+        private static final String ISSUER_A = "https://identity.example.test/tenants/a";
+        private static final String ISSUER_B = "https://identity.example.test/tenants/b";
+        private static final String REGISTRATION = "tenant-inventory-client";
+        private final java.nio.file.Path file;
+        private final top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties properties;
+        private final top.egon.cola.platform.tianquan.shoubing.starter.client.ProjectedClientRegistrationRepository registrations;
+        private final IdpServiceOAuth2Client client;
+        private final AtomicInteger acquisitions = new AtomicInteger();
+        private final AtomicReference<String> observedSecret = new AtomicReference<>();
+
+        private ProjectedIssuerFixture(java.nio.file.Path directory) throws Exception {
+            file = directory.toRealPath().resolve("credentials.json"); write(ISSUER_A, 1, "old-secret");
+            properties = IdpRpcBindingPropertiesTest.properties(ServiceTokenContext.TENANT);
+            properties.getRpc().getConsumer().getBindings().get("inventory").setTenantRegistrationIds(java.util.Map.of("1001", REGISTRATION));
+            properties.getServiceClient().setAppId("orders-app");
+            properties.getServiceClient().setRegistrationId(REGISTRATION);
+            properties.getServiceClient().setTenantRegistrationIds(java.util.Map.of("1001", REGISTRATION));
+            properties.getServiceClient().setCredentialVersions(java.util.Map.of(REGISTRATION, 1L));
+            var issuers = new java.util.LinkedHashMap<String,top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties.TrustedIssuerSettings>();
+            for (String issuer : List.of(ISSUER_A,ISSUER_B)) {
+                var trusted = new top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarterProperties.TrustedIssuerSettings();
+                trusted.setIssuer(issuer); trusted.setJwksUri(issuer+"/jwks");
+                trusted.setRealmKey("tenant:1001:"+(issuer.endsWith("a")?"a":"b"));
+                trusted.setRealmType("TENANT"); trusted.setTenantId("1001"); trusted.setStatus("ACTIVE"); trusted.setTrustVersion(1L);
+                issuers.put(issuer.endsWith("a")?"a":"b", trusted);
+            }
+            properties.setTrustedIssuers(issuers);
+            registrations = new top.egon.cola.platform.tianquan.shoubing.starter.client.ProjectedClientRegistrationRepository(file,
+                    new com.fasterxml.jackson.databind.ObjectMapper(), java.util.Map.of(REGISTRATION,1L));
+            registrations.verifyAvailable();
+            var routes = new java.util.ArrayList<top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO>();
+            for (String issuer : List.of(ISSUER_A,ISSUER_B)) {
+                routes.add(new top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO(issuer.endsWith("a")?"token-a":"token-b",1,
+                        java.net.URI.create(issuer),java.net.URI.create(issuer+"/token"),IdpRpcBindingPropertiesTest.RESOURCE,REGISTRATION,
+                        top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO.Operation.TOKEN,"POST",java.net.URI.create(issuer+"/token").getRawPath(),
+                        "permission-prod","tianquan-shoubing-http",18080,top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingVO.Transport.HTTP));
+            }
+            var converter = new top.egon.cola.platform.tianquan.shoubing.starter.client.IdpClientCredentialsRequestEntityConverter(
+                    new top.egon.cola.platform.tianquan.shoubing.starter.client.IdpTransportBindingRegistry(routes));
+            var manager = mock(org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager.class);
+            var store = new org.springframework.security.oauth2.client.InMemoryOAuth2AuthorizedClientService(registrations);
+            when(manager.authorize(any(org.springframework.security.oauth2.client.OAuth2AuthorizeRequest.class))).thenAnswer(answer -> {
+                org.springframework.security.oauth2.client.OAuth2AuthorizeRequest request = answer.getArgument(0);
+                var registration = registrations.findByRegistrationId(REGISTRATION); observedSecret.set(registration.getClientSecret());
+                acquisitions.incrementAndGet();
+                var token = new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER,registration.getClientSecret().equals("old-secret")?"token-1":"token-2",
+                        Instant.now(),Instant.now().plusSeconds(300),Set.of("inventory:read"));
+                var authorized = new org.springframework.security.oauth2.client.OAuth2AuthorizedClient(registration,request.getPrincipal().getName(),token);
+                store.saveAuthorizedClient(authorized,request.getPrincipal()); return authorized;
+            });
+            client = IdpServiceOAuth2Client.createConfigured(manager,converter,java.time.Clock.systemUTC(),Duration.ofSeconds(60),
+                    registrations,store,new top.egon.cola.platform.tianquan.shoubing.starter.security.TrustedIssuerRegistry(properties),properties);
+        }
+        private IdpServiceTokenRequest request() { return new IdpServiceTokenRequest(REGISTRATION,"orders-app",IdpRpcBindingPropertiesTest.RESOURCE,ServiceTokenContext.TENANT,"1001",Set.of("inventory:read")); }
+        private void write(String issuer,long version,String secret) throws Exception {
+            java.nio.file.Files.writeString(file,"{\"registrations\":[{\"registrationId\":\""+REGISTRATION+"\",\"issuer\":\""+issuer+"\",\"tokenUri\":\""+issuer+"/token\",\"clientId\":\"client\",\"clientSecret\":\""+secret+"\",\"credentialVersion\":"+version+"}]}");
+        }
+        @Override public void close() { client.close(); }
     }
 
     private IdpRpcClientCredentialInterceptorFactory configured(IdpServiceOAuth2Client client, ServiceTokenContext context) {

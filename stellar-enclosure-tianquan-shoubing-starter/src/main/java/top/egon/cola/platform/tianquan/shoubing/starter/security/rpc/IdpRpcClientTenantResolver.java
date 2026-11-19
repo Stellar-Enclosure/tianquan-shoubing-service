@@ -19,4 +19,14 @@ public interface IdpRpcClientTenantResolver {
      * fallback; implementations must reject an invalid context for a target they take ownership of.
      */
     Optional<String> resolve(RpcClientInvocation invocation, Authentication authentication);
+
+    /**
+     * Optional canonical issuer pin captured synchronously under the same verified SERVICE/TENANT
+     * binding as resolve. A pin is enforced inside the OAuth client's registration snapshot;
+     * the eventual asynchronous credential task never calls this resolver again.
+     * Existing functional implementations retain their original unpinned issuer strategy.
+     */
+    default Optional<String> expectedIssuer(RpcClientInvocation invocation, Authentication authentication) {
+        return Optional.empty();
+    }
 }
