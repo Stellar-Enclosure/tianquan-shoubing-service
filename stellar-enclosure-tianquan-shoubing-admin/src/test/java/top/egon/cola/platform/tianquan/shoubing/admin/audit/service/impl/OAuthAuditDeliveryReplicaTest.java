@@ -5,16 +5,20 @@ import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionSystemException;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 import top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditInboxBO;
+import top.egon.cola.platform.tianquan.shoubing.admin.audit.domain.bo.OAuthAuditReceiptBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditDeadLetterRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditInboxRepository;
 import top.egon.cola.platform.tianquan.shoubing.admin.audit.repository.OAuthAuditReceiptRepository;
@@ -46,6 +50,7 @@ class OAuthAuditDeliveryReplicaTest {
         when(transactions.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
         when(inboxes.saveObserved(any(), any(), any())).thenAnswer(call -> call.getArgument(2));
         when(audits.save(any(), any(), anyLong())).thenReturn(OAuthAuditBO.builder().id(23L).build());
+        when(receipts.save(any(), any(), anyLong())).thenAnswer(call -> call.getArgument(1));
 
         assertThat(service.process(realm, pending())).isTrue();
 
@@ -58,24 +63,134 @@ class OAuthAuditDeliveryReplicaTest {
     }
 
     @Test
-    void intakeUsesInsertedSnapshotWhenReplicaHasNotReplayedIt() {
+    void intakeOwnsFirstCommittedLeaseWhileBackgroundDrainAndReceiptReplicaLag() {
         when(transactions.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
-        when(realm.getIssuer()).thenReturn(URI.create("https://idp.example/tenants/1"));
+        when(realm.getIssuer()).thenReturn(event().issuer());
+        var stored = new AtomicReference<OAuthAuditInboxBO>();
+        var firstCommit = new AtomicBoolean(true);
+        var firstCommitted = new AtomicReference<OAuthAuditInboxBO>();
+        when(inboxes.save(any(), any(), anyLong())).thenAnswer(call -> {
+            OAuthAuditInboxBO inserted = call.getArgument(1);
+            inserted.setId(11L);
+            stored.set(inserted);
+            return inserted;
+        });
+        when(inboxes.saveObserved(any(), any(), any())).thenAnswer(call -> {
+            OAuthAuditInboxBO observed = call.getArgument(1);
+            OAuthAuditInboxBO requested = call.getArgument(2);
+            if (stored.get().getVersion() != observed.getVersion()) {
+                throw new OptimisticLockingFailureException("claim lost");
+            }
+            stored.set(requested);
+            return requested;
+        });
+        when(inboxes.findDue(eq(realm), eq(NOW), eq(100))).thenAnswer(call -> {
+            OAuthAuditInboxBO current = stored.get();
+            boolean due = "PENDING".equals(current.getState())
+                    || "PROCESSING".equals(current.getState()) && !current.getLeaseUntil().isAfter(NOW);
+            return due ? List.of(current) : List.of();
+        });
+        doAnswer(call -> {
+            if (firstCommit.compareAndSet(true, false)) {
+                firstCommitted.set(stored.get());
+                service.drain(realm);
+            }
+            return null;
+        }).when(transactions).commit(any());
+        when(audits.save(any(), any(), anyLong())).thenReturn(OAuthAuditBO.builder().id(23L).build());
+        when(receipts.save(any(), any(), anyLong())).thenAnswer(call -> call.getArgument(1));
+        // Receipt reads remain empty, representing an arbitrarily delayed read replica.
+
+        OAuthAuditReceiptBO receipt = service.append(realm, 2L, event().issuer().toString(), event().resource(), event());
+
+        assertThat(receipt.getOutcome()).isEqualTo("STORED");
+        assertThat(receipt.getAuditPk()).isEqualTo(23L);
+        assertThat(firstCommitted.get().getState()).isEqualTo("PROCESSING");
+        assertThat(firstCommitted.get().getVersion()).isOne();
+        assertThat(firstCommitted.get().getAttemptCount()).isOne();
+        assertThat(firstCommitted.get().getClaimGeneration()).isOne();
+        assertThat(firstCommitted.get().getLeaseUntil()).isEqualTo(NOW.plusSeconds(30));
+        assertThat(stored.get().getState()).isEqualTo("STORED");
+        verify(inboxes, times(2)).saveObserved(eq(realm), any(), any());
+        verify(audits).save(eq(realm), any(), eq(0L));
+        verify(receipts).save(eq(realm), any(), eq(0L));
+        verify(receipts, never()).findByEventId(any(), anyString());
+    }
+
+    @Test
+    void savedReceiptIsNotReturnedWhenConfirmationCommitFails() {
+        when(transactions.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
+        when(realm.getIssuer()).thenReturn(event().issuer());
         when(inboxes.save(any(), any(), anyLong())).thenAnswer(call -> {
             OAuthAuditInboxBO inserted = call.getArgument(1);
             return inserted.setId(11L);
         });
         when(inboxes.saveObserved(any(), any(), any())).thenAnswer(call -> call.getArgument(2));
         when(audits.save(any(), any(), anyLong())).thenReturn(OAuthAuditBO.builder().id(23L).build());
-        var event = event();
+        when(receipts.save(any(), any(), anyLong())).thenAnswer(call -> call.getArgument(1));
+        doNothing().doThrow(new TransactionSystemException("confirmation commit failed"))
+                .when(transactions).commit(any());
 
-        assertThatThrownBy(() -> service.append(realm, 2L, event.issuer().toString(), event.resource(), event))
+        assertThatThrownBy(() -> service.append(realm, 2L, event().issuer().toString(), event().resource(), event()))
+                .isInstanceOf(TransactionSystemException.class).hasMessage("confirmation commit failed");
+
+        verify(receipts).save(eq(realm), any(), eq(0L));
+    }
+
+    @Test
+    void existingUnexpiredOtherClaimRemainsFailClosed() {
+        when(transactions.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
+        when(realm.getIssuer()).thenReturn(event().issuer());
+        when(inboxes.findByEventId(eq(realm), eq(event().eventId()))).thenReturn(java.util.Optional.of(
+                pending().toBuilder().version(1L).state("PROCESSING").attemptCount(1).claimGeneration(1L)
+                        .claimOwner("other-worker").claimToken("other-token").leaseUntil(NOW.plusSeconds(30)).build()));
+
+        assertThatThrownBy(() -> service.append(realm, 2L, event().issuer().toString(), event().resource(), event()))
                 .isInstanceOf(IllegalStateException.class).hasMessage("OAUTH_AUDIT_CONFIRMATION_PENDING");
 
-        verify(inboxes).findByEventId(realm, event.eventId());
-        verify(inboxes, never()).findByEventIdForUpdate(any(), anyString());
-        verify(inboxes, times(2)).saveObserved(eq(realm), any(), any());
-        verify(receipts).save(eq(realm), any(), eq(0L));
+        verify(inboxes, never()).saveObserved(any(), any(), any());
+        verify(audits, never()).save(any(), any(), anyLong());
+        verify(receipts, never()).save(any(), any(), anyLong());
+    }
+
+    @Test
+    void expiredCommittedClaimCanBeRecoveredWithNewGeneration() {
+        when(transactions.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
+        when(inboxes.saveObserved(any(), any(), any())).thenAnswer(call -> call.getArgument(2));
+        when(audits.save(any(), any(), anyLong())).thenReturn(OAuthAuditBO.builder().id(23L).build());
+        when(receipts.save(any(), any(), anyLong())).thenAnswer(call -> call.getArgument(1));
+        OAuthAuditInboxBO expired = pending().toBuilder().version(1L).state("PROCESSING")
+                .receivedAt(NOW.minusSeconds(60)).attemptCount(1).claimGeneration(1L)
+                .claimOwner("crashed-worker").claimToken("crashed-token").leaseUntil(NOW.minusSeconds(1)).build();
+        when(inboxes.findDue(realm, NOW, 100)).thenReturn(List.of(expired));
+
+        assertThat(service.drain(realm)).isOne();
+
+        verify(inboxes).saveObserved(eq(realm), eq(expired), argThat(claimed ->
+                claimed.getVersion() == 2L && claimed.getClaimGeneration() == 2L
+                        && claimed.getAttemptCount() == 2 && claimed.getLeaseUntil().equals(NOW.plusSeconds(30))
+                        && !claimed.getClaimToken().equals(expired.getClaimToken())));
+        verify(receipts).save(eq(realm), argThat(receipt -> "STORED".equals(receipt.getOutcome())), eq(0L));
+    }
+
+    @Test
+    void replayReturnsSameBoundReceiptAndRejectsChangedSourceOrFingerprint() {
+        when(transactions.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
+        when(realm.getIssuer()).thenReturn(event().issuer());
+        when(inboxes.findByEventId(realm, event().eventId())).thenReturn(java.util.Optional.of(pending()));
+        OAuthAuditReceiptBO receipt = OAuthAuditReceiptBO.builder().eventId(event().eventId())
+                .eventFingerprint(OAuthAuditDeliveryService.fingerprint(event())).sourceClientPk(2L)
+                .sourceIssuer(event().issuer().toString()).sourceResourceUri(event().resource()).outcome("STORED").build();
+        when(receipts.findByEventId(realm, event().eventId())).thenReturn(java.util.Optional.of(receipt));
+
+        assertThat(service.append(realm, 2L, event().issuer().toString(), event().resource(), event())).isSameAs(receipt);
+        assertThatThrownBy(() -> service.append(realm, 3L, event().issuer().toString(), event().resource(), event()))
+                .hasMessage("OAUTH_AUDIT_EVENT_ID_REUSED");
+        when(inboxes.findByEventId(realm, event().eventId())).thenReturn(java.util.Optional.of(
+                pending().toBuilder().eventFingerprint("a".repeat(64)).build()));
+        assertThatThrownBy(() -> service.append(realm, 2L, event().issuer().toString(), event().resource(), event()))
+                .hasMessage("OAUTH_AUDIT_EVENT_ID_REUSED");
+        verify(audits, never()).save(any(), any(), anyLong());
     }
 
     @Test
@@ -87,6 +202,7 @@ class OAuthAuditDeliveryReplicaTest {
             return call.getArgument(2);
         });
         when(audits.save(any(), any(), anyLong())).thenReturn(OAuthAuditBO.builder().id(23L).build());
+        when(receipts.save(any(), any(), anyLong())).thenAnswer(call -> call.getArgument(1));
 
         assertThat(service.process(realm, pending())).isFalse();
 
@@ -110,6 +226,7 @@ class OAuthAuditDeliveryReplicaTest {
             return call.getArgument(2);
         });
         when(audits.save(any(), any(), anyLong())).thenReturn(OAuthAuditBO.builder().id(23L).build());
+        when(receipts.save(any(), any(), anyLong())).thenAnswer(call -> call.getArgument(1));
 
         OAuthAuditInboxBO candidate = pending();
         try (var workers = Executors.newFixedThreadPool(2)) {
