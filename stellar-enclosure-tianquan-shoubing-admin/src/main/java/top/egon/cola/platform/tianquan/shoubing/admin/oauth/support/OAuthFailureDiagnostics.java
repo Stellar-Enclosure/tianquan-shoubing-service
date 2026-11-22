@@ -27,7 +27,7 @@ public final class OAuthFailureDiagnostics {
         for (int depth = 0; cause != null && depth < 16; depth++, cause = cause.getCause()) {
             types.add(cause.getClass().getSimpleName());
             origins.add(Arrays.stream(cause.getStackTrace())
-                    .filter(frame -> frame.getClassName().startsWith("top.egon.cola.platform.tianquan.shoubing."))
+                    .filter(frame -> frame.getClassName().startsWith("top.egon.cola."))
                     .limit(3).map(frame -> frame.getClassName() + "#" + frame.getMethodName() + ":" + frame.getLineNumber())
                     .collect(java.util.stream.Collectors.joining(" > ")));
             if (cause instanceof SQLException sql) { sqlState = sql.getSQLState(); }
