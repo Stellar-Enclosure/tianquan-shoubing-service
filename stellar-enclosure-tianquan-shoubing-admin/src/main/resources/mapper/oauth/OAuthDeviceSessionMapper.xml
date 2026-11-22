@@ -97,4 +97,17 @@
           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_authorization g
               WHERE g.tenant_id = #{tenantId} AND g.device_session_id = #{id} AND g.deleted_at IS NULL)
     </update>
+    <select id="selectActiveById" resultMap="Session">
+        SELECT * FROM tianquan_oauth.oauth_device_session
+        WHERE tenant_id = #{tenantId} AND id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectActiveByIds" resultMap="Session">
+        SELECT * FROM tianquan_oauth.oauth_device_session
+        WHERE tenant_id = #{tenantId} AND deleted_at IS NULL AND id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        ORDER BY id ASC
+    </select>
 </mapper>

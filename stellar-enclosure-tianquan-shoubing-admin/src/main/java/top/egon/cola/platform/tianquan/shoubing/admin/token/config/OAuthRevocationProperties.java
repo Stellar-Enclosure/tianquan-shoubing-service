@@ -18,10 +18,10 @@ import lombok.experimental.Accessors;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
 import org.redisson.config.SingleServerConfig;
-import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.validation.annotation.Validated;
 
+/** Historical migration fixture only. SQL authority hosts do not bind the retired Redis revocation configuration. */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -29,7 +29,7 @@ import org.springframework.validation.annotation.Validated;
 @Builder
 @Validated
 @Qualifier("oauthRevocationProperties")
-@ConfigurationProperties(prefix = "egon.cola.platform.tianquan.shoubing.revocation")
+@Deprecated(forRemoval = false)
 public class OAuthRevocationProperties {
 
     @NotNull

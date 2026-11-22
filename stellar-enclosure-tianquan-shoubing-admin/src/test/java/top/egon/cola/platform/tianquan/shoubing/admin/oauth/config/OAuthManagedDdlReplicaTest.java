@@ -21,6 +21,30 @@ import static org.mockito.Mockito.*;
 
 class OAuthManagedDdlReplicaTest {
     @Test
+    void freshBaselineReceiptsCoverOnlyTheSelectedSuffix() throws Exception {
+        var runner = mock(EgonColaPostgreDdlRunner.class);
+        when(runner.run(anyList())).thenAnswer(call -> {
+            List<EgonColaDdlTargetBO> targets = call.getArgument(0);
+            return targets.stream().map(target -> {
+                assertThat(target.manifest().freshBaselineVersion()).isEqualTo("20261122_001");
+                var baseline = target.manifest().scripts().getLast();
+                return new top.egon.cola.component.common.mybatis.ddl.EgonColaDdlResult(target.alias(), target.schema(),
+                        baseline.version(), baseline.sha256(),
+                        top.egon.cola.component.common.mybatis.ddl.EgonColaDdlResult.StatusEnum.APPLIED,
+                        java.time.Duration.ZERO);
+            }).toList();
+        });
+        var validator = mock(EgonColaShardingTopologyValidator.class);
+        var schema = mock(OAuthStateSchemaValidator.class);
+        var properties = topology(); byte[] yaml = new byte[0];
+        when(validator.validate(properties, yaml)).thenReturn(new EgonColaShardingTopologyValidator.TopologyBO(
+                yaml, Map.of(), Map.of(), Set.of(), "b".repeat(64)));
+        var component = new OAuthManagedDdlComponent(runner, validator, properties, new ObjectMapper(), schema);
+        component.initialize(Map.of("oauth_primary", mock(DataSource.class), "oauth_replica", mock(DataSource.class)), yaml);
+        verify(schema).validate(any());
+    }
+
+    @Test
     void managedDdlTargetsThePrimaryAndNeverOpensAReplica() throws Exception {
         var runner = mock(EgonColaPostgreDdlRunner.class);
         completeResults(runner);

@@ -45,6 +45,12 @@
       "version": "20261028_005",
       "path": "db/egon-mp/V20261028_005__coordinate_resource_grants.sql",
       "sha256": "d24d3731048e02eb31f55caf16abbc8a901a9e3889052bcbddba541c055ec24a"
+    },
+    {
+      "version": "20261122_001",
+      "path": "db/egon-mp/V20261122_001__fresh_oauth_baseline.sql",
+      "sha256": "2d806d64c37e6ee4abebc9430eb434556baec0028145a0c52f43c6344b5fbc2f"
     }
-  ]
+  ],
+  "freshBaselineVersion": "20261122_001"
 }

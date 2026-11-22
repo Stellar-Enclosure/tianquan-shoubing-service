@@ -101,7 +101,14 @@ class OAuthManagedSchemaContractTest {
         JsonNode manifest = objectMapper.readTree(requiredResource(MANIFEST_RESOURCE));
 
         assertEquals("tianquan-oauth", manifest.path("family").asText());
-        assertEquals(9, manifest.path("scripts").size());
+        assertEquals(10, manifest.path("scripts").size());
+        assertEquals("20261122_001", manifest.path("freshBaselineVersion").asText());
+        JsonNode baseline = manifest.path("scripts").get(9);
+        assertEquals("20261122_001", baseline.path("version").asText());
+        byte[] baselineBytes = requiredResource(baseline.path("path").asText());
+        assertEquals(sha256(baselineBytes), baseline.path("sha256").asText());
+        String baselineSql = new String(baselineBytes, StandardCharsets.UTF_8);
+        assertTrue(baselineSql.contains("CAST(identity_tenant_id AS BIGINT), CAST(NULL AS TIMESTAMP)"));
         JsonNode script = manifest.path("scripts").get(0);
         assertEquals("20261008_001", script.path("version").asText());
         assertEquals(SQL_RESOURCE, script.path("path").asText());

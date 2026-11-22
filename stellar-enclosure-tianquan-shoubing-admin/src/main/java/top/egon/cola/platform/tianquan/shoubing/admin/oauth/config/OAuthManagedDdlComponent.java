@@ -3,6 +3,7 @@ package top.egon.cola.platform.tianquan.shoubing.admin.oauth.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.datasource.AbstractDataSource;
@@ -29,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component("oauthManagedDdlComponent")
 @Slf4j
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class OAuthManagedDdlComponent {
 
     private java.util.Set<String> compatibleRouteFingerprints = java.util.Set.of();
@@ -47,6 +48,7 @@ public class OAuthManagedDdlComponent {
     private final EgonColaPostgreDdlRunner ddlRunner;
     @Qualifier("egonColaShardingTopologyValidator")
     private final EgonColaShardingTopologyValidator topologyValidator;
+    @Qualifier("egon.cola.component.mybatis-plus.sharding-top.egon.cola.component.common.mybatis.sharding.EgonColaShardingProperties")
     private final EgonColaShardingProperties shardingProperties;
     @Qualifier("outboxStateMachineObjectMapper")
     private final ObjectMapper objectMapper;
@@ -74,18 +76,30 @@ public class OAuthManagedDdlComponent {
                         compatibleRouteFingerprints))
                 .toList();
         List<EgonColaDdlResult> results = ddlRunner.run(targets);
-        if (results == null || results.size() != targets.size() * manifest.scripts().size()) {
+        if (results == null) {
             throw new IllegalStateException("OAUTH_DDL_MANIFEST_INCOMPLETE");
         }
-        for (int index = 0; index < results.size(); index++) {
-            var result = Objects.requireNonNull(results.get(index), "DDL result");
-            var target = targets.get(index / manifest.scripts().size());
-            var script = manifest.scripts().get(index % manifest.scripts().size());
-            if (!target.alias().equals(result.alias()) || !SCHEMA.equals(result.schema())
-                    || !script.version().equals(result.version()) || !script.sha256().equals(result.checksum())
-                    || result.status() == null) {
-                throw new IllegalStateException("OAUTH_DDL_RESULT_MISMATCH");
+        int receiptIndex = 0;
+        for (var target : targets) {
+            if (receiptIndex >= results.size()) {
+                throw new IllegalStateException("OAUTH_DDL_MANIFEST_INCOMPLETE");
             }
+            var first = Objects.requireNonNull(results.get(receiptIndex), "DDL result");
+            int firstScript = manifest.startingIndex(first.version());
+            for (var script : manifest.scripts().subList(firstScript, manifest.scripts().size())) {
+                if (receiptIndex >= results.size()) {
+                    throw new IllegalStateException("OAUTH_DDL_MANIFEST_INCOMPLETE");
+                }
+                var result = Objects.requireNonNull(results.get(receiptIndex++), "DDL result");
+                if (!target.alias().equals(result.alias()) || !SCHEMA.equals(result.schema())
+                        || !script.version().equals(result.version()) || !script.sha256().equals(result.checksum())
+                        || result.status() == null) {
+                    throw new IllegalStateException("OAUTH_DDL_RESULT_MISMATCH");
+                }
+            }
+        }
+        if (receiptIndex != results.size()) {
+            throw new IllegalStateException("OAUTH_DDL_MANIFEST_INCOMPLETE");
         }
         targets.forEach(target -> stateSchemaValidator.validate(target.dataSource()));
         log.info("OAuth managed DDL ready: schema={} primaries={} results={} routeFingerprint={}",
