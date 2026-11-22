@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
@@ -15,10 +16,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthAuthenticationJwtService;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthFailureDiagnostics;
 
 /** Restores only a browser authentication JWT; it never persists a Spring SecurityContext between requests. */
 @Component("oauthBrowserAuthenticationFilter")
 @RequiredArgsConstructor
+@Slf4j
 public class OAuthBrowserAuthenticationFilter extends OncePerRequestFilter {
     @Qualifier("oauthBrowserInteractionComponent") private final OAuthBrowserInteractionComponent interactions;
     @Qualifier("oauthAuthenticationJwtService") private final OAuthAuthenticationJwtService authentications;
@@ -82,6 +85,7 @@ public class OAuthBrowserAuthenticationFilter extends OncePerRequestFilter {
             response.setContentType("text/plain;charset=UTF-8");
             response.getWriter().write("Browser interaction rejected");
         } catch (org.springframework.dao.DataAccessException | IllegalStateException unavailable) {
+            OAuthFailureDiagnostics.failure(log, "browser authentication", unavailable);
             response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
             response.setHeader("Cache-Control", "no-store");
             response.setContentType("text/plain;charset=UTF-8");

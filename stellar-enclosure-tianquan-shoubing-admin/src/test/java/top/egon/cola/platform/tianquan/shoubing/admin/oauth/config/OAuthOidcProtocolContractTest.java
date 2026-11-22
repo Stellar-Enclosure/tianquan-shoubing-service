@@ -1,6 +1,10 @@
 package top.egon.cola.platform.tianquan.shoubing.admin.oauth.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
+import com.nimbusds.jwt.SignedJWT;
 import jakarta.validation.Validation;
 import java.time.Instant;
 import java.net.URI;
@@ -40,9 +44,13 @@ import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequ
 import org.springframework.security.oauth2.server.authorization.OAuth2Authorization;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationCode;
+import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
+import org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientCredentialsAuthenticationToken;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2TokenRevocationAuthenticationProvider;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2TokenRevocationAuthenticationToken;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
+import org.springframework.security.oauth2.server.authorization.context.AuthorizationServerContext;
+import org.springframework.security.oauth2.server.authorization.token.DefaultOAuth2TokenContext;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import top.egon.cola.component.common.crypto.digest.Digests;
@@ -560,7 +568,7 @@ class OAuthOidcProtocolContractTest {
     }
 
     @Test
-    void authorizesServiceFromGrantsWithEmptyUserResourceListAndLockedCredentialVersion() {
+    void authorizesServiceFromGrantsWithEmptyUserResourceListAndLockedCredentialVersion() throws Exception {
         SnowflakeIdGenerator.initialize(0L, Duration.ofMillis(5));
         TrustedRealmBO realm = trustedTenant();
         URI targetUri = URI.create("https://api.example.test/orders");
@@ -622,6 +630,33 @@ class OAuthOidcProtocolContractTest {
         assertEquals("501:8", result.credentialId());
         assertEquals("1001", result.resourceAccess().tenantId());
         assertEquals(requestedScopes, result.resourceAccess().scopes());
+
+        var key = new RSAKeyGenerator(2048).keyID("contract-test").generate();
+        when(realms.findByIssuer(realm)).thenReturn(Optional.of(
+                OAuthRealmBO.builder().status("ACTIVE").activeKid(key.getKeyID()).build()));
+        TenantIssuerService issuers = mock(TenantIssuerService.class);
+        when(issuers.resolveCurrentIssuer()).thenReturn(realm);
+        var clientRegistration = RegisteredClient.withId("501").clientId("orders-service")
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+                .scopes(scopes -> scopes.addAll(requestedScopes))
+                .build();
+        var principal = new OAuth2ClientAuthenticationToken(
+                clientRegistration, ClientAuthenticationMethod.CLIENT_SECRET_BASIC, null);
+        var grantRequest = new OAuth2ClientCredentialsAuthenticationToken(
+                principal, requestedScopes, Map.of("resource", targetUri));
+        var serverContext = mock(AuthorizationServerContext.class);
+        when(serverContext.getIssuer()).thenReturn(realm.getIssuer().toASCIIString());
+        var tokenContext = DefaultOAuth2TokenContext.builder()
+                .registeredClient(clientRegistration).principal(principal).authorizedScopes(requestedScopes)
+                .authorizationServerContext(serverContext)
+                .tokenType(OAuth2TokenType.ACCESS_TOKEN).authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+                .authorizationGrant(grantRequest).build();
+        var generator = new AuthorizationServerConfiguration().tenantOAuthTokenGenerator(
+                new ImmutableJWKSet<>(new JWKSet(key)), service, issuers, realms);
+        var issued = generator.generate(tokenContext);
+        assertNotNull(issued);
+        assertEquals("1001", SignedJWT.parse(issued.getTokenValue()).getJWTClaimsSet().getStringClaim("tenant_id"));
 
         assertThrows(top.egon.cola.platform.tianquan.shoubing.core.resource.ResourceAuthorizationException.class,
                 () -> service.authorizeClientCredentials(realm, 501L, targetUri, Set.of("orders:write")));

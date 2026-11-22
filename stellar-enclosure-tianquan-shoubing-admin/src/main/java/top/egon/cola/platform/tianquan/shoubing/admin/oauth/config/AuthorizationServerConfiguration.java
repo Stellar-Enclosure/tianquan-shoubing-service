@@ -117,6 +117,7 @@ import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.OAuthTokenIs
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.TenantIssuerService;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.TransactionalOAuthAuthenticationProvider;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.TransactionalOAuthRevocationAuthenticationProvider;
+import top.egon.cola.platform.tianquan.shoubing.admin.oauth.support.OAuthFailureDiagnostics;
 import top.egon.cola.platform.tianquan.shoubing.admin.token.service.TokenRevocationService;
 import top.egon.cola.platform.tianquan.shoubing.core.observability.IdpSecurityMetricsRecorder;
 import top.egon.cola.platform.tianquan.shoubing.core.observability.SecurityMetricObservationBO;
@@ -708,7 +709,7 @@ public class AuthorizationServerConfiguration {
                         || !Long.toString(trustedRealm.getBusinessTenantId()).equals(access.tenantId())) {
                     throw new OAuth2AuthenticationException(new OAuth2Error("invalid_grant", "Request rejected", null));
                 }
-                context.getClaims().claim("tenant_id", trustedRealm.getBusinessTenantId());
+                context.getClaims().claim("tenant_id", access.tenantId());
             } else if (trustedRealm.getRealmType()
                     != top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.enums.RealmTypeEnum.PLATFORM) {
                 throw new OAuth2AuthenticationException(new OAuth2Error("invalid_grant", "Request rejected", null));
@@ -867,16 +868,7 @@ public class AuthorizationServerConfiguration {
         return (request, response, failure) -> {
             if (failure instanceof OAuth2AuthenticationException authenticationFailure
                     && "temporarily_unavailable".equals(authenticationFailure.getError().getErrorCode())) {
-                var causes = new java.util.ArrayList<String>();
-                String sqlState = null;
-                Throwable cause = authenticationFailure;
-                for (int depth = 0; cause != null && depth < 16; depth++, cause = cause.getCause()) {
-                    causes.add(cause.getClass().getSimpleName());
-                    if (cause instanceof java.sql.SQLException sql) {
-                        sqlState = sql.getSQLState();
-                    }
-                }
-                log.warn("OAuth token issuance unavailable causeTypes={} sqlState={}", causes, sqlState);
+                OAuthFailureDiagnostics.failure(log, "token issuance", failure);
                 response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 response.setHeader("Cache-Control", "no-store");
@@ -884,6 +876,7 @@ public class AuthorizationServerConfiguration {
                         "error_description", "Request temporarily unavailable"));
                 return;
             }
+            OAuthFailureDiagnostics.rejection(log, "token issuance", failure);
             defaultHandler.onAuthenticationFailure(request, response, failure);
         };
     }
@@ -972,6 +965,7 @@ public class AuthorizationServerConfiguration {
             response.setHeader("Referrer-Policy", "no-referrer");
             if (failure instanceof OAuth2AuthenticationException oauth
                     && "temporarily_unavailable".equals(oauth.getError().getErrorCode())) {
+                OAuthFailureDiagnostics.failure(log, "authorization", oauth);
                 response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 mapper.writeValue(response.getWriter(), Map.of("error", "temporarily_unavailable", "error_description", "Request temporarily unavailable"));
