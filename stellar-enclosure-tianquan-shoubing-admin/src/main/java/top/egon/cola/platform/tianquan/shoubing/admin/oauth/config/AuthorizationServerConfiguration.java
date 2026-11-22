@@ -797,6 +797,7 @@ public class AuthorizationServerConfiguration {
                     .claim("authorization_id", Long.toString(issue.authorizationId()))
                     .claim("client_registration_id", registeredClient.getId())
                     .claim("authn_jti", Objects.requireNonNull(attributes.getAuthenticationJti(), "authenticationJti"))
+                    .claim("authn_expires_at", issue.authenticationExpiresAt().getEpochSecond())
                     .claim("authorization_expires_at", absoluteExpiresAt.getEpochSecond())
                     .claim("refresh_generation", Long.toString(refreshGeneration(context, authorization)))
                     .claim("principal_type", "USER")

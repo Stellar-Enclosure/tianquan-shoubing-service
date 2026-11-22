@@ -245,6 +245,9 @@ class OAuthConsentRoundTripTest {
         assertTrue(tokens.hasNonNull("refresh_token"));
         Jwt access = decoded(tokens.path("access_token").asText());
         Jwt id = decoded(tokens.path("id_token").asText());
+        long authenticationExpiry = fixture.authenticationFacts.values().iterator().next().getExpiresAt().getEpochSecond();
+        assertEquals(authenticationExpiry, assertInstanceOf(Number.class,
+                access.getClaims().get("authn_expires_at")).longValue());
         assertEquals(Set.of(RESOURCE.toASCIIString()), Set.copyOf(access.getAudience()));
         assertEquals("USER", access.getClaimAsString("principal_type"));
         assertEquals("at+jwt", access.getHeaders().get("typ"));
@@ -266,6 +269,8 @@ class OAuthConsentRoundTripTest {
                 fixture.mapper, realm.getIssuer());
         assertTrue(nativeLoaded.getAccessToken().isActive(), "Reloaded native AT metadata must retain Instant nbf");
         assertFalse(nativeLoaded.getAccessToken().getClaims().containsKey("_token_use"));
+        assertEquals(authenticationExpiry, assertInstanceOf(Number.class,
+                nativeLoaded.getAccessToken().getClaims().get("authn_expires_at")).longValue());
         assertInstanceOf(java.util.Date.class, nativeLoaded.getToken(org.springframework.security.oauth2.core.oidc.OidcIdToken.class)
                 .getToken().getClaims().get("auth_time"));
         MvcResult userinfo = mvc.perform(request(get("/tenants/1001/userinfo"))
@@ -277,6 +282,7 @@ class OAuthConsentRoundTripTest {
                         .header("Authorization", "Bearer " + tokens.path("id_token").asText()))
                 .andExpect(status().is4xxClientError());
 
+        fixture.clock.now = fixture.clock.instant().plusSeconds(60);
         MvcResult refreshed = mvc.perform(request(post("/tenants/1001/oauth2/token"))
                         .header("Authorization", basic())
                         .contentType("application/x-www-form-urlencoded")
@@ -284,6 +290,8 @@ class OAuthConsentRoundTripTest {
                         .param("refresh_token", tokens.path("refresh_token").asText()))
                 .andExpect(status().isOk()).andReturn();
         JsonNode rotated = fixture.mapper.readTree(refreshed.getResponse().getContentAsString());
+        assertEquals(authenticationExpiry, assertInstanceOf(Number.class,
+                decoded(rotated.path("access_token").asText()).getClaims().get("authn_expires_at")).longValue());
         assertNotEquals(tokens.path("refresh_token").asText(), rotated.path("refresh_token").asText());
         assertEquals(absoluteDeadline, fixture.authorizations.values().iterator().next().getAbsoluteExpiresAt());
         assertTrue(fixture.tokens.values().stream().allMatch(row -> !row.getExpiresAt().isAfter(absoluteDeadline)));

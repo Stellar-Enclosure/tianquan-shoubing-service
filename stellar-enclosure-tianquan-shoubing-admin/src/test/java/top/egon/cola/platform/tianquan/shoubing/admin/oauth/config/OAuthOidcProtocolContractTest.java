@@ -782,7 +782,7 @@ class OAuthOidcProtocolContractTest {
         when(authentications.findByJtiDigest(eq(platformRealm), any())).thenReturn(Optional.of(
                 top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthAuthenticationBO.builder().subject("platform-admin-sub").status("ACTIVE")
                         .realmGeneration(snapshot.getRealmGeneration()).subjectGeneration(snapshot.getSubjectGeneration()).acr(authorization.getAttributes().getAcr())
-                        .authenticatedAt(authorization.getAttributes().getAuthTime()).build()));
+                        .authenticatedAt(authorization.getAttributes().getAuthTime()).expiresAt(NOW.plusSeconds(7_200)).build()));
         OAuthTokenIssueServiceImpl service = new OAuthTokenIssueServiceImpl(
                 tokens, authorizations, clients, grants, consents, realms, audits, outbox,
                 projection, accessPolicy, resources, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC),
@@ -791,6 +791,7 @@ class OAuthOidcProtocolContractTest {
         var issue = service.authorizeUserToken(platformRealm, authorization);
 
         assertEquals(700L, issue.authorizationId());
+        assertEquals(NOW.plusSeconds(7_200), issue.authenticationExpiresAt());
         assertEquals(Set.of(resourceUri), issue.audiences());
         verify(memberships).resolve("platform-admin-sub", "9001");
         verify(consents, org.mockito.Mockito.never()).findConsentForUpdate(any(), any(), any(), org.mockito.ArgumentMatchers.anyString());

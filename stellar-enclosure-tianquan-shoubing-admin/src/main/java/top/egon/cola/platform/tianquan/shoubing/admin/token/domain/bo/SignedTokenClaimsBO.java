@@ -99,6 +99,10 @@ public class SignedTokenClaimsBO {
     @Pattern(regexp = "[1-9][0-9]{0,18}")
     private String authenticationJti;
 
+    @JsonProperty("authn_expires_at")
+    @Positive
+    private Long authenticationExpiresAt;
+
     @JsonProperty("authorization_expires_at")
     @Positive
     private Long authorizationExpiresAt;

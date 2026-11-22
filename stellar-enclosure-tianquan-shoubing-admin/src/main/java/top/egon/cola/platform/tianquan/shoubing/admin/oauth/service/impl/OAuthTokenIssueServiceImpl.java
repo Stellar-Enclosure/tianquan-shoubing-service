@@ -301,11 +301,12 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 realm, value.getClientPk(), "USER", value.getPrincipalName());
         String authenticationJti = value.getAttributes().getAuthenticationJti();
         if (authenticationJti == null) { throw invalidGrant(); }
-        authentications.findByJtiDigest(realm, Digests.sha256Hex(authenticationJti))
+        var authentication = authentications.findByJtiDigest(realm, Digests.sha256Hex(authenticationJti))
                 .filter(fact -> !"REVOKED".equals(fact.getStatus()) && fact.getRevokedAt() == null
                         && fact.getSubject().equals(value.getPrincipalName())
                         && Objects.equals(fact.getAcr(), value.getAttributes().getAcr())
                         && Objects.equals(fact.getAuthenticatedAt(), value.getAttributes().getAuthTime())
+                        && fact.getExpiresAt() != null
                         && Objects.equals(fact.getSubjectGeneration(), snapshot.getSubjectGeneration())
                         && fact.getRealmGeneration() == snapshot.getRealmGeneration())
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
@@ -359,7 +360,8 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 throw new org.springframework.dao.OptimisticLockingFailureException("OAuth grant changed before token issuance");
             }
         }
-        return new UserAuthorizationIssueContext(value.getId(), snapshot, value.getPrincipalName(), audiences);
+        return new UserAuthorizationIssueContext(value.getId(), snapshot, value.getPrincipalName(), audiences,
+                authentication.getExpiresAt());
     }
 
     @Override

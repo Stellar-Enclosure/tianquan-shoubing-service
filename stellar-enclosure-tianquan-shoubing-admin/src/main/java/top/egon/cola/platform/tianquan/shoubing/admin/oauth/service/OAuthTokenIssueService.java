@@ -4,6 +4,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import java.net.URI;
+import java.time.Instant;
 import java.util.Set;
 import java.util.function.Supplier;
 import org.springframework.security.core.Authentication;
@@ -69,6 +70,7 @@ public interface OAuthTokenIssueService {
             long authorizationId,
             OAuthSecuritySnapshotBO securitySnapshot,
             String subject,
-            Set<URI> audiences) {
+            Set<URI> audiences,
+            Instant authenticationExpiresAt) {
     }
 }
