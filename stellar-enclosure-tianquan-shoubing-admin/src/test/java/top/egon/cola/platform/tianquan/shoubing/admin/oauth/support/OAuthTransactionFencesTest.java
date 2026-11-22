@@ -63,6 +63,50 @@ class OAuthTransactionFencesTest {
         verify(realms, never()).fenceObservedVersion(realm);
     }
 
+    @Test void reloadedClientRecognizesOnlyVersionsAdvancedByThisTransaction() {
+        assertThat(OAuthTransactionFences.client(clients, realm, client)).isTrue();
+        assertThat(OAuthTransactionFences.grant(clients, realm, client, grant)).isTrue();
+        var reloaded = clientAt(6L);
+        when(clients.fenceGrantObservedVersion(realm, reloaded, 6L, grant)).thenReturn(true);
+
+        assertThat(OAuthTransactionFences.client(clients, realm, reloaded)).isTrue();
+        assertThat(OAuthTransactionFences.grant(clients, realm, reloaded, grant)).isTrue();
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(5L))).isTrue();
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(7L))).isTrue();
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(3L))).isFalse();
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(8L))).isFalse();
+        assertThat(OAuthTransactionFences.client(clients, realm,
+                OAuthClientBO.builder().id(31L).clientId("other-client").version(6L).build())).isFalse();
+        verify(clients, times(1)).fenceObservedVersion(realm, client);
+        verify(clients).fenceGrantObservedVersion(realm, reloaded, 6L, grant);
+        verify(clients, never()).fenceObservedVersion(realm, reloaded);
+    }
+
+    @Test void savepointRollbackInvalidatesVersionsAdvancedAfterTheSavepoint() {
+        assertThat(OAuthTransactionFences.client(clients, realm, client)).isTrue();
+        var sync = TransactionSynchronizationManager.getSynchronizations().getFirst();
+        Object point = new Object();
+        sync.savepoint(point);
+        assertThat(OAuthTransactionFences.grant(clients, realm, client, grant)).isTrue();
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(6L))).isTrue();
+
+        sync.savepointRollback(point);
+
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(5L))).isTrue();
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(6L))).isFalse();
+    }
+
+    @Test void aPolicyWriteInvalidatesThePreviouslyFencedClientSnapshots() {
+        assertThat(OAuthTransactionFences.client(clients, realm, client)).isTrue();
+        assertThat(OAuthTransactionFences.grant(clients, realm, client, grant)).isTrue();
+
+        OAuthTransactionFences.clientWritten(realm, clientAt(7L));
+
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(7L))).isTrue();
+        assertThat(OAuthTransactionFences.client(clients, realm, client)).isFalse();
+        assertThat(OAuthTransactionFences.client(clients, realm, clientAt(6L))).isFalse();
+    }
+
     @Test void savepointRollbackRestoresTheVersionAndRejectsUnprovenWrites() {
         assertThat(OAuthTransactionFences.client(clients, realm, client)).isTrue();
         var sync = TransactionSynchronizationManager.getSynchronizations().getFirst();
@@ -103,6 +147,11 @@ class OAuthTransactionFencesTest {
         assertThat(TransactionSynchronizationManager.hasResource(OAuthTransactionFences.class)).isTrue();
         sync.savepointRollback(new Object());
         assertThat(OAuthTransactionFences.isClientWritten(realm, client)).isFalse();
+    }
+
+    private OAuthClientBO clientAt(long version) {
+        return OAuthClientBO.builder().id(client.getId()).clientId(client.getClientId()).version(version)
+                .status(client.getStatus()).build();
     }
 
     @Test void aFailedGrantFenceDoesNotAdvanceOrAuthorize() {

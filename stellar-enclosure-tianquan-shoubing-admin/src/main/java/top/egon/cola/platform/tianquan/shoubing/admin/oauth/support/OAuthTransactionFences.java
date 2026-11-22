@@ -44,8 +44,7 @@ public final class OAuthTransactionFences {
         ClientKey key = new ClientKey(RealmKey.of(realm), client.getId());
         ClientFence current = state == null ? null : state.clients.get(key);
         if (current != null) {
-            return current.observedVersion() == client.getVersion()
-                    && Objects.equals(current.clientId(), client.getClientId());
+            return current.recognizes(client);
         }
         if (!repository.fenceObservedVersion(realm, client)) return false;
         if (state != null) state.clients.put(key, new ClientFence(client.getClientId(), client.getVersion(),
@@ -59,8 +58,7 @@ public final class OAuthTransactionFences {
         if (state == null) throw new IllegalStateException("OAUTH_TRANSACTION_FENCE_REQUIRED");
         ClientKey key = new ClientKey(RealmKey.of(realm), client.getId());
         ClientFence current = state.clients.get(key);
-        if (current == null || current.observedVersion() != client.getVersion()
-                || !Objects.equals(current.clientId(), client.getClientId())) return false;
+        if (current == null || !current.recognizes(client)) return false;
         if (!repository.fenceGrantObservedVersion(realm, client, current.currentVersion(), grant)) return false;
         state.clients.put(key, new ClientFence(current.clientId(), current.observedVersion(),
                 Math.addExact(current.currentVersion(), 1L)));
@@ -147,7 +145,14 @@ public final class OAuthTransactionFences {
         }
     }
     private record ClientKey(RealmKey realm, Long id) { }
-    private record ClientFence(String clientId, long observedVersion, long currentVersion) { }
+    private record ClientFence(String clientId, long observedVersion, long currentVersion) {
+        private boolean recognizes(OAuthClientBO client) {
+            // Successful fences advance only bookkeeping versions while retaining the primary row lock.
+            // A reload in this transaction can therefore observe any of these proven versions.
+            return Objects.equals(clientId, client.getClientId())
+                    && client.getVersion() >= observedVersion && client.getVersion() <= currentVersion;
+        }
+    }
     private record ClientWrite(String clientId, long version, OAuthClient.Status status) { }
     private record SecurityKey(RealmKey realm, OAuthSecurityTargetEnum type, String key) { }
     private record IdentityKey(long partition, String subject) { }
