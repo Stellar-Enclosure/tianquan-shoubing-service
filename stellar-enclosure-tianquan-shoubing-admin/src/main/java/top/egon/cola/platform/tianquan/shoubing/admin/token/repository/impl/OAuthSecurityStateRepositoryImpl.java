@@ -112,13 +112,14 @@ public class OAuthSecurityStateRepositoryImpl extends EgonColaRepository<OAuthSe
     @Override
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public boolean fenceRealmIfConsentInactive(TrustedRealmBO realm, long id, long expectedVersion,
-            long clientPk, String subject, Instant now) {
+            long clientPk, String subject, String resourceUri, Instant now) {
         if (id <= 0 || expectedVersion < 0 || clientPk <= 0 || subject == null || subject.isBlank()
-                || subject.length() > 128 || now == null) {
+                || subject.length() > 128 || resourceUri == null || resourceUri.isBlank()
+                || resourceUri.length() > 2048 || now == null) {
             throw new IllegalArgumentException("OAUTH_SECURITY_STATE_FENCE_INVALID");
         }
         return withTrustedStoragePartition(realm, tenant -> baseMapper.fenceRealmIfConsentInactive(
-                tenant, id, expectedVersion, clientPk, subject, now.truncatedTo(ChronoUnit.MICROS),
+                tenant, id, expectedVersion, clientPk, subject, resourceUri, now.truncatedTo(ChronoUnit.MICROS),
                 userIdProvider.currentUserId()) == 1);
     }
 

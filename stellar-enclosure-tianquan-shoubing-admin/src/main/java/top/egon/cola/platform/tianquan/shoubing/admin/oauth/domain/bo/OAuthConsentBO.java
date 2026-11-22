@@ -40,5 +40,7 @@ public class OAuthConsentBO {
     @Pattern(regexp = "ACTIVE|REVOKED")
     private String status;
 
+    @NotBlank
+    @Size(max = 2048)
     private String resourceUri;
 }

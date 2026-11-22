@@ -60,11 +60,12 @@ public class OAuthConsentRepositoryImpl extends EgonColaRepository<OAuthConsentM
     public Optional<OAuthConsentBO> findConsent(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @Positive Long clientPk,
-            @NotBlank @Size(max = 128) String subject) {
+            @NotBlank @Size(max = 128) String subject,
+            @NotBlank @Size(max = 2048) String resourceUri) {
         Objects.requireNonNull(clientPk, "clientPk");
         String principal = required(subject);
         return withTrustedStoragePartition(trustedRealm, tenantId -> Optional.ofNullable(
-                        baseMapper.selectConsent(tenantId, clientPk, principal))
+                        baseMapper.selectConsent(tenantId, clientPk, principal, requiredResource(resourceUri)))
                 .map(converter::toTarget));
     }
 
@@ -73,11 +74,12 @@ public class OAuthConsentRepositoryImpl extends EgonColaRepository<OAuthConsentM
     public Optional<OAuthConsentBO> findConsentForUpdate(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @Positive Long clientPk,
-            @NotBlank @Size(max = 128) String subject) {
+            @NotBlank @Size(max = 128) String subject,
+            @NotBlank @Size(max = 2048) String resourceUri) {
         Objects.requireNonNull(clientPk, "clientPk");
         String principal = required(subject);
         return withTrustedStoragePartition(trustedRealm, tenantId -> Optional.ofNullable(
-                        baseMapper.selectConsentForUpdate(tenantId, clientPk, principal))
+                        baseMapper.selectConsentForUpdate(tenantId, clientPk, principal, requiredResource(resourceUri)))
                 .map(converter::toTarget));
     }
 
@@ -92,7 +94,7 @@ public class OAuthConsentRepositoryImpl extends EgonColaRepository<OAuthConsentM
         return withTrustedStoragePartition(trustedRealm, tenantId -> {
             try {
                 OAuthConsentPO current = baseMapper.selectConsent(
-                        tenantId, consent.getClientPk(), principal);
+                        tenantId, consent.getClientPk(), principal, requiredResource(consent.getResourceUri()));
                 OAuthConsentPO value = converter.toSource(consent);
                 value.setTenantId(tenantId);
                 if (current == null) {
@@ -109,7 +111,8 @@ public class OAuthConsentRepositoryImpl extends EgonColaRepository<OAuthConsentM
                 if (current.getVersion() != expectedVersion || consent.getVersion() != nextVersion
                         || !Objects.equals(consent.getId(), current.getId())
                         || !Objects.equals(consent.getClientPk(), current.getClientPk())
-                        || !Objects.equals(consent.getSubject(), current.getSubject())) {
+                        || !Objects.equals(consent.getSubject(), current.getSubject())
+                        || !Objects.equals(consent.getResourceUri(), current.getResourceUri())) {
                     throw stale(expectedVersion, current.getVersion());
                 }
                 value.setId(current.getId());
@@ -170,6 +173,18 @@ public class OAuthConsentRepositoryImpl extends EgonColaRepository<OAuthConsentM
             restoreMdc(tenantKey, previousTenant);
             restoreMdc(userKey, previousUser);
         }
+    }
+
+    private static String requiredResource(String value) {
+        if (value == null || value.isBlank() || value.length() > 2048 || !value.equals(value.strip())) {
+            throw new IllegalArgumentException("OAUTH_CONSENT_RESOURCE_INVALID");
+        }
+        var uri = java.net.URI.create(value);
+        if (!"https".equals(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null
+                || uri.getFragment() != null || !uri.normalize().toASCIIString().equals(value)) {
+            throw new IllegalArgumentException("OAUTH_CONSENT_RESOURCE_INVALID");
+        }
+        return value;
     }
 
     private static String required(String value) {

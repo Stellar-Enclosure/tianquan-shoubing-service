@@ -29,14 +29,14 @@
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_consent
         WHERE tenant_id = #{tenantId} AND client_pk = #{clientPk} AND subject = #{subject}
-          AND deleted_at IS NULL
+          AND resource_uri = #{resourceUri} AND deleted_at IS NULL
     </select>
 
     <select id="selectConsentForUpdate" resultMap="OAuthConsentPOResultMap">
         SELECT <include refid="Columns"/>
         FROM tianquan_oauth.oauth_consent
         WHERE tenant_id = #{tenantId} AND client_pk = #{clientPk} AND subject = #{subject}
-          AND deleted_at IS NULL
+          AND resource_uri = #{resourceUri} AND deleted_at IS NULL
         FOR UPDATE
     </select>
 

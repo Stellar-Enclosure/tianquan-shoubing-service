@@ -80,7 +80,7 @@ class OAuthTokenIssueCoherentSnapshotTest {
         var snapshot = OAuthSecuritySnapshotBO.builder().realmGeneration(1L).clientGeneration(2L).subjectGeneration(3L).build();
         var authorization = OAuthAuthorizationBO.builder().id(700L).version(2L).clientPk(501L).principalName("alice")
                 .principalType("USER").status("ACTIVE").authorizedScopes(List.of("openid"))
-                .audiences(List.of(RESOURCE.toString())).absoluteExpiresAt(NOW.plusSeconds(600))
+                .resourceUri(RESOURCE.toString()).audiences(List.of(RESOURCE.toString())).absoluteExpiresAt(NOW.plusSeconds(600))
                 .attributes(OAuthAuthorizationAttributesBO.builder().securitySnapshot(snapshot).build()).build();
         token = OAuthTokenBO.builder().id(701L).version(3L).authorizationPk(700L).tokenType(OAuthTokenTypeEnum.REFRESH)
                 .tokenDigest("a".repeat(64)).expiresAt(NOW.plusSeconds(300)).refreshGeneration(0L)
@@ -98,7 +98,7 @@ class OAuthTokenIssueCoherentSnapshotTest {
         when(clients.findById(realm, 501L)).thenReturn(Optional.of(client));
         when(clients.fenceObservedVersion(realm, client)).thenReturn(true);
         when(clients.fenceGrantObservedVersion(eq(realm), eq(client), anyLong(), any())).thenReturn(true);
-        when(consents.findConsent(realm, 501L, "alice")).thenReturn(Optional.of(consent));
+        when(consents.findConsent(realm, 501L, "alice", RESOURCE.toString())).thenReturn(Optional.of(consent));
         when(resources.findByUri(RESOURCE)).thenReturn(Optional.of(target));
         when(grants.findGrant(realm, 501L, "orders", ResourceGrantType.USER_DELEGATION)).thenReturn(Optional.of(grant));
         when(manager.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());

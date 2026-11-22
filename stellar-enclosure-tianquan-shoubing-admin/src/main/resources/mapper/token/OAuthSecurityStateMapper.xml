@@ -161,7 +161,7 @@
           AND s.target_type = 'REALM' AND s.target_key = 'self' AND s.deleted_at IS NULL
           AND NOT EXISTS (SELECT 1 FROM tianquan_oauth.oauth_consent c
                           WHERE c.tenant_id = #{tenantId} AND c.client_pk = #{clientPk}
-                            AND c.subject = #{subject} AND c.status = 'ACTIVE' AND c.deleted_at IS NULL)
+                            AND c.subject = #{subject} AND c.resource_uri = #{resourceUri} AND c.status = 'ACTIVE' AND c.deleted_at IS NULL)
     </update>
     <update id="fenceRealmIfAuthorizationAbsent">
         UPDATE tianquan_oauth.oauth_security_state s

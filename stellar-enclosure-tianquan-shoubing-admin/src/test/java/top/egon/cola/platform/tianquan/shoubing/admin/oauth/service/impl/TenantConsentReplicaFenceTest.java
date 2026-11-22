@@ -32,19 +32,31 @@ class TenantConsentReplicaFenceTest {
     private final OAuthConsentRepository consents = mock(OAuthConsentRepository.class);
     private final OAuthRealmRepository realms = mock(OAuthRealmRepository.class);
     private final OAuthSecurityStateRepository states = mock(OAuthSecurityStateRepository.class);
+    private final OAuthBrowserInteractionComponent interactions = mock(OAuthBrowserInteractionComponent.class);
     private final TenantConsentServiceImpl service = new TenantConsentServiceImpl(issuers, consents,
-            mock(OAuthClientRepository.class), mock(SasConsentConverter.class), Clock.fixed(NOW, ZoneOffset.UTC), realms, states);
+            mock(OAuthClientRepository.class), mock(SasConsentConverter.class), Clock.fixed(NOW, ZoneOffset.UTC), realms, states, interactions);
     private final OAuth2AuthorizationConsent consent = OAuth2AuthorizationConsent.withId("5", "alice").scope("openid").build();
+
+    @org.junit.jupiter.api.BeforeEach void bindInteraction() {
+        org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(
+                new org.springframework.web.context.request.ServletRequestAttributes(new org.springframework.mock.web.MockHttpServletRequest()));
+        when(interactions.require(any(), anyBoolean())).thenReturn(
+                top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO.builder()
+                        .purpose("AUTHORIZATION").clientPk(5L).resourceUri("https://api.example.test").build());
+    }
+    @org.junit.jupiter.api.AfterEach void clearInteraction() {
+        org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+    }
 
     @Test void replicaMissRequiresPrimaryProofBeforeReturning() {
         when(issuers.resolveCurrentIssuer()).thenReturn(realm);
         when(realms.fenceActiveObservedVersion(realm)).thenReturn(true);
         var state = OAuthSecurityStateBO.builder().id(9L).version(3L).targetType(OAuthSecurityTargetEnum.REALM).targetKey("self").build();
         when(states.findByTarget(realm, OAuthSecurityTargetEnum.REALM, "self")).thenReturn(Optional.of(state));
-        when(states.fenceRealmIfConsentInactive(realm, 9L, 3L, 5L, "alice", NOW)).thenReturn(false, true);
+        when(states.fenceRealmIfConsentInactive(realm, 9L, 3L, 5L, "alice", "https://api.example.test", NOW)).thenReturn(false, true);
         assertThatThrownBy(() -> service.remove(consent)).isInstanceOf(TransientDataAccessResourceException.class);
         assertThatCode(() -> service.remove(consent)).doesNotThrowAnyException();
-        verify(consents, never()).findConsentForUpdate(any(), any(), any());
+        verify(consents, never()).findConsentForUpdate(any(), any(), any(), anyString());
         verify(consents, never()).save(any(), any(), anyLong());
     }
 
@@ -52,9 +64,9 @@ class TenantConsentReplicaFenceTest {
         when(issuers.resolveCurrentIssuer()).thenReturn(realm);
         when(realms.fenceActiveObservedVersion(realm)).thenReturn(true);
         var existing = OAuthConsentBO.builder().id(11L).version(4L).clientPk(5L).subject("alice").status("REVOKED").build();
-        when(consents.findConsent(realm, 5L, "alice")).thenReturn(Optional.of(existing));
+        when(consents.findConsent(realm, 5L, "alice", "https://api.example.test")).thenReturn(Optional.of(existing));
         service.remove(consent);
         verify(consents).save(eq(realm), argThat(value -> value.getVersion() == 5L && "REVOKED".equals(value.getStatus())), eq(4L));
-        verify(consents, never()).findConsentForUpdate(any(), any(), any());
+        verify(consents, never()).findConsentForUpdate(any(), any(), any(), anyString());
     }
 }

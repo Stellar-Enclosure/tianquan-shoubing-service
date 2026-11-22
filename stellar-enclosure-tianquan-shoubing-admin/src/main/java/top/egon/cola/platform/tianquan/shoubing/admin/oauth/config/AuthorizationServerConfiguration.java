@@ -867,6 +867,16 @@ public class AuthorizationServerConfiguration {
         return (request, response, failure) -> {
             if (failure instanceof OAuth2AuthenticationException authenticationFailure
                     && "temporarily_unavailable".equals(authenticationFailure.getError().getErrorCode())) {
+                var causes = new java.util.ArrayList<String>();
+                String sqlState = null;
+                Throwable cause = authenticationFailure;
+                for (int depth = 0; cause != null && depth < 16; depth++, cause = cause.getCause()) {
+                    causes.add(cause.getClass().getSimpleName());
+                    if (cause instanceof java.sql.SQLException sql) {
+                        sqlState = sql.getSQLState();
+                    }
+                }
+                log.warn("OAuth token issuance unavailable causeTypes={} sqlState={}", causes, sqlState);
                 response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 response.setHeader("Cache-Control", "no-store");

@@ -31,7 +31,7 @@ public interface OAuthSecurityStateRepository {
     boolean fenceRealmIfSubjectAbsent(TrustedRealmBO realm, long id, long expectedVersion, String subject, Instant now);
 
     boolean fenceRealmIfConsentInactive(TrustedRealmBO realm, long id, long expectedVersion,
-            long clientPk, String subject, Instant now);
+            long clientPk, String subject, String resourceUri, Instant now);
 
     boolean fenceRealmIfAuthorizationAbsent(TrustedRealmBO realm, long id, long expectedVersion,
             long authorizationId, Instant now);

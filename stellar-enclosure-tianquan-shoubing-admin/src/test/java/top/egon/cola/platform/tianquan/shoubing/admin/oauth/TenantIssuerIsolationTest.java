@@ -225,6 +225,7 @@ class TenantIssuerIsolationTest {
     @AfterEach
     void clearAuthorizationServerContext() {
         AuthorizationServerContextHolder.resetContext();
+        org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
     }
 
     @Test
@@ -526,7 +527,7 @@ class TenantIssuerIsolationTest {
                 .id(901L).version(0L).clientPk(501L).subject("subject-1")
                 .authorities(List.of("SCOPE_openid", "SCOPE_orders.read"))
                 .grantedAt(NOW).status("ACTIVE").build();
-        when(consents.findConsent(any(TrustedRealmBO.class), eq(501L), eq("subject-1")))
+        when(consents.findConsent(any(TrustedRealmBO.class), eq(501L), eq("subject-1"), anyString()))
                 .thenAnswer(invocation -> {
                     TrustedRealmBO realm = invocation.getArgument(0);
                     return realm.getStoragePartitionId().equals(1001L)
@@ -538,7 +539,7 @@ class TenantIssuerIsolationTest {
                 clients,
                 org.mapstruct.factory.Mappers.getMapper(SasConsentConverter.class),
                 Clock.fixed(NOW, ZoneOffset.UTC), realmRepository,
-                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class));
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class), consentInteractions());
         OAuth2AuthorizationConsent tenantOneConsent = withIssuer("https://idp.example.test/tenants/1001",
                 () -> consentService.findById("501", "subject-1"));
         OAuth2AuthorizationConsent tenantTwoConsent = withIssuer("https://idp.example.test/tenants/1002",
@@ -552,7 +553,7 @@ class TenantIssuerIsolationTest {
                 .authorities(List.of("SCOPE_openid"))
                 .grantedAt(NOW.minusSeconds(60)).status("ACTIVE").build();
         OAuthConsentRepository updatingConsents = mock(OAuthConsentRepository.class);
-        when(updatingConsents.findConsent(any(TrustedRealmBO.class), eq(501L), eq("subject-1")))
+        when(updatingConsents.findConsent(any(TrustedRealmBO.class), eq(501L), eq("subject-1"), anyString()))
                 .thenReturn(Optional.of(existingConsent));
         TenantConsentServiceImpl updatingConsentService = new TenantConsentServiceImpl(
                 issuerService,
@@ -560,7 +561,7 @@ class TenantIssuerIsolationTest {
                 clients,
                 org.mapstruct.factory.Mappers.getMapper(SasConsentConverter.class),
                 Clock.fixed(NOW, ZoneOffset.UTC), realmRepository,
-                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class));
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class), consentInteractions());
         OAuth2AuthorizationConsent updatedConsent = OAuth2AuthorizationConsent.withId("501", "subject-1")
                 .scope("openid")
                 .scope("orders.read")
@@ -571,13 +572,13 @@ class TenantIssuerIsolationTest {
         });
         ArgumentCaptor<OAuthConsentBO> savedConsent = ArgumentCaptor.forClass(OAuthConsentBO.class);
         verify(updatingConsents).save(any(TrustedRealmBO.class), savedConsent.capture(), eq(2L));
-        verify(updatingConsents, never()).findConsentForUpdate(any(TrustedRealmBO.class), anyLong(), anyString());
+        verify(updatingConsents, never()).findConsentForUpdate(any(TrustedRealmBO.class), anyLong(), anyString(), anyString());
         assertEquals(901L, savedConsent.getValue().getId());
         assertEquals(3L, savedConsent.getValue().getVersion());
         assertEquals(NOW, savedConsent.getValue().getGrantedAt());
 
         OAuthConsentRepository roleConsents = mock(OAuthConsentRepository.class);
-        when(roleConsents.findConsent(any(TrustedRealmBO.class), eq(501L), eq("subject-1")))
+        when(roleConsents.findConsent(any(TrustedRealmBO.class), eq(501L), eq("subject-1"), anyString()))
                 .thenReturn(Optional.of(OAuthConsentBO.builder()
                         .id(902L).version(0L).clientPk(501L).subject("subject-1")
                         .authorities(List.of("ROLE_ADMIN")).grantedAt(NOW).status("ACTIVE").build()));
@@ -587,7 +588,7 @@ class TenantIssuerIsolationTest {
                 clients,
                 org.mapstruct.factory.Mappers.getMapper(SasConsentConverter.class),
                 Clock.fixed(NOW, ZoneOffset.UTC), realmRepository,
-                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class));
+                mock(top.egon.cola.platform.tianquan.shoubing.admin.token.repository.OAuthSecurityStateRepository.class), consentInteractions());
         assertThrows(IllegalArgumentException.class, () -> withIssuer(
                 "https://idp.example.test/tenants/1001",
                 () -> roleRejectingService.findById("501", "subject-1")));
@@ -924,6 +925,16 @@ class TenantIssuerIsolationTest {
 
     private static MockHttpServletRequestBuilder tenantRequest(MockHttpServletRequestBuilder request, long tenantId) {
         return request.secure(true);
+    }
+
+    private static top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent consentInteractions() {
+        org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(
+                new org.springframework.web.context.request.ServletRequestAttributes(new org.springframework.mock.web.MockHttpServletRequest()));
+        var interaction = mock(top.egon.cola.platform.tianquan.shoubing.admin.oauth.service.impl.OAuthBrowserInteractionComponent.class);
+        when(interaction.require(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(
+                top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthInteractionBO.builder()
+                        .purpose("AUTHORIZATION").clientPk(501L).resourceUri("https://api.example.test").build());
+        return interaction;
     }
 
     private static <T> T withIssuer(String issuer, java.util.concurrent.Callable<T> operation) {

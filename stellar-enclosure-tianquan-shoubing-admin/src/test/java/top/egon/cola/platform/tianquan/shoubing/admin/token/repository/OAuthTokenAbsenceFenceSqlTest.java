@@ -204,10 +204,10 @@ class OAuthTokenAbsenceFenceSqlTest {
             return new EgonColaRouteResult(List.of(new EgonColaPhysicalTargetBO("primary", "tianquan_oauth", query.logicalTable())), "a".repeat(64));
         }, tenantGuard, mock(EgonColaTwoLevelRouteStrategy.class), Map.of());
         var parameters = Map.<String, Object>of("tenantId", 101L, "id", 42L, "expectedVersion", 4L,
-                "clientPk", 5L, "subject", "alice", "now", Instant.parse("2026-10-28T00:00:00Z"), "actor", "service:tianquan-shoubing");
+                "clientPk", 5L, "subject", "alice", "resourceUri", "https://api.example.test", "now", Instant.parse("2026-10-28T00:00:00Z"), "actor", "service:tianquan-shoubing");
         var statement = configuration.getMappedStatement(OAuthSecurityStateMapper.class.getName() + ".fenceRealmIfConsentInactive");
         var sql = statement.getBoundSql(parameters).getSql().toLowerCase(java.util.Locale.ROOT);
-        assertThat(sql).contains("not exists", "c.client_pk = ?", "c.subject = ?", "c.status = 'active'")
+        assertThat(sql).contains("not exists", "c.client_pk = ?", "c.subject = ?", "c.resource_uri = ?", "c.status = 'active'")
                 .doesNotContain("for update");
         assertThat(postgresParser().parse(sql, false)).isNotNull();
         MDC.put("tenantId", "101");

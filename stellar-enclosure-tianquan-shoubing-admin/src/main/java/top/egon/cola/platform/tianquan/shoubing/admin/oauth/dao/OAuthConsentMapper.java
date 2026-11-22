@@ -26,7 +26,9 @@ public interface OAuthConsentMapper extends EgonColaMapper<OAuthConsentPO> {
             @Param("clientPk") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
             @Positive(groups = EgonColaModelValidationGroups.Query.class) Long clientPk,
             @Param("subject") @NotBlank(groups = EgonColaModelValidationGroups.Query.class)
-            @Size(max = 128, groups = EgonColaModelValidationGroups.Query.class) String subject);
+            @Size(max = 128, groups = EgonColaModelValidationGroups.Query.class) String subject,
+            @Param("resourceUri") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
+            @Size(max = 2048, groups = EgonColaModelValidationGroups.Query.class) String resourceUri);
 
     @Validated(EgonColaModelValidationGroups.Query.class)
     OAuthConsentPO selectConsentForUpdate(
@@ -35,7 +37,9 @@ public interface OAuthConsentMapper extends EgonColaMapper<OAuthConsentPO> {
             @Param("clientPk") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
             @Positive(groups = EgonColaModelValidationGroups.Query.class) Long clientPk,
             @Param("subject") @NotBlank(groups = EgonColaModelValidationGroups.Query.class)
-            @Size(max = 128, groups = EgonColaModelValidationGroups.Query.class) String subject);
+            @Size(max = 128, groups = EgonColaModelValidationGroups.Query.class) String subject,
+            @Param("resourceUri") @NotNull(groups = EgonColaModelValidationGroups.Query.class)
+            @Size(max = 2048, groups = EgonColaModelValidationGroups.Query.class) String resourceUri);
 
     @Validated(EgonColaModelValidationGroups.Query.class)
     OAuthConsentPO selectActiveById(

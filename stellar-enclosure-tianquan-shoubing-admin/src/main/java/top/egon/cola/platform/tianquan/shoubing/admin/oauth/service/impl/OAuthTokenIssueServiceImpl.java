@@ -159,7 +159,7 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
         securityProjection.requireCurrentSnapshot(realm, input.getClientPk(), "USER",
                 authorizationCandidate.getPrincipalName(), authorizationCandidate.getAttributes().getSecuritySnapshot());
         OAuthConsentBO observedConsent = consentRepository.findConsent(
-                        realm, input.getClientPk(), authorizationCandidate.getPrincipalName())
+                        realm, input.getClientPk(), authorizationCandidate.getPrincipalName(), authorizationCandidate.getResourceUri())
                 .filter(value -> "ACTIVE".equals(value.getStatus()))
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
         if (!consentedScopes(observedConsent).containsAll(authorizationCandidate.getAuthorizedScopes())) {
@@ -285,7 +285,8 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
                 || value.getAttributes() == null || value.getAttributes().getSecuritySnapshot() == null
                 || value.getAttributes().getPendingConsent() != null
                 || value.getAbsoluteExpiresAt() == null || !value.getAbsoluteExpiresAt().isAfter(clock.instant())
-                || value.getAudiences() == null || value.getAudiences().isEmpty()) {
+                || value.getAudiences() == null || value.getAudiences().size() != 1
+                || value.getResourceUri() != null && !value.getResourceUri().equals(value.getAudiences().getFirst())) {
             throw invalidGrant();
         }
         OAuthClientBO client = clientRepository.findById(realm, value.getClientPk())
@@ -328,7 +329,7 @@ public class OAuthTokenIssueServiceImpl implements OAuthTokenIssueService {
             throw new OAuth2AuthenticationException(new OAuth2Error("invalid_scope", "Request rejected", null));
         }
         OAuthConsentBO consent = consentRepository.findConsent(
-                        realm, value.getClientPk(), value.getPrincipalName())
+                        realm, value.getClientPk(), value.getPrincipalName(), value.getAudiences().getFirst())
                 .filter(candidate -> "ACTIVE".equals(candidate.getStatus()))
                 .orElseThrow(OAuthTokenIssueServiceImpl::invalidGrant);
         Set<String> consented = consentedScopes(consent);

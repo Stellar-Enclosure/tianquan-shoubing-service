@@ -406,7 +406,7 @@ class OAuthConsentRoundTripTest {
         OAuthConsentBO existing = OAuthConsentBO.builder().id(600L).version(0L).clientPk(501L)
                 .subject("user-1001").authorities(List.of("SCOPE_orders.write"))
                 .grantedAt(fixture.clock.instant()).status("ACTIVE").build();
-        fixture.consents.put(Fixture.consentKey(realm, 501L, "user-1001"), existing);
+        fixture.consents.put(Fixture.consentKey(realm, 501L, "user-1001", RESOURCE.toString()), existing);
         Pending pending = startThroughRealLogin(1001L);
         String csrf = consentCsrf(pending);
         MvcResult cancelled = mvc.perform(consent(pending).param("_csrf", csrf).param("consent_action", "deny"))
@@ -414,7 +414,7 @@ class OAuthConsentRoundTripTest {
         assertEquals("access_denied", query(cancelled.getResponse().getHeader("Location"), "error"));
         assertEquals(CLIENT_STATE, query(cancelled.getResponse().getHeader("Location"), "state"));
         assertTrue(fixture.authorizations.values().stream().allMatch(value -> "CANCELLED".equals(value.getStatus())));
-        assertEquals(existing, fixture.consents.get(Fixture.consentKey(realm, 501L, "user-1001")));
+        assertEquals(existing, fixture.consents.get(Fixture.consentKey(realm, 501L, "user-1001", RESOURCE.toString())));
         assertTrue(fixture.tokens.values().stream().allMatch(row -> row.getConsumedAt() != null));
         assertTrue(fixture.events.isEmpty());
         mvc.perform(consent(pending).param("_csrf", csrf).param("consent_action", "deny"))
@@ -762,13 +762,13 @@ class OAuthConsentRoundTripTest {
         OAuthConsentBO existing = OAuthConsentBO.builder().id(600L).version(0L).clientPk(501L)
                 .subject("user-1001").authorities(List.of("SCOPE_orders.write"))
                 .grantedAt(fixture.clock.instant()).status("ACTIVE").build();
-        fixture.consents.put(Fixture.consentKey(realm, 501L, "user-1001"), existing);
+        fixture.consents.put(Fixture.consentKey(realm, 501L, "user-1001", RESOURCE.toString()), existing);
         Pending pending = startThroughRealLogin(1001L);
         MvcResult denied = mvc.perform(consent(pending).param("_csrf", consentCsrf(pending)))
                 .andExpect(status().is3xxRedirection()).andReturn();
         assertEquals("access_denied", query(denied.getResponse().getHeader("Location"), "error"));
         assertNull(query(denied.getResponse().getHeader("Location"), "code"));
-        assertEquals(existing, fixture.consents.get(Fixture.consentKey(realm, 501L, "user-1001")));
+        assertEquals(existing, fixture.consents.get(Fixture.consentKey(realm, 501L, "user-1001", RESOURCE.toString())));
         assertTrue(fixture.authorizations.values().stream().allMatch(value -> "CANCELLED".equals(value.getStatus())));
         assertTrue(fixture.tokens.values().stream().noneMatch(row -> row.getTokenType() == OAuthTokenTypeEnum.CODE));
     }
@@ -1458,15 +1458,15 @@ class OAuthConsentRoundTripTest {
                 OAuthTokenPO row = tokenConverter.toSource(realm, cipher, mapper, value.getTokenDigest(), value);
                 tokens.put(key(realm, value.getTokenDigest()), row); return readToken(realm, value.getTokenDigest()).orElseThrow();
             });
-            when(consentRepository.findConsent(any(), anyLong(), anyString())).thenAnswer(i ->
-                    Optional.ofNullable(consents.get(consentKey(i.getArgument(0), i.getArgument(1), i.getArgument(2)))));
-            when(consentRepository.findConsentForUpdate(any(), anyLong(), anyString())).thenAnswer(i ->
-                    Optional.ofNullable(consents.get(consentKey(i.getArgument(0), i.getArgument(1), i.getArgument(2)))));
+            when(consentRepository.findConsent(any(), anyLong(), anyString(), anyString())).thenAnswer(i ->
+                    Optional.ofNullable(consents.get(consentKey(i.getArgument(0), i.getArgument(1), i.getArgument(2), i.getArgument(3)))));
+            when(consentRepository.findConsentForUpdate(any(), anyLong(), anyString(), anyString())).thenAnswer(i ->
+                    Optional.ofNullable(consents.get(consentKey(i.getArgument(0), i.getArgument(1), i.getArgument(2), i.getArgument(3)))));
             when(consentRepository.save(any(), any(OAuthConsentBO.class), anyLong())).thenAnswer(i -> {
                 if (failConsentSave) { throw new TransientDataAccessResourceException("fixture consent save failure"); }
                 TrustedRealmBO realm = i.getArgument(0); OAuthConsentBO value = i.getArgument(1);
                 if (value.getId() == null) { value.setId(ids.incrementAndGet()); }
-                validate(value); consents.put(consentKey(realm, value.getClientPk(), value.getSubject()), value); return value;
+                validate(value); consents.put(consentKey(realm, value.getClientPk(), value.getSubject(), value.getResourceUri()), value); return value;
             });
             when(auditRepository.save(any(), any(OAuthAuditBO.class), anyLong())).thenAnswer(i -> {
                 OAuthAuditBO value = i.getArgument(1); value.setId(ids.incrementAndGet()); audits.add(value); return value;
@@ -1493,7 +1493,7 @@ class OAuthConsentRoundTripTest {
                     .readyEpoch("fixture-epoch").revision(0L).build();
         }
         private static String key(TrustedRealmBO realm, Object value) { return realm.getRealmKey() + ":" + value; }
-        private static String consentKey(TrustedRealmBO realm, Object client, String subject) { return key(realm, client + ":" + subject); }
+        private static String consentKey(TrustedRealmBO realm, Object client, String subject, String resource) { return key(realm, client + ":" + subject + ":" + resource); }
         private static void validate(Object value) {
             try (var factory = Validation.buildDefaultValidatorFactory()) {
                 var errors = factory.getValidator().validate(value);

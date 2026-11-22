@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationConsent;
@@ -13,6 +14,8 @@ import org.springframework.security.oauth2.server.authorization.OAuth2Authorizat
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthClientBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.OAuthConsentBO;
 import top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.bo.TrustedRealmBO;
@@ -28,7 +31,7 @@ import top.egon.cola.platform.tianquan.shoubing.core.oauth.OAuthClient;
 
 @Service("tenantConsentService")
 @Slf4j
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 @Validated
 public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentService {
 
@@ -46,6 +49,8 @@ public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentServi
     private final OAuthRealmRepository realms;
     @Qualifier("oAuthSecurityStateRepository")
     private final OAuthSecurityStateRepository securityStates;
+    @Qualifier("oauthBrowserInteractionComponent")
+    private final OAuthBrowserInteractionComponent interactions;
 
     @Override
     @Transactional
@@ -62,10 +67,12 @@ public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentServi
                 .toList();
         requireAllowedScopeAuthorities(authorities, client);
 
+        String resource = currentResource(clientPk);
         OAuthConsentBO mapped = converter.toSource(consent);
+        mapped.setResourceUri(resource);
         mapped.setAuthorities(authorities);
         OAuthConsentBO current = consentRepository.findConsent(
-                trustedRealm, clientPk, consent.getPrincipalName()).orElse(null);
+                trustedRealm, clientPk, consent.getPrincipalName(), resource).orElse(null);
         mapped.setGrantedAt(clock.instant().truncatedTo(ChronoUnit.MICROS));
         long expectedVersion = 0L;
         if (current == null) {
@@ -88,13 +95,14 @@ public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentServi
         fenceRealm(trustedRealm);
         requirePrincipal(consent.getPrincipalName());
         long clientPk = parsePositiveId(consent.getRegisteredClientId(), "OAUTH_CONSENT_CLIENT_ID_INVALID");
+        String resource = currentResource(clientPk);
         OAuthConsentBO current = consentRepository.findConsent(
-                trustedRealm, clientPk, consent.getPrincipalName()).orElse(null);
+                trustedRealm, clientPk, consent.getPrincipalName(), resource).orElse(null);
         if (current == null) {
             var state = securityStates.findByTarget(trustedRealm, OAuthSecurityTargetEnum.REALM, "self")
                     .orElseThrow(() -> new org.springframework.dao.TransientDataAccessResourceException("OAuth realm state is not visible"));
             if (!securityStates.fenceRealmIfConsentInactive(trustedRealm, state.getId(), state.getVersion(),
-                    clientPk, consent.getPrincipalName(), clock.instant())) {
+                    clientPk, consent.getPrincipalName(), resource, clock.instant())) {
                 throw new org.springframework.dao.TransientDataAccessResourceException("OAuth consent is not yet visible");
             }
             state.setVersion(Math.addExact(state.getVersion(), 1L));
@@ -120,7 +128,7 @@ public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentServi
         requirePrincipal(principalName);
         long clientPk = parsePositiveId(registeredClientId, "OAUTH_CONSENT_CLIENT_ID_INVALID");
         TrustedRealmBO trustedRealm = tenantIssuerService.resolveCurrentIssuer();
-        OAuthConsentBO consent = consentRepository.findConsent(trustedRealm, clientPk, principalName)
+        OAuthConsentBO consent = consentRepository.findConsent(trustedRealm, clientPk, principalName, currentResource(clientPk))
                 .filter(value -> "ACTIVE".equals(value.getStatus()))
                 .orElse(null);
         if (consent == null) {
@@ -129,6 +137,19 @@ public class TenantConsentServiceImpl implements OAuth2AuthorizationConsentServi
         OAuthClientBO client = loadActiveClient(trustedRealm, clientPk);
         requireAllowedScopeAuthorities(consent.getAuthorities(), client);
         return converter.toTarget(consent);
+    }
+
+    private String currentResource(long clientPk) {
+        if (!(RequestContextHolder.getRequestAttributes()
+                instanceof ServletRequestAttributes servlet)) {
+            throw new IllegalStateException("OAUTH_CONSENT_INTERACTION_REQUIRED");
+        }
+        var interaction = interactions.require(servlet.getRequest(), false);
+        if (!"AUTHORIZATION".equals(interaction.getPurpose()) || !Objects.equals(interaction.getClientPk(), clientPk)
+                || interaction.getResourceUri() == null) {
+            throw new IllegalArgumentException("OAUTH_CONSENT_INTERACTION_MISMATCH");
+        }
+        return interaction.getResourceUri();
     }
 
     private OAuthClientBO loadActiveClient(TrustedRealmBO trustedRealm, long clientPk) {

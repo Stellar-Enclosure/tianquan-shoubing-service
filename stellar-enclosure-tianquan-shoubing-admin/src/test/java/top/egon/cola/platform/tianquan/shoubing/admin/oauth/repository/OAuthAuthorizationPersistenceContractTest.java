@@ -481,8 +481,8 @@ class OAuthAuthorizationPersistenceContractTest {
                 "top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.impl.OAuthConsentRepositoryImpl",
                 "top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthConsentMapper",
                 "top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthConsentConverter",
-                "findConsent", new Class<?>[]{TrustedRealmBO.class, Long.class, String.class},
-                new Object[]{trustedTenant(), 901L, "legacy-user-sub"}, "selectConsent", false);
+                "findConsent", new Class<?>[]{TrustedRealmBO.class, Long.class, String.class, String.class},
+                new Object[]{trustedTenant(), 901L, "legacy-user-sub", "https://api.example.test"}, "selectConsent", false);
     }
 
     @Test
@@ -646,7 +646,7 @@ class OAuthAuthorizationPersistenceContractTest {
         var requested = consent(row, 2L);
         var barrier = new java.util.concurrent.CyclicBarrier(2);
         var winner = new AtomicBoolean();
-        when(mapper.selectConsent(eq(TENANT_PARTITION_ID), eq(row.getClientPk()), eq(row.getSubject())))
+        when(mapper.selectConsent(eq(TENANT_PARTITION_ID), eq(row.getClientPk()), eq(row.getSubject()), eq("https://api.example.test")))
                 .thenAnswer(call -> { barrier.await(5, java.util.concurrent.TimeUnit.SECONDS); return row; });
         when(mapper.updateExpectedVersion(eq(TENANT_PARTITION_ID), any(), eq(1L)))
                 .thenAnswer(call -> winner.compareAndSet(false, true) ? 1 : 0);
@@ -659,7 +659,7 @@ class OAuthAuthorizationPersistenceContractTest {
             assertEquals(Set.of(true, false), Set.of(first.get(10, java.util.concurrent.TimeUnit.SECONDS),
                     second.get(10, java.util.concurrent.TimeUnit.SECONDS)));
         }
-        Mockito.verify(mapper, Mockito.never()).selectConsentForUpdate(any(), any(), any());
+        Mockito.verify(mapper, Mockito.never()).selectConsentForUpdate(any(), any(), any(), org.mockito.ArgumentMatchers.anyString());
     }
 
     private static boolean saveConsent(OAuthConsentRepositoryImpl repository, OAuthConsentBO value) {
@@ -764,8 +764,8 @@ class OAuthAuthorizationPersistenceContractTest {
                 "top.egon.cola.platform.tianquan.shoubing.admin.oauth.repository.impl.OAuthConsentRepositoryImpl",
                 "top.egon.cola.platform.tianquan.shoubing.admin.oauth.dao.OAuthConsentMapper",
                 "top.egon.cola.platform.tianquan.shoubing.admin.oauth.domain.converter.OAuthConsentConverter",
-                "findConsent", new Class<?>[]{TrustedRealmBO.class, Long.class, String.class},
-                new Object[]{trustedTenant(), 901L, "legacy-user-sub"}, "selectConsent", false);
+                "findConsent", new Class<?>[]{TrustedRealmBO.class, Long.class, String.class, String.class},
+                new Object[]{trustedTenant(), 901L, "legacy-user-sub", "https://api.example.test"}, "selectConsent", false);
     }
 
     private void assertMapperContract(
@@ -1016,6 +1016,7 @@ class OAuthAuthorizationPersistenceContractTest {
         po.setVersion(version);
         po.setClientPk(901L);
         po.setSubject("legacy-user-sub");
+        po.setResourceUri("https://api.example.test");
         po.setAuthorities(List.of("openid", "profile"));
         po.setGrantedAt(Instant.parse("2026-10-08T00:00:00Z"));
         po.setStatus("ACTIVE");
@@ -1024,7 +1025,7 @@ class OAuthAuthorizationPersistenceContractTest {
 
     private static OAuthConsentBO consent(OAuthConsentPO po, long version) {
         return OAuthConsentBO.builder()
-                .id(po.getId()).version(version).clientPk(po.getClientPk()).subject(po.getSubject())
+                .id(po.getId()).version(version).clientPk(po.getClientPk()).subject(po.getSubject()).resourceUri(po.getResourceUri())
                 .authorities(po.getAuthorities()).grantedAt(po.getGrantedAt()).status(po.getStatus())
                 .build();
     }

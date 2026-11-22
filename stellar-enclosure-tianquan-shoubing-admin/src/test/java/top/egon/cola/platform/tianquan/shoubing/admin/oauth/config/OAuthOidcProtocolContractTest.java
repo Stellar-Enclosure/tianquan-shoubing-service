@@ -700,7 +700,7 @@ class OAuthOidcProtocolContractTest {
         OAuthAuthorizationBO authorization = OAuthAuthorizationBO.builder()
                 .id(700L).version(0L).clientPk(501L).principalName("platform-admin-sub")
                 .principalType("USER").grantType("authorization_code")
-                .authorizedScopes(List.of("openid")).audiences(List.of(resourceUri.toASCIIString()))
+                .authorizedScopes(List.of("openid")).resourceUri(resourceUri.toString()).audiences(List.of(resourceUri.toASCIIString()))
                 .status("ACTIVE")
                 .attributes(OAuthAuthorizationAttributesBO.builder().schemaVersion(1)
                         .securitySnapshot(snapshot).authTime(NOW).acr("urn:egon:loa:password").build())
@@ -729,7 +729,7 @@ class OAuthOidcProtocolContractTest {
         when(memberships.resolve("platform-admin-sub", "9001")).thenReturn(
                 new TenantMembershipPort.TenantMembership("platform-admin-sub", "9001", "Admin",
                         TenantMembershipPort.MembershipStatus.ACTIVE));
-        when(consents.findConsent(eq(platformRealm), eq(501L), eq("platform-admin-sub")))
+        when(consents.findConsent(eq(platformRealm), eq(501L), eq("platform-admin-sub"), eq(resourceUri.toString())))
                 .thenReturn(Optional.of(OAuthConsentBO.builder().id(800L).version(0L).clientPk(501L)
                         .subject("platform-admin-sub").authorities(List.of("SCOPE_openid"))
                         .grantedAt(NOW).status("ACTIVE").build()));
@@ -758,7 +758,7 @@ class OAuthOidcProtocolContractTest {
         assertEquals(700L, issue.authorizationId());
         assertEquals(Set.of(resourceUri), issue.audiences());
         verify(memberships).resolve("platform-admin-sub", "9001");
-        verify(consents, org.mockito.Mockito.never()).findConsentForUpdate(any(), any(), any());
+        verify(consents, org.mockito.Mockito.never()).findConsentForUpdate(any(), any(), any(), org.mockito.ArgumentMatchers.anyString());
     }
 
     private static TrustedRealmBO trustedTenant() {

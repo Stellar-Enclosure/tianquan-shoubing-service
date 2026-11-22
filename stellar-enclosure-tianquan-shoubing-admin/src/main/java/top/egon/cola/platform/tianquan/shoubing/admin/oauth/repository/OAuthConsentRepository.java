@@ -17,12 +17,14 @@ public interface OAuthConsentRepository {
     Optional<OAuthConsentBO> findConsent(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @Positive Long clientPk,
-            @NotBlank @Size(max = 128) String subject);
+            @NotBlank @Size(max = 128) String subject,
+            @NotBlank @Size(max = 2048) String resourceUri);
 
     Optional<OAuthConsentBO> findConsentForUpdate(
             @NotNull @Valid TrustedRealmBO trustedRealm,
             @Positive Long clientPk,
-            @NotBlank @Size(max = 128) String subject);
+            @NotBlank @Size(max = 128) String subject,
+            @NotBlank @Size(max = 2048) String resourceUri);
 
     OAuthConsentBO save(
             @NotNull @Valid TrustedRealmBO trustedRealm,
