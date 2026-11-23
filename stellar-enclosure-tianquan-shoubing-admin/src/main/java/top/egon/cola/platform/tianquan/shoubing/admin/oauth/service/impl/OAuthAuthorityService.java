@@ -10,6 +10,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
@@ -57,7 +59,8 @@ import top.egon.cola.platform.tianquan.shoubing.starter.autoconfigure.IdpStarter
 
 /** Terminates identity-state and audit requests at the PostgreSQL owner without remote recursion. */
 @Service("oauthAuthorityService")
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
+@Slf4j
 public class OAuthAuthorityService {
 
     @Qualifier("oauthAuthorityTokenVerifier") private final OAuthAuthorityTokenVerifier verifier;
@@ -168,13 +171,23 @@ public class OAuthAuthorityService {
 
     /** The local producer identity comes from the owner's registered resource, never event fields. */
     public IdentityAuditReceipt appendOwnedAudit(TrustedRealmBO realm, TokenUsageAuditEvent event) {
+        Objects.requireNonNull(realm, "realm").validateTrustedPartition();
         if (event == null || !properties.getResourceUri().toASCIIString().equals(event.resource())
                 || !realm.getIssuer().equals(event.issuer())) { throw denied("AUTHORITY_LOCAL_AUDIT_NOT_BOUND"); }
-        var resource = resources.findByResourceUri(managementRealms.platformRealm(), properties.getResourceUri())
-                .filter(value -> value.getStatus() == ResourceServerStatus.ACTIVE)
+        var platformRealm = managementRealms.platformRealm();
+        var resource = resources.findByResourceUri(platformRealm, properties.getResourceUri())
+                .filter(value -> value.getStatus() == ResourceServerStatus.ACTIVE
+                        && properties.getResourceUri().equals(value.getResourceUri()))
                 .orElseThrow(() -> denied("AUTHORITY_LOCAL_RESOURCE_NOT_ACTIVE"));
-        var client = clients.findByClientId(realm, resource.getManagementClientId())
-                .filter(value -> value.getStatus() == OAuthClient.Status.ACTIVE)
+        Long ownerPk = resource.getManagementClientPk();
+        if (ownerPk == null || ownerPk <= 0) { throw denied("AUTHORITY_LOCAL_CLIENT_NOT_ACTIVE"); }
+        // Resource ownership is registered in the platform partition; the audited event stays in its verified realm.
+        var client = clients.findById(platformRealm, ownerPk)
+                .filter(value -> Objects.equals(ownerPk, value.getId())
+                        && Objects.equals(resource.getManagementClientId(), value.getClientId())
+                        && value.getPurpose() == OAuthClientPurposeEnum.SERVICE
+                        && value.getClientType() == OAuthClient.ClientType.CONFIDENTIAL
+                        && value.getStatus() == OAuthClient.Status.ACTIVE)
                 .orElseThrow(() -> denied("AUTHORITY_LOCAL_CLIENT_NOT_ACTIVE"));
         var receipt = auditDelivery.append(realm, client.getId(), realm.getIssuer().toASCIIString(), event.resource(), event);
         return new IdentityAuditReceipt(receipt.getReceiptId(), receipt.getEventId(), receipt.getEventFingerprint(),
